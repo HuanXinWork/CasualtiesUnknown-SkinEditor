@@ -1,0 +1,9 @@
+bin/Release/MotionRecorder.pdb
+obj/
+*.user
+references/Assembly-CSharp.dll
+references/UnityEngine.*.dll
+references/0Harmony.dll
+references/BepInEx.dll
+references/Newtonsoft.Json.dll
+references/UnityEngine.dll

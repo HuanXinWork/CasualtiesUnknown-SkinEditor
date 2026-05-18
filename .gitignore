@@ -1,0 +1,7 @@
+.history
+src-tauri/target
+src-tauri/proptest-regressions
+web/node_modules
+web/dist
+docs/en/README.md
+docs/zh/README.md

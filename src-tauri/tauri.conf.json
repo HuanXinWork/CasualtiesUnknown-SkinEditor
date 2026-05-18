@@ -1,0 +1,34 @@
+{
+  "productName": "CasualtiesUnknown-SkinEditor",
+  "version": "1.0.0",
+  "identifier": "com.casualtiesUnknown.skinPreviewEditor",
+  "build": {
+    "frontendDist": "../web/dist",
+    "beforeBuildCommand": "npm --prefix ../web run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "CasualtiesUnknown-SkinEditor",
+        "url": "index.html",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 640,
+        "center": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "dmg", "appimage"],
+    "copyright": "Copyright (c) 2026 huanxin996",
+    "publisher": "huanxin996",
+    "icon": ["icons/icon.ico", "icons/icon.png"]
+  }
+}

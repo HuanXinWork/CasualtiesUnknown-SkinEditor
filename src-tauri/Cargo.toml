@@ -1,0 +1,37 @@
+[package]
+name = "skin-preview-editor"
+version = "1.0.0"
+edition = "2021"
+description = "Skin Preview Editor 后端：桌面壳 + HTTP 双形态共享同一 Rust 核心"
+
+[lib]
+name = "skin_preview_editor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "CasualtiesUnknown-SkinEditor"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# devtools 在 release 也保留 F12 开发者工具，约 +1MB；不需要可改为 features = []。
+tauri = { version = "2", features = ["devtools"] }
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+rust-embed = "8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["png", "ico", "jpeg", "gif", "webp", "bmp"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+base64 = "0.22"
+
+# Windows 端取色器需要 GetCursorPos / GetAsyncKeyState；windows-sys 已被 Tauri 引入，零额外体积。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Foundation"] }
+
+[dev-dependencies]
+proptest = "1"

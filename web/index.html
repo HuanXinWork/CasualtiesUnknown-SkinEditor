@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>Skin Preview Editor</title>
+    <style>
+      /* 在外部 CSS 加载之前也保证背景是白色，避免 WebView2 在 Windows
+         系统暗色模式下把空白页渲成深灰，让用户误以为加载失败。*/
+      :root { color-scheme: light; }
+      html, body { background: #ffffff; color: #000000; margin: 0; padding: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

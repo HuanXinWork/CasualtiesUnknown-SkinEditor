@@ -1,0 +1,56 @@
+/* 基础动效骨架。
+
+   严禁给以下选择器添加 transition / animation —— 合成预览路径需要
+   100ms 内完成像素替换（Req 5.1 / 5.2），动画会拖慢端到端响应：
+     .preview-canvas、.preview-canvas *、.composite-preview。
+   后续 UI 任务（10/11/15/16/18/19/22）需保持此约束。 */
+
+/* 面板展开 / 折叠：高度 + opacity 同时过渡，200ms ease-out */
+.motion-panel-fade {
+  transition: height 200ms ease-out, opacity 200ms ease-out;
+}
+
+/* 工具切换：图标缩放弹跳，150ms 自定义 cubic-bezier */
+.motion-tool-switch {
+  transition: transform 150ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Toast 入场：从底部 8px 滑入并淡入，300ms ease-out */
+.motion-toast-in {
+  animation: toast-in 300ms ease-out forwards;
+}
+
+/* Toast 出场：淡出，200ms ease-in */
+.motion-toast-out {
+  animation: toast-out 200ms ease-in forwards;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes toast-out {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* 显式兜底：合成预览路径强制清空动效，防止后续 UI 误挂 */
+.preview-canvas,
+.preview-canvas *,
+.composite-preview {
+  transition: none !important;
+  animation: none !important;
+}
