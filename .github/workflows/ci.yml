@@ -80,9 +80,34 @@ jobs:
       - name: Build desktop app
         run: cargo build --release --manifest-path src-tauri/Cargo.toml --bin CasualtiesUnknown-SkinEditor
 
-      - name: Upload desktop artifact
+      - name: Create portable package
+        shell: pwsh
+        run: |
+          $portableDir = "dist/windows-portable"
+          $zipPath = "dist/CasualtiesUnknown-SkinEditor-windows-portable.zip"
+          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+          Copy-Item "src-tauri/target/release/CasualtiesUnknown-SkinEditor.exe" "$portableDir/CasualtiesUnknown-SkinEditor.exe" -Force
+          if (Test-Path "README.md") {
+            Copy-Item "README.md" "$portableDir/README.md" -Force
+          }
+          if (Test-Path "README.en.md") {
+            Copy-Item "README.en.md" "$portableDir/README.en.md" -Force
+          }
+          if (Test-Path $zipPath) {
+            Remove-Item $zipPath -Force
+          }
+          Compress-Archive -Path "$portableDir/*" -DestinationPath $zipPath
+
+      - name: Upload exe artifact
         uses: actions/upload-artifact@v4
         with:
-          name: build-windows-CasualtiesUnknown-SkinEditor
+          name: windows-exe-CasualtiesUnknown-SkinEditor
           path: src-tauri/target/release/CasualtiesUnknown-SkinEditor.exe
+          if-no-files-found: error
+
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable-CasualtiesUnknown-SkinEditor
+          path: dist/CasualtiesUnknown-SkinEditor-windows-portable.zip
           if-no-files-found: error
