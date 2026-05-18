@@ -39,6 +39,10 @@ jobs:
         working-directory: web
         run: npm run test
 
+      - name: Build frontend bundle
+        working-directory: web
+        run: npm run build
+
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
@@ -68,6 +72,10 @@ jobs:
       - name: Install frontend dependencies
         working-directory: web
         run: npm install
+
+      - name: Build frontend bundle
+        working-directory: web
+        run: npm run build
 
       - name: Build desktop app
         run: cargo build --release --manifest-path src-tauri/Cargo.toml --bin CasualtiesUnknown-SkinEditor
