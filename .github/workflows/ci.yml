@@ -32,10 +32,12 @@ jobs:
             src-tauri -> target
 
       - name: Install frontend dependencies
-        run: npm install --prefix web
+        working-directory: web
+        run: npm install
 
       - name: Check frontend types
-        run: npm --prefix web run test
+        working-directory: web
+        run: npm run test
 
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
@@ -64,7 +66,8 @@ jobs:
             src-tauri -> target
 
       - name: Install frontend dependencies
-        run: npm install --prefix web
+        working-directory: web
+        run: npm install
 
       - name: Build desktop app
         run: cargo build --release --manifest-path src-tauri/Cargo.toml --bin CasualtiesUnknown-SkinEditor
