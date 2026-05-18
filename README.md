@@ -2,9 +2,9 @@
 
 <div align="center">
 
-<a href="https://github.com/huanxin996">
-  <img src="https://github.com/huanxin996.png" width="160" height="160" alt="huanxin996" style="border-radius:50%;">
-</a>
+<p align="center">
+  <a href="https://github.com/huanxin996"><img src="https://github.com/huanxin996.png" width="200" height="200" alt="huanxin996"></a>
+</p>
 
 # CasualtiesUnknown-SkinEditor
 
@@ -36,12 +36,12 @@ _✨ 为 游戏 `Casualties Unknown` 提供独立的皮肤预览与像素级编�
 <table>
   <tr>
     <td align="center" width="50%">
-      <img src="[中文界面](https://raw.githubusercontent.com/huanxin996/CasualtiesUnknown-SkinEditor/main/docs/zh/images/main.png)" alt="中文界面 / Chinese UI" width="100%">
+      <img src="https://raw.githubusercontent.com/huanxin996/CasualtiesUnknown-SkinEditor/main/docs/zh/images/main.png" alt="中文界面 / Chinese UI" width="100%">
       <br>
       <sub>中文界面 / Chinese UI</sub>
     </td>
     <td align="center" width="50%">
-      <img src="[English UI](https://raw.githubusercontent.com/huanxin996/CasualtiesUnknown-SkinEditor/main/docs/en/images/main.png)" alt="English UI" width="100%">
+      <img src="https://raw.githubusercontent.com/huanxin996/CasualtiesUnknown-SkinEditor/main/docs/en/images/main.png" alt="English UI" width="100%">
       <br>
       <sub>English UI</sub>
     </td>

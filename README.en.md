@@ -2,9 +2,9 @@
 
 <div align="center">
 
-<a href="https://github.com/huanxin996">
-  <img src="https://github.com/huanxin996.png" width="160" height="160" alt="huanxin996" style="border-radius:50%;">
-</a>
+<p align="center">
+  <a href="https://github.com/huanxin996"><img src="https://github.com/huanxin996.png" width="200" height="200" alt="huanxin996"></a>
+</p>
 
 # CasualtiesUnknown-SkinEditor
 
