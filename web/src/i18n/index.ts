@@ -108,6 +108,15 @@ export interface Translations {
     closeDiscard: string;
     closeCancel: string;
     saveAllFailedPrefix: string;
+    infoTitle: string;
+    infoPartEmpty: string;
+    resizeBtn: string;
+    resizeTitle: string;
+    resizeHint: string;
+    resizeCancel: string;
+    resizeInvalid: string;
+    createSideFBtn: string;
+    createSideBBtn: string;
   };
   imageWindow: {
     title: string;
@@ -202,6 +211,9 @@ export interface Translations {
       openInNewWindow: string;
       cancel: string;
     };
+  };
+  updateChecker: {
+    banner: string;
   };
 }
 
@@ -301,6 +313,15 @@ export const dictionaries: Record<Lang, Translations> = {
       closeDiscard: "不保存",
       closeCancel: "取消",
       saveAllFailedPrefix: "部分部件保存失败：",
+      infoTitle: "当前部件",
+      infoPartEmpty: "未选中部件",
+      resizeBtn: "修改分辨率",
+      resizeTitle: "修改部件分辨率",
+      resizeHint: "选择放大倍数（当前 {w}×{h}）",
+      resizeCancel: "取消",
+      resizeInvalid: "目标尺寸超出 1~4096 范围",
+      createSideFBtn: "创建前侧版本",
+      createSideBBtn: "创建后侧版本",
     },
     imageWindow: {
       title: "图片预览",
@@ -394,6 +415,9 @@ export const dictionaries: Record<Lang, Translations> = {
         openInNewWindow: "在新窗口打开",
         cancel: "取消",
       },
+    },
+    updateChecker: {
+      banner: "编辑器有新版本：{current} → {latest}（点击此处打开 release 页）",
     },
   },
   en: {
@@ -491,6 +515,15 @@ export const dictionaries: Record<Lang, Translations> = {
       closeDiscard: "Discard",
       closeCancel: "Cancel",
       saveAllFailedPrefix: "Some parts failed to save: ",
+      infoTitle: "Current part",
+      infoPartEmpty: "No part selected",
+      resizeBtn: "Resize",
+      resizeTitle: "Resize part",
+      resizeHint: "Pick a scale factor (current {w}×{h})",
+      resizeCancel: "Cancel",
+      resizeInvalid: "Target size out of range 1-4096",
+      createSideFBtn: "Create front variant",
+      createSideBBtn: "Create back variant",
     },
     imageWindow: {
       title: "Image Viewer",
@@ -584,6 +617,9 @@ export const dictionaries: Record<Lang, Translations> = {
         openInNewWindow: "Open in new window",
         cancel: "Cancel",
       },
+    },
+    updateChecker: {
+      banner: "Editor update available: {current} → {latest} (click to open the release page)",
     },
   },
 };

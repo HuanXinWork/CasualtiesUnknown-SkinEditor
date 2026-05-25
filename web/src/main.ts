@@ -17,6 +17,10 @@ import { subscribeLang, t } from "./i18n";
 import { attachCloseGuard } from "./closeGuard";
 import { mountImageWindow } from "./imageWindow";
 import { storeImage, releaseImage } from "./apiClient";
+import { startUpdateChecker } from "./updateChecker";
+
+// 与 src-tauri/Cargo.toml `version` / settingsPanel APP_META.version 保持一致。
+const APP_VERSION = "1.0.1";
 import {
   ICON_PIN,
   ICON_PIN_OFF,
@@ -109,6 +113,7 @@ async function mountMainWindow(): Promise<void> {
     console.warn("[main] getWorkspace failed, fallback to defaults", e);
   }
   mountApp();
+  startUpdateChecker(APP_VERSION);
 }
 
 async function mountSinglePanel(id: string): Promise<void> {

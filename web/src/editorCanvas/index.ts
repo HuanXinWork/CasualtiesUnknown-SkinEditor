@@ -13,19 +13,35 @@ import {
   applyGradient,
   beginStroke as apiBeginStroke,
   endStroke as apiEndStroke,
+  createSidePart,
   getFlatten,
+  listParts,
   loadPartImage,
+  resizePart,
   type ApiError,
   type LoadPartResult,
   type PixelDiff,
 } from "../apiClient";
-import { sessionStore, pushHistoryRecord, markPartDirty } from "../stateStore";
+import { sessionStore, pushHistoryRecord, markPartDirty, markPartClean, bumpPartListVersion } from "../stateStore";
 import type { PartCategory } from "../stateStore/types";
 import { subscribeLang, t } from "../i18n";
 import { localizePartName } from "../i18n/partNames";
+import { showToast } from "../toast";
 import { CANVAS_CURSORS } from "../toolPanel/toolIcons";
 
 const ZOOM_MIN = 0.1;
+
+/// 与后端 isSideSplittablePartName 同步：可以拆出 F / B 独立 PNG 的"前后共享"白名单。
+/// HandF/HandB 自身已是独立 PNG，不在该列表内。
+const SIDE_SPLIT_WHITELIST_SUFFIXES = [
+  "UpTorso", "DownTorso", "Head", "UpArm", "DownArm",
+  "Thigh", "Crus", "Foot", "Tail",
+] as const;
+
+function isSideSplittablePartName(partName: string): boolean {
+  if (partName.endsWith("F") || partName.endsWith("B")) return false;
+  return SIDE_SPLIT_WHITELIST_SUFFIXES.some((s) => partName.endsWith(s));
+}
 
 export function mountEditorCanvas(
   container: HTMLElement,
@@ -44,16 +60,31 @@ export function mountEditorCanvas(
     `<div class="editor-canvas-stage" style="flex:1;min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:16px;">` +
     `<div class="transparent-grid" data-role="grid" style="display:none;"><canvas></canvas></div>` +
     `<div data-role="placeholder" style="opacity:0.6;">${t("editorCanvas.notSelected")}</div>` +
+    `</div>` +
+    `<div class="editor-canvas-footer" style="display:flex;align-items:center;gap:8px;padding:8px;border-top:1px solid rgba(0,0,0,var(--border-opacity));flex-wrap:wrap;">` +
+    `<button class="btn" data-role="resize-btn" disabled></button>` +
+    `<button class="btn" data-role="side-f-btn" style="display:none;"></button>` +
+    `<button class="btn" data-role="side-b-btn" style="display:none;"></button>` +
     `</div>`;
 
   const zoomOutBtn = container.querySelector<HTMLButtonElement>('[data-role="zoom-out"]')!;
   const zoomInBtn = container.querySelector<HTMLButtonElement>('[data-role="zoom-in"]')!;
   const zoomPctEl = container.querySelector<HTMLSpanElement>('[data-role="zoom-pct"]')!;
   const metaEl = container.querySelector<HTMLSpanElement>('[data-role="meta"]')!;
+  const resizeBtn = container.querySelector<HTMLButtonElement>('[data-role="resize-btn"]')!;
+  const sideFBtn = container.querySelector<HTMLButtonElement>('[data-role="side-f-btn"]')!;
+  const sideBBtn = container.querySelector<HTMLButtonElement>('[data-role="side-b-btn"]')!;
   const gridEl = container.querySelector<HTMLDivElement>('[data-role="grid"]')!;
   const placeholderEl = container.querySelector<HTMLDivElement>('[data-role="placeholder"]')!;
   const canvas = gridEl.querySelector("canvas")!;
   const ctx = canvas.getContext("2d");
+
+  // 当前部件尺寸（render 后写入），resize 弹窗预填默认值用。
+  let currentPartName: string | null = null;
+  let currentWidth = 0;
+  let currentHeight = 0;
+  let sideFBtnAvailable = false;
+  let sideBBtnAvailable = false;
 
   let zoom = 1;
   // 图片拖动平移（独立于 zoom）。中键 / 右键 / Shift+左键 / pan 工具任一即可拖。
@@ -105,14 +136,77 @@ export function mountEditorCanvas(
     zoomPctEl.textContent = `${Math.round(zoom * 100)}%`;
   }
 
+  function updateInfoPanel(): void {
+    if (!currentPartName) {
+      metaEl.textContent = "";
+      resizeBtn.disabled = true;
+      resizeBtn.textContent = t("editorCanvas.resizeBtn");
+      sideFBtn.style.display = "none";
+      sideBBtn.style.display = "none";
+      sideFBtn.textContent = t("editorCanvas.createSideFBtn");
+      sideBBtn.textContent = t("editorCanvas.createSideBBtn");
+      return;
+    }
+    metaEl.textContent = `${localizePartName(currentPartName)} ${currentWidth}×${currentHeight}`;
+    resizeBtn.disabled = !currentPartId;
+    resizeBtn.textContent = t("editorCanvas.resizeBtn");
+    sideFBtn.textContent = t("editorCanvas.createSideFBtn");
+    sideBBtn.textContent = t("editorCanvas.createSideBBtn");
+    sideFBtn.style.display = sideFBtnAvailable && currentPartId ? "" : "none";
+    sideBBtn.style.display = sideBBtnAvailable && currentPartId ? "" : "none";
+  }
+
+  /// 刷新 side*Btn 的可见性：白名单内 + 当前 part 不带 F/B 后缀 + 同分类下不存在 <name>F.png / <name>B.png。
+  function refreshMirrorAvailability(): void {
+    sideFBtnAvailable = false;
+    sideBBtnAvailable = false;
+    if (!currentPartId || !currentPartName) {
+      updateInfoPanel();
+      return;
+    }
+    if (!isSideSplittablePartName(currentPartName)) {
+      updateInfoPanel();
+      return;
+    }
+    const parts = currentPartId.split("::");
+    if (parts.length !== 3) {
+      updateInfoPanel();
+      return;
+    }
+    const [skinName, categoryDir, _name] = parts;
+    listParts(skinRoot, skinName)
+      .then((skin) => {
+        const category = categoryDir as PartCategory;
+        const list =
+          category === "Body" ? skin.body :
+          category === "Head" ? skin.head :
+          skin.wings;
+        const fName = `${currentPartName}F`;
+        const bName = `${currentPartName}B`;
+        sideFBtnAvailable = !list.some((p) => p.name === fName);
+        sideBBtnAvailable = !list.some((p) => p.name === bName);
+        updateInfoPanel();
+      })
+      .catch(() => {
+        sideFBtnAvailable = false;
+        sideBBtnAvailable = false;
+        updateInfoPanel();
+      });
+  }
+
   function showPlaceholder(info: PlaceholderInfo, isError: boolean): void {
     placeholderInfo = info;
     gridEl.style.display = "none";
     placeholderEl.style.display = "block";
     placeholderEl.style.color = isError ? "#c00" : "";
     placeholderEl.textContent = renderPlaceholderText(info);
-    metaEl.textContent = "";
     currentPartId = null;
+    currentPartName = null;
+    currentWidth = 0;
+    currentHeight = 0;
+    sideFBtnAvailable = false;
+    sideBBtnAvailable = false;
+    updateInfoPanel();
     // 未加载 / 加载中 / 加载失败时清空共享 partId，layerPanel 收到 null 后回到空态。
     if (sessionStore.getState().currentPartId !== null) {
       sessionStore.setState({ currentPartId: null });
@@ -147,8 +241,12 @@ export function mountEditorCanvas(
     gridEl.style.display = "";
     placeholderEl.style.display = "none";
     placeholderInfo = { kind: "none" };
-    metaEl.textContent = `${localizePartName(partName)} ${result.width}×${result.height}`;
+    currentPartName = partName;
+    currentWidth = result.width;
+    currentHeight = result.height;
     currentPartId = result.partId;
+    updateInfoPanel();
+    refreshMirrorAvailability();
     // 写入共享 partId，layerPanel 据此拉取图层快照。
     sessionStore.setState({ currentPartId: result.partId });
     // 切换部件时按 stage 容器尺寸自动选择"贴边铺满"的 zoom，
@@ -420,6 +518,134 @@ export function mountEditorCanvas(
     applyZoom();
   });
 
+  resizeBtn.addEventListener("click", () => {
+    if (!currentPartId || !currentPartName) return;
+    void promptResize();
+  });
+
+  function attachSideBtn(btn: HTMLButtonElement, side: "F" | "B", availableRef: () => boolean): void {
+    btn.addEventListener("click", () => {
+      if (!currentPartId || !currentPartName || !availableRef()) return;
+      const parts = currentPartId.split("::");
+      if (parts.length !== 3) return;
+      const [skinName, categoryDir, _name] = parts;
+      const category = categoryDir as PartCategory;
+      const partName = currentPartName;
+      btn.disabled = true;
+      createSidePart(skinRoot, skinName, category, partName, side)
+        .then((r) => {
+          showToast(`✓ ${r.sidePartName}`, "info");
+          if (side === "F") sideFBtnAvailable = false;
+          else sideBBtnAvailable = false;
+          updateInfoPanel();
+          bumpPartListVersion();
+        })
+        .catch((e: ApiError) => {
+          showToast(e?.message ?? String(e), "error");
+        })
+        .finally(() => {
+          btn.disabled = false;
+        });
+    });
+  }
+  attachSideBtn(sideFBtn, "F", () => sideFBtnAvailable);
+  attachSideBtn(sideBBtn, "B", () => sideBBtnAvailable);
+
+  /// 弹窗：让用户选放大倍数（1×回原大小 / 2× / 3× / 4×）。
+  /// 提交时按 partId 反推目标 PNG 路径并调 resizePart；成功后回写本地状态并写盘。
+  function promptResize(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      if (!currentPartId || !currentPartName) {
+        resolve();
+        return;
+      }
+      const parts = currentPartId.split("::");
+      if (parts.length !== 3) {
+        resolve();
+        return;
+      }
+      const [skinName, categoryDir, partName] = parts;
+      const targetPath = `${skinRoot}/${skinName}/${categoryDir}/${partName}.png`;
+
+      const overlay = document.createElement("div");
+      overlay.className = "panel";
+      overlay.style.cssText =
+        "position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;";
+      const factors: number[] = [1, 2, 3, 4];
+      const factorBtns = factors
+        .map((f) => `<button class="btn" data-role="factor" data-f="${f}" style="flex:1;">${f}×</button>`)
+        .join("");
+      overlay.innerHTML =
+        `<div class="panel" style="background:var(--bg);padding:16px;min-width:300px;display:flex;flex-direction:column;gap:10px;">` +
+        `<div style="font-weight:600;">${t("editorCanvas.resizeTitle")}</div>` +
+        `<div style="font-size:12px;opacity:0.7;">${t("editorCanvas.resizeHint")
+          .replace("{w}", String(currentWidth))
+          .replace("{h}", String(currentHeight))}</div>` +
+        `<div style="display:flex;gap:8px;">${factorBtns}</div>` +
+        `<div style="display:flex;justify-content:flex-end;gap:8px;">` +
+        `<button class="btn" data-role="cancel"></button>` +
+        `</div></div>`;
+      document.body.appendChild(overlay);
+      const cancelBtn = overlay.querySelector<HTMLButtonElement>('[data-role="cancel"]')!;
+      cancelBtn.textContent = t("editorCanvas.resizeCancel");
+
+      const close = (): void => {
+        overlay.remove();
+        resolve();
+      };
+      cancelBtn.addEventListener("click", close);
+      overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) close();
+      });
+
+      const submit = (factor: number): void => {
+        const w = Math.round(currentWidth * factor);
+        const h = Math.round(currentHeight * factor);
+        if (w < 1 || h < 1 || w > 4096 || h > 4096) {
+          showToast(t("editorCanvas.resizeInvalid"), "error");
+          return;
+        }
+        const partId = currentPartId!;
+        overlay.querySelectorAll<HTMLButtonElement>("button").forEach((b) => { b.disabled = true; });
+        resizePart(partId, w, h, targetPath)
+          .then((r) => {
+            currentWidth = r.width;
+            currentHeight = r.height;
+            updateInfoPanel();
+            void reloadCurrent();
+            markPartClean(partId);
+            showToast(`✓ ${partName} ${r.width}×${r.height}`, "info");
+            close();
+          })
+          .catch((e: ApiError) => {
+            showToast(e?.message ?? String(e), "error");
+            overlay.querySelectorAll<HTMLButtonElement>("button").forEach((b) => { b.disabled = false; });
+          });
+      };
+
+      overlay.querySelectorAll<HTMLButtonElement>('[data-role="factor"]').forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const f = parseFloat(btn.dataset.f ?? "1");
+          if (Number.isFinite(f) && f > 0) submit(f);
+        });
+      });
+    });
+  }
+
+  /// 触发一次重新 load：把后端 session 当前像素拉回来重绘 canvas。
+  function reloadCurrent(): void {
+    if (!currentPartId) return;
+    const parts = currentPartId.split("::");
+    if (parts.length !== 3) return;
+    const [skinName, categoryDir, partName] = parts;
+    const category = categoryDir as PartCategory;
+    loadPartImage(skinRoot, skinName, category, partName)
+      .then((r) => render(r, partName))
+      .catch((e: ApiError) => {
+        showPlaceholder({ kind: "error", partName, msg: e?.message ?? String(e) }, true);
+      });
+  }
+
   // 仅在 stageEl 上注册指针监听，避免事件从 canvas 冒泡到 stageEl 触发同一次 mousedown
   // 被处理两遍。stageEl 自身覆盖整个画布 + padding 区域，pan/gradient 拖到画布外仍生效。
   // 画布 + padding 区域，pan/gradient 拖到画布外仍生效。
@@ -443,6 +669,7 @@ export function mountEditorCanvas(
   const unsubscribe = sessionStore.subscribe(onSessionChange);
   const detachInvertedBorder = attachInvertedBorder(stageEl);
   applyZoom();
+  updateInfoPanel();
   onSessionChange();
 
   // 标题徽标显示当前部件保存状态。
@@ -474,6 +701,8 @@ export function mountEditorCanvas(
     if (placeholderInfo.kind !== "none" && placeholderEl.style.display !== "none") {
       placeholderEl.textContent = renderPlaceholderText(placeholderInfo);
     }
+    // 信息侧栏 + resize 按钮文案随 lang 切换，避免用户切语言后旧字面残留。
+    updateInfoPanel();
     // lang 切换时 badge 文案需重渲染。
     lastBadgeKey = "";
     refreshBadge();

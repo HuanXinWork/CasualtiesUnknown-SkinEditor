@@ -297,6 +297,30 @@ pub fn blitWithRotation(
 }
 
 
+/// 等比/任意比例缩放 RGBA buffer（最近邻插值）。
+/// 用于"修改分辨率"按倍数放大：原图整张内容跟随像素块按 newW/oldW 与 newH/oldH 拉伸，
+/// 不引入透明边、不做平滑，保留像素风边缘。
+pub fn scaleNearest(pixels: &[u8], oldW: u32, oldH: u32, newW: u32, newH: u32) -> Vec<u8> {
+    let mut out = vec![0u8; (newW as usize) * (newH as usize) * 4];
+    if oldW == 0 || oldH == 0 || newW == 0 || newH == 0 {
+        return out;
+    }
+    if pixels.len() != (oldW as usize) * (oldH as usize) * 4 {
+        return out;
+    }
+    for ny in 0..newH {
+        // 用整数等价表达 (ny * oldH) / newH，避免浮点积累误差。
+        let sy = ((ny as u64) * (oldH as u64) / (newH as u64)) as u32;
+        for nx in 0..newW {
+            let sx = ((nx as u64) * (oldW as u64) / (newW as u64)) as u32;
+            let srcOff = ((sy * oldW + sx) as usize) * 4;
+            let dstOff = ((ny * newW + nx) as usize) * 4;
+            out[dstOff..dstOff + 4].copy_from_slice(&pixels[srcOff..srcOff + 4]);
+        }
+    }
+    out
+}
+
 /// 解码 PNG 为 RGBA 扁平 buffer。
 pub fn loadPng(path: &Path) -> Result<(u32, u32, Vec<u8>), ApiError> {
     let reader = image::ImageReader::open(path).map_err(|e| ApiError {
@@ -474,6 +498,46 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(entries, vec!["eyeFront0.png".to_string()]);
+    }
+
+    #[test]
+    fn scaleNearestDoublesByPixelBlock() {
+        // 2×2 → 4×4，每个原像素映射到 2×2 块。
+        let pixels: Vec<u8> = vec![
+            255, 0, 0, 255,   0, 255, 0, 255,
+            0, 0, 255, 255,   200, 200, 200, 255,
+        ];
+        let out = scaleNearest(&pixels, 2, 2, 4, 4);
+        assert_eq!(out.len(), 4 * 4 * 4);
+        // (0,0) 与 (1,0) 都映射到 src(0,0) 红
+        assert_eq!(&out[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&out[4..8], &[255, 0, 0, 255]);
+        // (2,0) 与 (3,0) 都映射到 src(1,0) 绿
+        assert_eq!(&out[8..12], &[0, 255, 0, 255]);
+        assert_eq!(&out[12..16], &[0, 255, 0, 255]);
+        // (0,2) 蓝、(2,2) 灰
+        let off02 = (2 * 4 + 0) * 4;
+        assert_eq!(&out[off02..off02 + 4], &[0, 0, 255, 255]);
+        let off22 = (2 * 4 + 2) * 4;
+        assert_eq!(&out[off22..off22 + 4], &[200, 200, 200, 255]);
+    }
+
+    #[test]
+    fn scaleNearestShrinksByDownsample() {
+        // 4×4 → 2×2 应得 src(0,0) src(2,0) src(0,2) src(2,2)
+        let mut pixels = vec![0u8; 4 * 4 * 4];
+        for &(x, y, c) in &[(0u32, 0u32, 11u8), (2, 0, 22), (0, 2, 33), (2, 2, 44)] {
+            let off = ((y * 4 + x) as usize) * 4;
+            pixels[off] = c;
+            pixels[off + 1] = c;
+            pixels[off + 2] = c;
+            pixels[off + 3] = 255;
+        }
+        let out = scaleNearest(&pixels, 4, 4, 2, 2);
+        assert_eq!(&out[0..4], &[11, 11, 11, 255]);
+        assert_eq!(&out[4..8], &[22, 22, 22, 255]);
+        assert_eq!(&out[8..12], &[33, 33, 33, 255]);
+        assert_eq!(&out[12..16], &[44, 44, 44, 255]);
     }
 
     #[test]

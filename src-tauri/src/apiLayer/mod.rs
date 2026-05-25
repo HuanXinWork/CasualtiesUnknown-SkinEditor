@@ -3,7 +3,7 @@
 #![allow(non_snake_case)]
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,6 +15,7 @@ use crate::assemblyTable::{
 use crate::historyManager::{self, HistoryEntry, HistoryStack, PixelDiff};
 use crate::imageOps::{self, Layer, PartEditState};
 use crate::layerSidecar;
+use crate::baseSizes;
 use crate::skinLoader::{self, ImportResult, PartCategory, Stage};
 use crate::windowManager::{self, ThemeConfig, WorkspaceLayout, WorkspaceSource};
 
@@ -100,6 +101,38 @@ pub struct AssemblyResult {
 pub struct SavePartParams {
     pub partId: String,
     pub targetPath: String,
+}
+
+/// 修改部件分辨率：以图中心为锚扩展或缩小所有图层。落盘由本接口直接覆盖磁盘 PNG。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResizePartParams {
+    pub partId: String,
+    pub width: u32,
+    pub height: u32,
+    pub targetPath: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResizePartResult {
+    pub partId: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// 创建当前部件的前侧 / 后侧独立副本：把 `<skin>/<Cat>/<name>.png` 复制为 `<skin>/<Cat>/<name>{F|B}.png`。
+/// 仅"前后共享 sprite"白名单部件允许（HandF/HandB 已是独立 PNG，跳过）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateSidePartParams {
+    pub skinRoot: String,
+    pub skinName: String,
+    pub category: PartCategory,
+    pub partName: String,
+    pub side: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateSidePartResult {
+    pub sidePartName: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -380,6 +413,8 @@ pub trait ApiLayer: Send + Sync + 'static {
     fn getFlatten(&self, params: PartIdParams) -> Result<LoadPartResult, ApiError>;
     fn getAssemblyTable(&self, params: AssemblyParams) -> Result<AssemblyResult, ApiError>;
     fn savePart(&self, params: SavePartParams) -> Result<(), ApiError>;
+    fn resizePart(&self, params: ResizePartParams) -> Result<ResizePartResult, ApiError>;
+    fn createSidePart(&self, params: CreateSidePartParams) -> Result<CreateSidePartResult, ApiError>;
     fn addLayer(&self, params: AddLayerParams) -> Result<LayersSnapshot, ApiError>;
     fn removeLayer(&self, params: RemoveLayerParams) -> Result<LayersSnapshot, ApiError>;
     fn setLayerVisibility(&self, params: LayerVisibilityParams) -> Result<LayersSnapshot, ApiError>;
@@ -497,26 +532,31 @@ impl ApiLayer for CoreApi {
         })?;
         let mut canvas = vec![0u8; (COMPOSITE_W * COMPOSITE_H * 4) as usize];
         let skinDir = PathBuf::from(&params.skinRoot).join(&params.skinName);
+        let baseSizesMap = baseSizes::load(&skinDir);
         let mut entries = buildMotionCompositeEntries(&frame, params.expressionIndex, &params.headVariant);
-        entries.sort_by_key(|e| e.zOrder);
+        entries.sort_by_key(|(e, _)| e.zOrder);
         let sessions = lockSessions(&self.sessions)?;
-        for entry in entries {
-            let key = partIdKey(&params.skinName, entry.category, &entry.partName);
-            let (partW, partH, pixels) = if let Some(session) = sessions.get(&key) {
-                (
-                    session.state.width,
-                    session.state.height,
-                    imageOps::flatten(&session.state),
-                )
-            } else {
-                let pngPath = skinDir
-                    .join(categoryDir(entry.category))
-                    .join(format!("{}.png", entry.partName));
-                match skinLoader::decodePart(&pngPath) {
-                    Ok(d) => (d.width, d.height, d.pixels),
-                    Err(_) => continue,
-                }
+        for (entry, sideHint) in entries {
+            // entry.partName 是 base 名；sideHint 来自 frame.limbs[*].name 末尾 F/B（HandF/HandB/Tail/wing 不参与）。
+            // 用户为前后共享部件单独画 sided PNG 时，sided 优先；缺失退回共享 base。
+            let basePart: &str = &entry.partName;
+            let sidedName = sideHint.and_then(|c| sidedCandidateName(basePart, c));
+            let picked = pickPartPixels(
+                &sessions,
+                &skinDir,
+                &params.skinName,
+                entry.category,
+                basePart,
+                sidedName.as_deref(),
+            );
+            let (partW, partH, pixels) = match picked {
+                Some(t) => t,
+                None => continue,
             };
+            // baseSizes.json 记录过该 part 在 resize 之前的"原始尺寸"时，按原始尺寸缩回再 blit。
+            // 没记录就保持磁盘实尺。effectiveName（sided 命中时为 sided 名）用作查表 key 优先；缺失退回 base。
+            let renderedName: &str = sidedName.as_deref().unwrap_or(basePart);
+            let (partW, partH, pixels) = applyBaseSizeFit(&baseSizesMap, entry.category, renderedName, basePart, partW, partH, pixels);
             let centerX = (COMPOSITE_W as i32) / 2 + entry.position.x;
             let centerY = (COMPOSITE_H as i32) / 2 + entry.position.y;
             imageOps::blitWithRotation(
@@ -836,6 +876,107 @@ impl ApiLayer for CoreApi {
         Ok(())
     }
 
+    fn resizePart(&self, params: ResizePartParams) -> Result<ResizePartResult, ApiError> {
+        if params.width == 0 || params.height == 0 {
+            return Err(ApiError {
+                code: "invalid_size".into(),
+                message: format!("size must be positive: {}x{}", params.width, params.height),
+            });
+        }
+        const MAX_SIDE: u32 = 4096;
+        if params.width > MAX_SIDE || params.height > MAX_SIDE {
+            return Err(ApiError {
+                code: "size_too_large".into(),
+                message: format!("size exceeds {}: {}x{}", MAX_SIDE, params.width, params.height),
+            });
+        }
+        let mut sessions = lockSessions(&self.sessions)?;
+        let session = sessions
+            .get_mut(&params.partId)
+            .ok_or_else(|| notLoaded(&params.partId))?;
+        let oldW = session.state.width;
+        let oldH = session.state.height;
+        if oldW == params.width && oldH == params.height {
+            return Ok(ResizePartResult { partId: params.partId, width: oldW, height: oldH });
+        }
+        // 所有图层逐一按目标尺寸最近邻缩放：原内容跟随像素块拉伸，零透明边。
+        for layer in &mut session.state.layers {
+            layer.pixels = imageOps::scaleNearest(&layer.pixels, oldW, oldH, params.width, params.height);
+        }
+        session.state.width = params.width;
+        session.state.height = params.height;
+        session.history.clear();
+        session.activeStroke = None;
+        // 立即落盘合成 PNG，让磁盘 PNG 与新分辨率同步。sidecar 也一并写。
+        let pixels = imageOps::flatten(&session.state);
+        let target = PathBuf::from(&params.targetPath);
+        imageOps::savePng(&target, params.width, params.height, &pixels)?;
+        let partNameOpt = target.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
+        let categoryOpt = target.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()).map(|s| s.to_string());
+        let skinDirOpt = target.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf());
+        if let (Some(skinDir), Some(catDir), Some(partName)) = (skinDirOpt.clone(), categoryOpt.clone(), partNameOpt.clone()) {
+            if let Err(e) = layerSidecar::save(&skinDir, &catDir, &partName, &session.state, session.activeLayerIndex) {
+                eprintln!("[resizePart] sidecar 写盘失败：{}", e.message);
+            }
+        }
+        // 首次 resize 该 part 时记下 resize 之前的 (oldW,oldH) 作为"原始尺寸"；
+        // 后续再 resize 不更新该字段——让合成预览始终缩回最早的原始尺寸。
+        if let (Some(skinDir), Some(catDir), Some(partName)) = (skinDirOpt, categoryOpt, partNameOpt) {
+            let mut sizes = baseSizes::load(&skinDir);
+            let key = baseSizes::keyFor(&catDir, &partName);
+            if sizes.get(&key).is_none() {
+                sizes.put(key, oldW, oldH);
+                if let Err(e) = baseSizes::save(&skinDir, &sizes) {
+                    eprintln!("[resizePart] baseSizes 写盘失败：{}", e.message);
+                }
+            }
+        }
+        Ok(ResizePartResult { partId: params.partId, width: params.width, height: params.height })
+    }
+
+    fn createSidePart(&self, params: CreateSidePartParams) -> Result<CreateSidePartResult, ApiError> {
+        if params.side != "F" && params.side != "B" {
+            return Err(ApiError {
+                code: "invalid_side".into(),
+                message: format!("side must be \"F\" or \"B\", got: {}", params.side),
+            });
+        }
+        if !isSideSplittablePartName(&params.partName) {
+            return Err(ApiError {
+                code: "not_splittable".into(),
+                message: format!("part {} is not in side-split whitelist", params.partName),
+            });
+        }
+        if endsWithSideSuffix(&params.partName) {
+            return Err(ApiError {
+                code: "already_sided".into(),
+                message: format!("part {} already has a side suffix", params.partName),
+            });
+        }
+        let skinDir = PathBuf::from(&params.skinRoot).join(&params.skinName);
+        let catDir = skinDir.join(categoryDir(params.category));
+        let src = catDir.join(format!("{}.png", params.partName));
+        if !src.exists() {
+            return Err(ApiError {
+                code: "source_missing".into(),
+                message: format!("source PNG not found: {}", src.display()),
+            });
+        }
+        let sideName = format!("{}{}", params.partName, params.side);
+        let dst = catDir.join(format!("{}.png", sideName));
+        if dst.exists() {
+            return Err(ApiError {
+                code: "side_part_exists".into(),
+                message: format!("side PNG already exists: {}", dst.display()),
+            });
+        }
+        std::fs::copy(&src, &dst).map_err(|e| ApiError {
+            code: "io_failed".into(),
+            message: format!("copy {} -> {} failed: {}", src.display(), dst.display(), e),
+        })?;
+        Ok(CreateSidePartResult { sidePartName: sideName })
+    }
+
     fn addLayer(&self, params: AddLayerParams) -> Result<LayersSnapshot, ApiError> {
         let mut sessions = lockSessions(&self.sessions)?;
         let session = sessions
@@ -973,6 +1114,8 @@ impl ApiLayer for CoreApi {
     fn getCompositeImage(&self, params: CompositeParams) -> Result<CompositeResult, ApiError> {
         let assemblyPath = PathBuf::from(&params.skinRoot).join("assembly.json");
         let (table, _source) = assemblyTable::loadAssembly(&assemblyPath);
+        let skinDir = PathBuf::from(&params.skinRoot).join(&params.skinName);
+        let baseSizesMap = baseSizes::load(&skinDir);
         // 单皮肤的 wings.json 是 assembly 的局部覆盖：4 张翼的 (x,y,rotation,zOrder)
         // 由该文件给出，文件不存在时回落到装配表默认值。
         let wingsConfig = self
@@ -1069,23 +1212,25 @@ impl ApiLayer for CoreApi {
         let lowerRAnchor = upperWingPose("wingUR");
 
         for entry in entries {
-            let key = partIdKey(&params.skinName, entry.category, &entry.partName);
-            let (partW, partH, pixels) = if let Some(session) = sessions.get(&key) {
-                (
-                    session.state.width,
-                    session.state.height,
-                    imageOps::flatten(&session.state),
-                )
-            } else {
-                let pngPath = PathBuf::from(&params.skinRoot)
-                    .join(&params.skinName)
-                    .join(categoryDir(entry.category))
-                    .join(format!("{}.png", entry.partName));
-                match skinLoader::decodePart(&pngPath) {
-                    Ok(d) => (d.width, d.height, d.pixels),
-                    Err(_) => continue,
-                }
+            // assembly entry.partName 是 base 名；同 base 在 entries 里出现两次（前后两 limb），
+            // 按 entry.zOrder 符号决定取 F / B sided 候选：F 大 / B 小（与 defaultAssembly 注释一致）。
+            let basePart: &str = &entry.partName;
+            let sidedName = sidedCandidateName(basePart, if entry.zOrder >= 0 { 'F' } else { 'B' });
+            let picked = pickPartPixels(
+                &sessions,
+                &PathBuf::from(&params.skinRoot).join(&params.skinName),
+                &params.skinName,
+                entry.category,
+                basePart,
+                sidedName.as_deref(),
+            );
+            let (partW, partH, pixels) = match picked {
+                Some(t) => t,
+                None => continue,
             };
+            // baseSizes.json 记录过该 part 在 resize 之前的"原始尺寸"时按其缩回。
+            let renderedName: &str = sidedName.as_deref().unwrap_or(basePart);
+            let (partW, partH, pixels) = applyBaseSizeFit(&baseSizesMap, entry.category, renderedName, basePart, partW, partH, pixels);
             // override 优先；否则用装配表 entry 自身字段；翼分类还要叠 wings.json。
             let ovr = overrides.get(&(entry.partName.clone(), entry.category));
             let mut pos;
@@ -1277,6 +1422,78 @@ fn partIdKey(skinName: &str, category: PartCategory, partName: &str) -> String {
     format!("{}::{}::{}", skinName, categoryDir(category), partName)
 }
 
+/// 用户为前后共享部件单独画 sided PNG 时，合成层据此查 `<base><side>` 候选名。
+/// 仅"前后共享 sprite"5 类支持：UpArm / DownArm / Thigh / Crus / Foot；其它部件返回 None 直接用 base。
+fn sidedCandidateName(basePart: &str, side: char) -> Option<String> {
+    if side != 'F' && side != 'B' { return None; }
+    match basePart {
+        "experimentUpArm" | "experimentDownArm"
+        | "experimentThigh" | "experimentCrus" | "experimentFoot" => {
+            Some(format!("{}{}", basePart, side))
+        }
+        _ => None,
+    }
+}
+
+/// 合成层取部件像素：sided 优先（session → 磁盘），缺失退回 base（session → 磁盘）。
+/// 同时是 motion 与 assembly 两条路径共享的 sprite 加载逻辑，保持渲染前的取值一致。
+fn pickPartPixels(
+    sessions: &std::sync::MutexGuard<'_, std::collections::HashMap<String, PartSession>>,
+    skinDir: &Path,
+    skinName: &str,
+    category: PartCategory,
+    basePart: &str,
+    sided: Option<&str>,
+) -> Option<(u32, u32, Vec<u8>)> {
+    if let Some(s) = sided {
+        let key = partIdKey(skinName, category, s);
+        if let Some(session) = sessions.get(&key) {
+            return Some((session.state.width, session.state.height, imageOps::flatten(&session.state)));
+        }
+        let png = skinDir.join(categoryDir(category)).join(format!("{}.png", s));
+        if png.exists() {
+            if let Ok(d) = skinLoader::decodePart(&png) {
+                return Some((d.width, d.height, d.pixels));
+            }
+        }
+    }
+    let key = partIdKey(skinName, category, basePart);
+    if let Some(session) = sessions.get(&key) {
+        return Some((session.state.width, session.state.height, imageOps::flatten(&session.state)));
+    }
+    let png = skinDir.join(categoryDir(category)).join(format!("{}.png", basePart));
+    skinLoader::decodePart(&png).ok().map(|d| (d.width, d.height, d.pixels))
+}
+
+/// baseSizes.json 记录过该 part（按 sided 名优先，否则 base）原始尺寸时按其 nearest-neighbor 缩回。
+/// 没记录或尺寸已一致直接返回原 buffer，对未 resize 过的 skin 零影响。
+fn applyBaseSizeFit(
+    map: &baseSizes::BaseSizes,
+    category: PartCategory,
+    primaryName: &str,
+    fallbackName: &str,
+    w: u32,
+    h: u32,
+    pixels: Vec<u8>,
+) -> (u32, u32, Vec<u8>) {
+    let catDir = categoryDir(category);
+    let primaryKey = baseSizes::keyFor(catDir, primaryName);
+    let target = map.get(&primaryKey).or_else(|| {
+        if primaryName != fallbackName {
+            map.get(&baseSizes::keyFor(catDir, fallbackName))
+        } else {
+            None
+        }
+    });
+    match target {
+        Some((bw, bh)) if bw != w || bh != h => {
+            let scaled = imageOps::scaleNearest(&pixels, w, h, bw, bh);
+            (bw, bh, scaled)
+        }
+        _ => (w, h, pixels),
+    }
+}
+
 /// 把 imageOps 返回的 PixelDiff 影响矩形并入正在进行的笔画累计 rect。
 /// 空 diff（width=0/height=0）跳过，避免污染累计区。
 fn mergeStrokeRect(stroke: &mut ActiveStroke, diff: &PixelDiff) {
@@ -1324,6 +1541,21 @@ fn categoryDir(category: PartCategory) -> &'static str {
         PartCategory::Head => "Head",
         PartCategory::Wings => "Wings",
     }
+}
+
+/// 判断 part 名是否在"前后共享 sprite"白名单——这些部件可以拆出 F/B 独立副本。
+/// HandF/HandB 已是各自独立的磁盘 PNG，不在此列表内（自身就是 sided）。
+fn isSideSplittablePartName(partName: &str) -> bool {
+    const SHARED_SUFFIXES: &[&str] = &[
+        "UpTorso", "DownTorso", "Head", "UpArm", "DownArm",
+        "Thigh", "Crus", "Foot", "Tail",
+    ];
+    SHARED_SUFFIXES.iter().any(|s| partName.ends_with(s))
+}
+
+/// 判断 part 名末尾是否已有 F / B 后缀，用于拒绝在 sided 名字上再拆分。
+fn endsWithSideSuffix(partName: &str) -> bool {
+    partName.ends_with('F') || partName.ends_with('B')
 }
 
 fn notLoaded(partId: &str) -> ApiError {
@@ -1423,6 +1655,9 @@ fn motionHeadPartName(head_variant: &Option<HeadVariant>, captured: &str) -> Str
     }
 }
 
+/// 返回 Body 类 limb 在磁盘上的共享 base sprite 名。前后侧共享同一图。
+/// sided（experimentFootF / experimentFootB 等）由合成层 `sidedCandidate` 在 zOrder/limb 名维度上推断，
+/// 与本函数解耦，避免污染 AssemblyEntry / motion 既有契约。
 fn motionBodyPartName(limbName: &str) -> Option<&'static str> {
     match limbName {
         "UpTorso" => Some("experimentUpTorso"),
@@ -1463,18 +1698,20 @@ fn buildMotionCompositeEntries(
     frame: &MotionCaptureFrame,
     expression_index: u8,
     head_variant: &Option<HeadVariant>,
-) -> Vec<AssemblyEntry> {
-    let mut out = Vec::new();
+) -> Vec<(AssemblyEntry, Option<char>)> {
+    let mut out: Vec<(AssemblyEntry, Option<char>)> = Vec::new();
     let mut headPose: Option<(AssemblyPosition, f32)> = None;
     for limb in &frame.limbs {
         if !limb.visible {
             continue;
         }
+        // 末尾 F/B 字符提示当前 limb 是前侧还是后侧；其它命名（Head / Tail / wing*）返回 None。
+        let sideHint: Option<char> = limb.name.chars().last().filter(|c| *c == 'F' || *c == 'B');
         if limb.name == "Head" {
             let pos = motionCompositePosition(limb);
             let partName = motionHeadPartName(head_variant, &limb.spriteName);
             headPose = Some((pos, limb.rotZ));
-            out.push(AssemblyEntry {
+            out.push((AssemblyEntry {
                 partName,
                 category: PartCategory::Head,
                 position: pos,
@@ -1482,12 +1719,12 @@ fn buildMotionCompositeEntries(
                 flipX: false,
                 rotation: limb.rotZ,
                 variants: None,
-            });
+            }, None));
             continue;
         }
         // 翅膀：motionRecorder 抓取的 4 张翼名 wingUL/wingUR/wingDL/wingDR，partName 与 PNG 同名直接渲染。
         if matches!(limb.name.as_str(), "wingUL" | "wingUR" | "wingDL" | "wingDR") {
-            out.push(AssemblyEntry {
+            out.push((AssemblyEntry {
                 partName: limb.name.clone(),
                 category: PartCategory::Wings,
                 position: motionCompositePosition(limb),
@@ -1495,13 +1732,13 @@ fn buildMotionCompositeEntries(
                 flipX: false,
                 rotation: limb.rotZ,
                 variants: None,
-            });
+            }, None));
             continue;
         }
         let Some(partName) = motionBodyPartName(&limb.name) else {
             continue;
         };
-        out.push(AssemblyEntry {
+        out.push((AssemblyEntry {
             partName: partName.to_string(),
             category: PartCategory::Body,
             position: motionCompositePosition(limb),
@@ -1509,10 +1746,10 @@ fn buildMotionCompositeEntries(
             flipX: false,
             rotation: limb.rotZ,
             variants: None,
-        });
+        }, sideHint));
     }
     if let Some((pos, rot)) = headPose {
-        out.push(AssemblyEntry {
+        out.push((AssemblyEntry {
             partName: motionEyePartName(i32::from(expression_index)).to_string(),
             category: PartCategory::Head,
             position: pos,
@@ -1520,7 +1757,7 @@ fn buildMotionCompositeEntries(
             flipX: false,
             rotation: rot,
             variants: None,
-        });
+        }, None));
     }
     // 兼容旧捕捉：没有 Tail sample 时仍回退到静态尾巴。
     let hasTail = frame
@@ -1529,7 +1766,7 @@ fn buildMotionCompositeEntries(
         .any(|limb| limb.name == "Tail" || limb.name == "experimentTail");
     if !hasTail {
         if let Some(tail) = defaultAssemblyTailEntry() {
-            out.push(tail);
+            out.push((tail, None));
         }
     }
     out
@@ -1707,7 +1944,8 @@ mod tests {
         let entries = buildMotionCompositeEntries(&frame, 0, &None);
         let tail = entries
             .iter()
-            .find(|entry| entry.partName == "experimentTail")
+            .find(|(entry, _)| entry.partName == "experimentTail")
+            .map(|(entry, _)| entry)
             .expect("tail entry");
 
         assert_eq!(tail.position.x, 2);
@@ -1743,9 +1981,9 @@ mod tests {
         };
 
         let entries = buildMotionCompositeEntries(&frame, 0, &Some(HeadVariant::Mouth));
-        assert!(entries.iter().any(|entry| entry.partName == "experimentHeadBackMouth"));
-        assert!(entries.iter().any(|entry| entry.partName == "experimentEyeOpen"));
-        assert!(!entries.iter().any(|entry| entry.partName == "experimentEyeHappy"));
+        assert!(entries.iter().any(|(entry, _)| entry.partName == "experimentHeadBackMouth"));
+        assert!(entries.iter().any(|(entry, _)| entry.partName == "experimentEyeOpen"));
+        assert!(!entries.iter().any(|(entry, _)| entry.partName == "experimentEyeHappy"));
     }
 
     #[test]

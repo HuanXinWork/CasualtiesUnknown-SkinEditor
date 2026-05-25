@@ -47,6 +47,8 @@ export interface SessionState {
   layerSnapshotVersion: number;
   /// wingDebugPanel 改 override 后递增；previewCanvas 监听变化重拉合成预览。
   assemblyOverrideVersion: number;
+  /// 创建 F/B 前后侧副本等改动 part 列表后递增；partPanel 监听后重拉 listParts。
+  partListVersion: number;
   /// 历史环形缓冲，最多 50 条。
   history: HistoryRecord[];
   /// previewCanvas 合成预览的过滤参数。
@@ -106,6 +108,7 @@ function buildInitialState(): SessionState {
     lastAppliedDiff: null,
     layerSnapshotVersion: 0,
     assemblyOverrideVersion: 0,
+    partListVersion: 0,
     history: [],
     orientation: "front",
     expressionIndex: 0,
@@ -158,4 +161,10 @@ export function isPartDirty(partId: string | null): boolean {
 export function bumpAssemblyOverrideVersion(): void {
   const v = sessionStore.getState().assemblyOverrideVersion ?? 0;
   sessionStore.setState({ assemblyOverrideVersion: v + 1 });
+}
+
+/// 部件列表发生增删（如创建 F/B 前后侧副本）后调一次，让 partPanel 重拉 listParts。
+export function bumpPartListVersion(): void {
+  const v = sessionStore.getState().partListVersion ?? 0;
+  sessionStore.setState({ partListVersion: v + 1 });
 }

@@ -17,7 +17,8 @@ use crate::apiLayer::{
     ExportSkinPackResult, GradientParams, ImportSkinPackParams, LayerOpacityParams, LayerVisibilityParams,
     LayersSnapshot, LoadPartParams, LoadPartResult, MotionCaptureListParams, MotionCaptureMeta,
     MotionCaptureResult, MotionCompositeParams, MotionCompositeResult, PartIdParams, PartsParams,
-    RemoveLayerParams, ReorderLayersParams, SavePartParams, SaveWorkspaceParams,
+    RemoveLayerParams, ReorderLayersParams, ResizePartParams, ResizePartResult, SavePartParams, SaveWorkspaceParams,
+    CreateSidePartParams, CreateSidePartResult,
     SetActiveLayerParams, SetAssemblyOverrideParams, SkinsParams, SaveWingsConfigParams,
     WingsConfig, WingsConfigPathParams, WorkspacePathParams,
     WorkspaceResult,
@@ -50,6 +51,8 @@ pub async fn serve(config: HttpConfig, api: SharedApi) {
         .route("/api/flatten", get(handleGetFlatten))
         .route("/api/assembly", get(handleAssembly))
         .route("/api/savePart", post(handleSavePart))
+        .route("/api/resizePart", post(handleResizePart))
+        .route("/api/createSidePart", post(handleCreateSidePart))
         .route("/api/layer/add", post(handleAddLayer))
         .route("/api/layer/remove", post(handleRemoveLayer))
         .route("/api/layer/visibility", post(handleSetLayerVisibility))
@@ -258,6 +261,22 @@ async fn handleSavePart(
     Json(params): Json<SavePartParams>,
 ) -> axum::response::Response {
     let result: Result<(), ApiError> = api.savePart(params);
+    intoResponse(result)
+}
+
+async fn handleResizePart(
+    State(api): State<SharedApi>,
+    Json(params): Json<ResizePartParams>,
+) -> axum::response::Response {
+    let result: Result<ResizePartResult, ApiError> = api.resizePart(params);
+    intoResponse(result)
+}
+
+async fn handleCreateSidePart(
+    State(api): State<SharedApi>,
+    Json(params): Json<CreateSidePartParams>,
+) -> axum::response::Response {
+    let result: Result<CreateSidePartResult, ApiError> = api.createSidePart(params);
     intoResponse(result)
 }
 

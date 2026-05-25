@@ -74,6 +74,12 @@ impl HistoryStack {
         self.undoStack.retain(|e| e.layerId != layerId);
         self.redoStack.retain(|e| e.layerId != layerId);
     }
+
+    /// 整体清空 undo/redo 栈，用于尺寸变更等让旧 diff 无法对齐的全局操作。
+    pub fn clear(&mut self) {
+        self.undoStack.clear();
+        self.redoStack.clear();
+    }
 }
 
 fn applyRect(pixels: &mut [u8], width: u32, diff: &PixelDiff, src: &[u8]) {

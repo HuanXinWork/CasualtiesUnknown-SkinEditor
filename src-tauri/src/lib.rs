@@ -9,6 +9,7 @@ pub mod historyManager;
 pub mod windowManager;
 pub mod layerSidecar;
 pub mod imageStore;
+pub mod baseSizes;
 pub mod apiLayer;
 mod httpServer;
 mod tauriCommands;
@@ -124,6 +125,8 @@ pub fn runDesktop() {
             tauriCommands::api_getFlatten,
             tauriCommands::api_getAssemblyTable,
             tauriCommands::api_savePart,
+            tauriCommands::api_resizePart,
+            tauriCommands::api_createSidePart,
             tauriCommands::api_addLayer,
             tauriCommands::api_removeLayer,
             tauriCommands::api_setLayerVisibility,

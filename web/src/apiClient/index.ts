@@ -215,6 +215,49 @@ export function savePart(partId: string, targetPath: string): Promise<void> {
   return httpPost<void>("/api/savePart", { partId, targetPath });
 }
 
+export interface ResizePartResult {
+  partId: string;
+  width: number;
+  height: number;
+}
+
+/// 修改部件分辨率：以图中心为锚扩展或缩小所有图层并落盘覆盖磁盘 PNG。
+export function resizePart(
+  partId: string,
+  width: number,
+  height: number,
+  targetPath: string,
+): Promise<ResizePartResult> {
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<ResizePartResult>("api_resizePart", {
+      params: { partId, width, height, targetPath },
+    });
+  }
+  return httpPost<ResizePartResult>("/api/resizePart", { partId, width, height, targetPath });
+}
+
+export interface CreateSidePartResult {
+  sidePartName: string;
+}
+
+/// 复制当前部件 PNG 为 F/B 后缀的前/后侧独立副本。仅"前后共享 sprite"白名单部件允许（后端限制）。
+export function createSidePart(
+  skinRoot: string,
+  skinName: string,
+  category: PartCategory,
+  partName: string,
+  side: "F" | "B",
+): Promise<CreateSidePartResult> {
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<CreateSidePartResult>("api_createSidePart", {
+      params: { skinRoot, skinName, category, partName, side },
+    });
+  }
+  return httpPost<CreateSidePartResult>("/api/createSidePart", {
+    skinRoot, skinName, category, partName, side,
+  });
+}
+
 // 线性渐变。在当前 active 图层上沿 (x0,y0)→(x1,y1) 画主色到透明的渐变。
 export interface GradientParams {
   partId: string;

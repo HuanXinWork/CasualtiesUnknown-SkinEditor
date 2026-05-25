@@ -128,6 +128,8 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
       .catch((e: ApiError) => showError(e.message ?? String(e)));
   }
 
+  let lastPartListVersion = sessionStore.getState().partListVersion ?? 0;
+
   const unsubscribe = sessionStore.subscribe((s) => {
     if (
       s.currentSkinName !== lastSkinName ||
@@ -139,6 +141,12 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
       lastSelectedCat = s.selectedCategory;
       renderSkins();
       renderParts();
+    }
+    const ver = s.partListVersion ?? 0;
+    if (ver !== lastPartListVersion) {
+      lastPartListVersion = ver;
+      // 创建 F/B 前后侧副本等改动 part 列表后重新拉当前皮肤的 listParts。
+      if (s.currentSkinName) onSelectSkin(s.currentSkinName);
     }
   });
 

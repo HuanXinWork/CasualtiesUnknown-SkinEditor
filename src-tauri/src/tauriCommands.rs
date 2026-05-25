@@ -13,7 +13,8 @@ use crate::apiLayer::{
     ExportSkinPackResult, GradientParams, ImportSkinPackParams, LayerOpacityParams, LayerVisibilityParams,
     LayersSnapshot, LoadPartParams, LoadPartResult, MotionCaptureListParams, MotionCaptureMeta,
     MotionCaptureResult, MotionCompositeParams, MotionCompositeResult, PartIdParams, PartsParams,
-    RemoveLayerParams, ReorderLayersParams, SavePartParams, SaveWorkspaceParams,
+    RemoveLayerParams, ReorderLayersParams, ResizePartParams, ResizePartResult, SavePartParams, SaveWorkspaceParams,
+    CreateSidePartParams, CreateSidePartResult,
     SetActiveLayerParams, SetAssemblyOverrideParams, SkinsParams, SaveWingsConfigParams,
     WingsConfig, WingsConfigPathParams, WorkspacePathParams,
     WorkspaceResult,
@@ -132,6 +133,22 @@ pub fn api_getAssemblyTable(
 #[tauri::command]
 pub fn api_savePart(api: State<'_, SharedApi>, params: SavePartParams) -> Result<(), String> {
     api.savePart(params).map_err(toErrString)
+}
+
+#[tauri::command]
+pub fn api_resizePart(
+    api: State<'_, SharedApi>,
+    params: ResizePartParams,
+) -> Result<ResizePartResult, String> {
+    api.resizePart(params).map_err(toErrString)
+}
+
+#[tauri::command]
+pub fn api_createSidePart(
+    api: State<'_, SharedApi>,
+    params: CreateSidePartParams,
+) -> Result<CreateSidePartResult, String> {
+    api.createSidePart(params).map_err(toErrString)
 }
 
 #[tauri::command]
