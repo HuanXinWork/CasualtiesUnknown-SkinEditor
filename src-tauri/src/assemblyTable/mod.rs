@@ -102,6 +102,15 @@ pub fn defaultAssembly() -> AssemblyTable {
         rotation: rot,
         variants: None,
     };
+    let wing = |name: &str, x: i32, y: i32, rot: f32, zOrder: i32, flipX: bool| AssemblyEntry {
+        partName: name.to_string(),
+        category: PartCategory::Wings,
+        position: AssemblyPosition { x, y },
+        zOrder,
+        flipX,
+        rotation: rot,
+        variants: None,
+    };
     // 头部走 9 个互斥变体 entry：所有变体公用同一个位置 / 旋转 / zOrder，仅靠
     // headVariant 字段在合成时互斥过滤。
     let headVar = |name: &str, variant: HeadVariant| AssemblyEntry {
@@ -148,6 +157,16 @@ pub fn defaultAssembly() -> AssemblyTable {
             body("experimentUpArm",    3,  -8, 324.0, 150),
             body("experimentDownArm",  6,  -1,  58.0, 160),
             body("experimentHandF",   12,   2,  70.0, 170),
+            // 翅膀 4 片（左上 / 左下 / 右上 / 右下）。
+            // 翼根 = PNG 图像中心 (16,16)，pivot=(0.5,0.5)。
+            // 默认值取自 huanxin 实测：上翼朝身后偏上（314°/318°），下翼相对上翼末端共线（rotation=0）。
+            // 下翼 (x,y) 是相对上翼根的局部偏移；下翼 rotation 是相对上翼末端的偏移。
+            // 单皮肤可在 <skin>/wings.json 覆盖这套默认值。
+            // zOrder：UR/UL=5、DR/DL=4 均 < UpTorso(20) 让翼显示在躯干背后。
+            wing("wingUL", -2, -8, 314.0, 5, false),
+            wing("wingDL", -1, -10, 0.0, 4, false),
+            wing("wingUR", -2, -9, 318.0, 5, false),
+            wing("wingDR", 0, -12, 0.0, 4, false),
             // 头部 9 个互斥变体。默认指向 experimentHeadBack（与游戏
             // FacialExpression.defaultHead 一致），experimentHead 在游戏装配里实际未引用。
             headVar("experimentHeadBack",                HeadVariant::Default),

@@ -203,6 +203,7 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
         .then((ws) => saveWorkspace(workspacePath, {
           ...ws.layout,
           settings: {
+            ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false }),
             showMotionDebugPanel: checked,
           },
         }, ws.theme))
@@ -213,6 +214,34 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
     debugRow.appendChild(debugCb);
     debugRow.appendChild(debugLabel);
     popover.appendChild(debugRow);
+
+    // 翼装配调试面板开关：默认关闭，勾选后右栏显示翅膀调试面板。
+    const wingRow = document.createElement("label");
+    wingRow.style.cssText = "padding:8px 12px;display:flex;gap:8px;align-items:center;cursor:pointer;";
+    const wingCb = document.createElement("input");
+    wingCb.type = "checkbox";
+    wingCb.checked = sessionStore.getState().showWingDebugPanel;
+    const wingLabel = document.createElement("span");
+    wingLabel.style.cssText = "flex:1;";
+    wingLabel.textContent = t("settings.showWingDebugPanel");
+    wingCb.addEventListener("change", () => {
+      const checked = wingCb.checked;
+      sessionStore.setState({ showWingDebugPanel: checked });
+      void getWorkspace(workspacePath)
+        .then((ws) => saveWorkspace(workspacePath, {
+          ...ws.layout,
+          settings: {
+            ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false }),
+            showWingDebugPanel: checked,
+          },
+        }, ws.theme))
+        .catch((e) => {
+          console.warn(`[settingsPanel] persist showWingDebugPanel failed: ${String(e)}`);
+        });
+    });
+    wingRow.appendChild(wingCb);
+    wingRow.appendChild(wingLabel);
+    popover.appendChild(wingRow);
 
     const header = document.createElement("div");
     header.style.cssText = "padding:6px 12px;font-weight:600;border-top:1px solid rgba(0,0,0,var(--border-opacity));border-bottom:1px solid rgba(0,0,0,var(--border-opacity));margin:4px 0;";

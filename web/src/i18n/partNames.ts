@@ -30,6 +30,11 @@ const ZH_MAP: Record<string, string> = {
   crus: "小腿",
   foot: "脚",
   tail: "尾巴",
+  // ---- Wings ----
+  wingUL: "翼·左上",
+  wingUR: "翼·右上",
+  wingDL: "翼·左下",
+  wingDR: "翼·右下",
   // ---- Head 主体 ----
   head: "头（默认）",
   headBack: "头（背面）",

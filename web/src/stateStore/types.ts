@@ -1,7 +1,7 @@
 // 与 Rust 后端 serde 序列化字段严格对齐的共享数据模型。
 // 字段名、可选性、字面量联合必须与对应 Rust 结构体一致。
 
-export type PartCategory = "Body" | "Head";
+export type PartCategory = "Body" | "Head" | "Wings";
 
 export type Orientation = "front" | "back";
 
@@ -13,6 +13,7 @@ export interface Skin {
   name: string;
   body: PartInfo[];
   head: PartInfo[];
+  wings: PartInfo[];
 }
 
 export interface PartInfo {
@@ -114,6 +115,7 @@ export interface WorkspaceLayout {
 
 export interface WorkspaceSettings {
   showMotionDebugPanel: boolean;
+  showWingDebugPanel: boolean;
 }
 
 export interface ThemeConfig {

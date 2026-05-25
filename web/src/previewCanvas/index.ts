@@ -14,6 +14,7 @@ import {
   type MotionCaptureResult,
 } from "../apiClient";
 import { sessionStore, type SessionState } from "../stateStore";
+import type { PartCategory } from "../stateStore/types";
 import { subscribeLang, t } from "../i18n";
 import { localizePartName } from "../i18n/partNames";
 import { ICON_REFRESH } from "../toolPanel/toolIcons";
@@ -157,7 +158,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
   let dragStartOffX = 0;
   let dragStartOffY = 0;
   let dragPartName = "";
-  let dragPartCategory: "Body" | "Head" = "Body";
+  let dragPartCategory: PartCategory = "Body";
   let dragStartPartX = 0;
   let dragStartPartY = 0;
   const partOverridesCache = new Map<string, { x: number; y: number }>();
@@ -170,6 +171,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
   let stalePending = false;
   let lastLayerSnapshotVersion: number = sessionStore.getState().layerSnapshotVersion ?? 0;
   let lastDiffRef: SessionState["lastAppliedDiff"] = sessionStore.getState().lastAppliedDiff;
+  let lastAssemblyOverrideVersion: number = sessionStore.getState().assemblyOverrideVersion ?? 0;
   let pendingAssemblyKey = 0;
   let pendingMotionKey = 0;
   let placeholderInfo: PlaceholderInfo = { kind: "notSelectedSkin" };
@@ -568,6 +570,8 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     const diffChanged = state.lastAppliedDiff !== lastDiffRef;
     const layerVer = state.layerSnapshotVersion ?? 0;
     const layerChanged = layerVer !== lastLayerSnapshotVersion;
+    const overrideVer = state.assemblyOverrideVersion ?? 0;
+    const overrideChanged = overrideVer !== lastAssemblyOverrideVersion;
 
     if (skinChanged || expressionChanged || headVariantChanged || selectedChanged || motionDebugChanged) {
       lastSkinName = state.currentSkinName;
@@ -581,6 +585,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
 
     lastDiffRef = state.lastAppliedDiff;
     lastLayerSnapshotVersion = layerVer;
+    lastAssemblyOverrideVersion = overrideVer;
     if (previewMode === "motion") {
       if (skinChanged || expressionChanged || headVariantChanged) {
         stalePending = false;
@@ -599,7 +604,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
       updateRefreshBtn();
       return;
     }
-    if (!(skinChanged || expressionChanged || headVariantChanged || diffChanged || layerChanged)) return;
+    if (!(skinChanged || expressionChanged || headVariantChanged || diffChanged || layerChanged || overrideChanged)) return;
     if (!livePreviewEnabled && !skinChanged) {
       stalePending = true;
       updateRefreshBtn();

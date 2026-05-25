@@ -139,6 +139,8 @@ pub fn runDesktop() {
             tauriCommands::api_importSkinPack,
             tauriCommands::api_closeSubwindow,
             tauriCommands::api_setAssemblyOverride,
+            tauriCommands::api_loadWingsConfig,
+            tauriCommands::api_saveWingsConfig,
             tauriCommands::api_pollCloseRequest,
             tauriCommands::api_confirmCloseMain,
             tauriCommands::api_storeImage,

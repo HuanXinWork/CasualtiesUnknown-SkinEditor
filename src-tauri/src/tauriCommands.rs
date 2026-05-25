@@ -14,7 +14,8 @@ use crate::apiLayer::{
     LayersSnapshot, LoadPartParams, LoadPartResult, MotionCaptureListParams, MotionCaptureMeta,
     MotionCaptureResult, MotionCompositeParams, MotionCompositeResult, PartIdParams, PartsParams,
     RemoveLayerParams, ReorderLayersParams, SavePartParams, SaveWorkspaceParams,
-    SetActiveLayerParams, SetAssemblyOverrideParams, SkinsParams, WorkspacePathParams,
+    SetActiveLayerParams, SetAssemblyOverrideParams, SkinsParams, SaveWingsConfigParams,
+    WingsConfig, WingsConfigPathParams, WorkspacePathParams,
     WorkspaceResult,
 };
 use crate::historyManager::PixelDiff;
@@ -252,6 +253,24 @@ pub fn api_setAssemblyOverride(
     params: SetAssemblyOverrideParams,
 ) -> Result<(), String> {
     api.setAssemblyOverride(params).map_err(toErrString)
+}
+
+/// 加载单皮肤翼装配配置 wings.json；不存在时回落默认值。
+#[tauri::command]
+pub fn api_loadWingsConfig(
+    api: State<'_, SharedApi>,
+    params: WingsConfigPathParams,
+) -> Result<WingsConfig, String> {
+    api.loadWingsConfig(params).map_err(toErrString)
+}
+
+/// 保存单皮肤翼装配配置到 <skin>/wings.json。
+#[tauri::command]
+pub fn api_saveWingsConfig(
+    api: State<'_, SharedApi>,
+    params: SaveWingsConfigParams,
+) -> Result<(), String> {
+    api.saveWingsConfig(params).map_err(toErrString)
 }
 
 /// 关闭拦截轮询。前端按 ~250ms 间隔读，返回 true 表示用户点过 X 触发了

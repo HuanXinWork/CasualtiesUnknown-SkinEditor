@@ -74,6 +74,9 @@ pub struct WorkspaceLayout {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceSettings {
     pub showMotionDebugPanel: bool,
+    /// 翼装配调试面板显隐；默认关闭。
+    #[serde(default)]
+    pub showWingDebugPanel: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +129,7 @@ pub fn defaultTheme() -> ThemeConfig {
 pub fn defaultWorkspaceSettings() -> WorkspaceSettings {
     WorkspaceSettings {
         showMotionDebugPanel: true,
+        showWingDebugPanel: false,
     }
 }
 

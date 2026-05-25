@@ -8,6 +8,7 @@ import { mountLayerPanel } from "./layerPanel";
 import { mountToolPanel } from "./toolPanel";
 import { mountColorPalette } from "./colorPalette";
 import { mountPreviewCanvas } from "./previewCanvas";
+import { mountWingDebugPanel } from "./wingDebugPanel";
 import { createDockable, registerDockHost, type DockableHandle } from "./dockHost";
 import { getWorkspace } from "./apiClient";
 import { hydrateFromWorkspace, makeDragHandle, getSize, setPersistContext } from "./layoutEngine";
@@ -75,6 +76,7 @@ const SINGLE_PANEL_CONFIG: Record<
   layerPanel: { titleKey: "layerPanel.title", mount: (el) => mountLayerPanel(el) },
   colorPalette: { titleKey: "colorPalette.title", mount: (el) => mountColorPalette(el) },
   editorCanvas: { titleKey: "editorCanvas.title", mount: (el) => mountEditorCanvas(el, DEFAULT_SKIN_ROOT) },
+  wingDebugPanel: { titleKey: "wingDebugPanel.title", mount: (el) => mountWingDebugPanel(el, DEFAULT_SKIN_ROOT) },
 };
 
 if (panelIdParam) {
@@ -93,6 +95,7 @@ async function mountMainWindow(): Promise<void> {
     sessionStore.setState({
       theme: ws.theme,
       showMotionDebugPanel: ws.layout.settings?.showMotionDebugPanel ?? true,
+      showWingDebugPanel: ws.layout.settings?.showWingDebugPanel ?? false,
     });
     if (ws.source === "file") {
       lastLoadedPanels = ws.layout.panels as PanelLayout[];
@@ -160,6 +163,7 @@ async function mountSinglePanel(id: string): Promise<void> {
     sessionStore.setState({
       theme: ws.theme,
       showMotionDebugPanel: ws.layout.settings?.showMotionDebugPanel ?? true,
+      showWingDebugPanel: ws.layout.settings?.showWingDebugPanel ?? false,
     });
   } catch (e) {
     console.warn("[main] getWorkspace failed (single panel)", e);
@@ -299,9 +303,17 @@ function mountApp(): void {
       initialSize: { width: 280, height: 600 },
       mount: (el) => mountColorPalette(el),
     },
+    {
+      host: "app-sidebar-right",
+      titleKey: "wingDebugPanel.title",
+      panelId: "wingDebugPanel",
+      initialSize: { width: 280, height: 600 },
+      mount: (el) => mountWingDebugPanel(el, DEFAULT_SKIN_ROOT),
+    },
   ];
   // dock 与 titleKey 映射：lang 切换时遍历重写每个 dockable 的标题。
   const dockTitleKeys: Array<{ dock: DockableHandle; titleKey: string }> = [];
+  let wingDebugDock: DockableHandle | null = null;
   for (const cfg of panels) {
     const host = document.getElementById(cfg.host) as HTMLElement;
     const persisted = workspaceSizeByPanelId.get(cfg.panelId);
@@ -321,6 +333,7 @@ function mountApp(): void {
     cfg.mount(dock.contentEl, dock);
     dockables.push(dock);
     dockTitleKeys.push({ dock, titleKey: cfg.titleKey });
+    if (cfg.panelId === "wingDebugPanel") wingDebugDock = dock;
     // 启动时让 dockable 视觉填满 host：取 host 实际尺寸塞回 dockable 自身 width/height，
     // 后续用户拖边把手按数值自由调节，max-width/max-height: 100% 防溢出邻居。
     queueMicrotask(() => {
@@ -328,6 +341,20 @@ function mountApp(): void {
       if (r.width > 0 && r.height > 0) dock.setSize(Math.round(r.width), Math.round(r.height));
     });
   }
+
+  // 翼调试面板默认隐藏；订阅 sessionStore.showWingDebugPanel 切 display。
+  function applyWingDebugVisible(): void {
+    if (!wingDebugDock) return;
+    wingDebugDock.rootEl.style.display = sessionStore.getState().showWingDebugPanel ? "" : "none";
+  }
+  applyWingDebugVisible();
+  let lastShowWing = sessionStore.getState().showWingDebugPanel;
+  sessionStore.subscribe((s) => {
+    if (s.showWingDebugPanel !== lastShowWing) {
+      lastShowWing = s.showWingDebugPanel;
+      applyWingDebugVisible();
+    }
+  });
 
   // lang 切换时仅刷新 dockable 标题，不重新挂载面板，保留交互状态。
   subscribeLang(() => {

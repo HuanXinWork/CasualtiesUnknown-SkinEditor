@@ -19,26 +19,30 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
     `<div class="part-panel-skins" style="display:flex;gap:4px;flex-wrap:wrap;padding:8px;"></div>` +
     `<section data-cat="Body" style="padding:0 8px 8px;"><h4 data-role="body-title" style="margin:8px 0 4px;"></h4><ul style="list-style:none;padding:0;margin:0;"></ul></section>` +
     `<section data-cat="Head" style="padding:0 8px 8px;"><h4 data-role="head-title" style="margin:8px 0 4px;"></h4><ul style="list-style:none;padding:0;margin:0;"></ul></section>` +
+    `<section data-cat="Wings" style="padding:0 8px 8px;"><h4 data-role="wings-title" style="margin:8px 0 4px;"></h4><ul style="list-style:none;padding:0;margin:0;"></ul></section>` +
     `<section data-cat="Expression" style="padding:0 8px 8px;"><h4 data-role="expression-title" style="margin:8px 0 4px;"></h4><ul style="list-style:none;padding:0;margin:0;"></ul></section>`;
 
   const skinsEl = container.querySelector<HTMLDivElement>(".part-panel-skins")!;
   const bodyTitle = container.querySelector<HTMLHeadingElement>('[data-role="body-title"]')!;
   const headTitle = container.querySelector<HTMLHeadingElement>('[data-role="head-title"]')!;
+  const wingsTitle = container.querySelector<HTMLHeadingElement>('[data-role="wings-title"]')!;
   const expressionTitle = container.querySelector<HTMLHeadingElement>('[data-role="expression-title"]')!;
   const bodyUl = container.querySelector<HTMLUListElement>('section[data-cat="Body"] ul')!;
   const headUl = container.querySelector<HTMLUListElement>('section[data-cat="Head"] ul')!;
+  const wingsUl = container.querySelector<HTMLUListElement>('section[data-cat="Wings"] ul')!;
   const expressionUl = container.querySelector<HTMLUListElement>('section[data-cat="Expression"] ul')!;
 
   function applyTexts(): void {
     bodyTitle.textContent = t("partPanel.bodyGroup");
     headTitle.textContent = t("partPanel.headGroup");
+    wingsTitle.textContent = t("partPanel.wingsGroup");
     expressionTitle.textContent = t("partPanel.expressionGroup");
   }
   applyTexts();
 
   function isSkinEmpty(name: string): boolean {
     const s = cachedSkins.find((x) => x.name === name);
-    return !s || (s.body.length === 0 && s.head.length === 0);
+    return !s || (s.body.length === 0 && s.head.length === 0 && (s.wings?.length ?? 0) === 0);
   }
 
   function renderSkins(): void {
@@ -70,7 +74,8 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
     const headOnlyParts = headParts.filter((p) => !isExpressionPart(p.name));
     renderCategoryList(bodyUl, skin?.body ?? [], "Body", selectedPartName, selectedCategory);
     renderCategoryList(headUl, headOnlyParts, "Head", selectedPartName, selectedCategory);
-    // 表情部件 UI 分组的 cat 仍传 "Head"——后端只认 Body/Head 两类。
+    renderCategoryList(wingsUl, skin?.wings ?? [], "Wings", selectedPartName, selectedCategory);
+    // 表情部件 UI 分组的 cat 仍传 "Head"——后端 Body/Head/Wings 三分类，表情纳入 Head 字典。
     renderCategoryList(expressionUl, expressionParts, "Head", selectedPartName, selectedCategory);
   }
 
@@ -142,7 +147,7 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
   listSkins(skinRoot)
     .then((names) => {
       cachedSkinNames = names;
-      cachedSkins = names.map((name) => ({ name, body: [], head: [] }));
+      cachedSkins = names.map((name) => ({ name, body: [], head: [], wings: [] }));
       // 自动选中首个皮肤——无 currentSkinName 时直接触发 listParts 加载部件。
       if (sessionStore.getState().currentSkinName === null && names.length > 0) {
         onSelectSkin(names[0]);

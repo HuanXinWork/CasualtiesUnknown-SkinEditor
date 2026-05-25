@@ -510,10 +510,14 @@ export function pickSavePath(
 
 
 // 装配位置覆盖。预览拖动选中部件时调用，运行时改 entry.position（不持久化）。
+// rotation / flipX / zOrder 都为可选；只想覆盖位置时其他字段留空，后端会回退装配表默认值。
 export interface SetAssemblyOverrideParams {
   partName: string;
   category: PartCategory;
   position: { x: number; y: number };
+  rotation?: number;
+  flipX?: boolean;
+  zOrder?: number;
 }
 
 export function setAssemblyOverride(params: SetAssemblyOverrideParams): Promise<void> {
@@ -521,6 +525,35 @@ export function setAssemblyOverride(params: SetAssemblyOverrideParams): Promise<
     return tauriInvoke<void>("api_setAssemblyOverride", { params });
   }
   return httpPost<void>("/api/assembly/override", params);
+}
+
+// 单皮肤翼装配配置：4 张翼独立 (x, y, rotation, zOrder)。
+// 持久化到 <skin>/wings.json。下翼 (x,y) 为相对上翼根的偏移；下翼 rotation 为相对上翼末端的偏移。
+export interface WingPieceConfig {
+  x: number;
+  y: number;
+  rotation: number;
+  zOrder: number;
+}
+export interface WingsConfig {
+  wingUL: WingPieceConfig;
+  wingDL: WingPieceConfig;
+  wingUR: WingPieceConfig;
+  wingDR: WingPieceConfig;
+}
+
+export function loadWingsConfig(skinRoot: string, skinName: string): Promise<WingsConfig> {
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<WingsConfig>("api_loadWingsConfig", { params: { skinRoot, skinName } });
+  }
+  return httpPost<WingsConfig>("/api/wings", { skinRoot, skinName });
+}
+
+export function saveWingsConfig(skinRoot: string, skinName: string, config: WingsConfig): Promise<void> {
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<void>("api_saveWingsConfig", { params: { skinRoot, skinName, config } });
+  }
+  return httpPost<void>("/api/wings/save", { skinRoot, skinName, config });
 }
 
 // 主窗口关闭拦截：仅 Tauri 桌面壳生效。Rust 端在用户点 X 时调 prevent_close

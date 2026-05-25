@@ -257,11 +257,56 @@ pub struct MotionCompositeResult {
 
 /// 装配位置覆盖入参。前端拖动选中部件时调此命令实时改位置；
 /// 仅在内存中持有，不写 assembly.json。
+/// rotation / flipX / zOrder 为可选 —— 调试面板按需调一项即可，未给的字段保留装配表默认值。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetAssemblyOverrideParams {
     pub partName: String,
     pub category: PartCategory,
     pub position: AssemblyPosition,
+    pub rotation: Option<f32>,
+    pub flipX: Option<bool>,
+    pub zOrder: Option<i32>,
+}
+
+/// 完整的运行时 override 数据。position 必有；其它字段 None 时回落 entry 默认。
+#[derive(Debug, Clone)]
+pub struct AssemblyOverride {
+    pub position: AssemblyPosition,
+    pub rotation: Option<f32>,
+    pub flipX: Option<bool>,
+    pub zOrder: Option<i32>,
+}
+
+/// 单皮肤的翼装配配置（持久化到 <skin>/wings.json）。供编辑器预览与 SkinSync mod 共用。
+/// 4 张翼独立 (x, y, rotation, zOrder)。下翼 (x,y) 是相对上翼根的偏移，下翼 rotation 是相对上翼末端的偏移。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WingPieceConfig {
+    pub x: i32,
+    pub y: i32,
+    pub rotation: f32,
+    pub zOrder: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WingsConfig {
+    pub wingUL: WingPieceConfig,
+    pub wingDL: WingPieceConfig,
+    pub wingUR: WingPieceConfig,
+    pub wingDR: WingPieceConfig,
+}
+
+/// 加载 / 保存翼配置入参。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WingsConfigPathParams {
+    pub skinRoot: String,
+    pub skinName: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveWingsConfigParams {
+    pub skinRoot: String,
+    pub skinName: String,
+    pub config: WingsConfig,
 }
 
 /// workspace.json 路径入参。两形态都以路径明文传入，避免后端依赖系统目录探测。
@@ -349,6 +394,8 @@ pub trait ApiLayer: Send + Sync + 'static {
     fn exportSkinPack(&self, params: ExportSkinPackParams) -> Result<ExportSkinPackResult, ApiError>;
     fn importSkinPack(&self, params: ImportSkinPackParams) -> Result<ImportResult, ApiError>;
     fn setAssemblyOverride(&self, params: SetAssemblyOverrideParams) -> Result<(), ApiError>;
+    fn loadWingsConfig(&self, params: WingsConfigPathParams) -> Result<WingsConfig, ApiError>;
+    fn saveWingsConfig(&self, params: SaveWingsConfigParams) -> Result<(), ApiError>;
 }
 
 struct PartSession {
@@ -374,8 +421,8 @@ struct ActiveStroke {
 pub struct CoreApi {
     sessions: Mutex<HashMap<String, PartSession>>,
     /// 装配位置运行时覆盖。Key = (partName, category)。
-    /// getCompositeImage 优先用 override 替换 entry.position；不持久化。
-    assemblyOverrides: Mutex<HashMap<(String, PartCategory), AssemblyPosition>>,
+    /// getCompositeImage 优先用 override 替换 entry.position 等字段；不持久化。
+    assemblyOverrides: Mutex<HashMap<(String, PartCategory), AssemblyOverride>>,
 }
 
 impl CoreApi {
@@ -926,20 +973,101 @@ impl ApiLayer for CoreApi {
     fn getCompositeImage(&self, params: CompositeParams) -> Result<CompositeResult, ApiError> {
         let assemblyPath = PathBuf::from(&params.skinRoot).join("assembly.json");
         let (table, _source) = assemblyTable::loadAssembly(&assemblyPath);
+        // 单皮肤的 wings.json 是 assembly 的局部覆盖：4 张翼的 (x,y,rotation,zOrder)
+        // 由该文件给出，文件不存在时回落到装配表默认值。
+        let wingsConfig = self
+            .loadWingsConfig(WingsConfigPathParams {
+                skinRoot: params.skinRoot.clone(),
+                skinName: params.skinName.clone(),
+            })
+            .ok();
+        // 先拿到 overrides，按 override.zOrder（若有）参与排序，让 zOrder 调试也能实时生效。
+        let overrides = self.assemblyOverrides.lock().map_err(|_| ApiError {
+            code: "lock_poisoned".into(),
+            message: "assemblyOverrides lock poisoned".into(),
+        })?;
         let mut entries: Vec<&AssemblyEntry> = table
             .parts
             .iter()
             .filter(|e| variantMatches(&e.variants, &params.orientation, params.expressionIndex, &params.headVariant))
             .collect();
-        entries.sort_by_key(|e| e.zOrder);
 
         let mut canvas = vec![0u8; (COMPOSITE_W * COMPOSITE_H * 4) as usize];
         let sessions = lockSessions(&self.sessions)?;
-        // 读 assemblyOverrides 拿运行时位置覆盖。
-        let overrides = self.assemblyOverrides.lock().map_err(|_| ApiError {
-            code: "lock_poisoned".into(),
-            message: "assemblyOverrides lock poisoned".into(),
-        })?;
+
+        // 取翼配置字段：override 优先 → wings.json → entry 默认。
+        let wingPiece = |name: &str| -> Option<&WingPieceConfig> {
+            wingsConfig.as_ref().and_then(|c| match name {
+                "wingUL" => Some(&c.wingUL),
+                "wingDL" => Some(&c.wingDL),
+                "wingUR" => Some(&c.wingUR),
+                "wingDR" => Some(&c.wingDR),
+                _ => None,
+            })
+        };
+        // 取最终装配字段：override 字段优先；wings.json 次之；entry 自身字段最后。
+        let resolveWingPos = |entry: &AssemblyEntry, ovr: Option<&AssemblyOverride>| -> AssemblyPosition {
+            if let Some(o) = ovr {
+                return o.position.clone();
+            }
+            if let Some(p) = wingPiece(&entry.partName) {
+                return AssemblyPosition { x: p.x, y: p.y };
+            }
+            entry.position.clone()
+        };
+        let resolveWingRot = |entry: &AssemblyEntry, ovr: Option<&AssemblyOverride>| -> f32 {
+            if let Some(o) = ovr {
+                if let Some(r) = o.rotation { return r; }
+            }
+            if let Some(p) = wingPiece(&entry.partName) {
+                return p.rotation;
+            }
+            entry.rotation
+        };
+        let resolveWingZ = |entry: &AssemblyEntry, ovr: Option<&AssemblyOverride>| -> i32 {
+            if let Some(o) = ovr {
+                if let Some(z) = o.zOrder { return z; }
+            }
+            if let Some(p) = wingPiece(&entry.partName) {
+                return p.zOrder;
+            }
+            entry.zOrder
+        };
+
+        // sort 走"翼分类 → resolveWingZ；其它分类 → override.zOrder.fallback(entry)"
+        entries.sort_by_key(|e| {
+            let ovr = overrides.get(&(e.partName.clone(), e.category));
+            if e.category == PartCategory::Wings {
+                resolveWingZ(e, ovr)
+            } else {
+                ovr.and_then(|o| o.zOrder).unwrap_or(e.zOrder)
+            }
+        });
+
+        // 先扫一遍上翼，记下它们的 (根 pos, rotation, halfH)，让下翼绕上翼根旋转。
+        // 父子关节模型：下翼世界位置 = 上翼根 + rotateVec((pos.x, halfH + pos.y), upperRot)；
+        // 下翼世界旋转 = 上翼旋转 + 下翼自身相对偏移。
+        // halfH 取上翼 PNG 半高（PNG 内部翼根在中心、翼尖朝下到底边，所以默认下翼相对上翼根 (0, halfH)）。
+        let upperWingPose = |upperName: &str| -> Option<(AssemblyPosition, f32, f32)> {
+            let entry = entries.iter().find(|e| e.partName == upperName && e.category == PartCategory::Wings)?;
+            let ovr = overrides.get(&(entry.partName.clone(), entry.category));
+            let pos = resolveWingPos(entry, ovr);
+            let rotation = resolveWingRot(entry, ovr);
+            let key = partIdKey(&params.skinName, entry.category, &entry.partName);
+            let halfH = if let Some(session) = sessions.get(&key) {
+                session.state.height as f32 / 2.0
+            } else {
+                let pngPath = PathBuf::from(&params.skinRoot)
+                    .join(&params.skinName)
+                    .join(categoryDir(entry.category))
+                    .join(format!("{}.png", entry.partName));
+                skinLoader::decodePart(&pngPath).map(|d| d.height as f32 / 2.0).unwrap_or(16.0)
+            };
+            Some((pos, rotation, halfH))
+        };
+        let lowerLAnchor = upperWingPose("wingUL");
+        let lowerRAnchor = upperWingPose("wingUR");
+
         for entry in entries {
             let key = partIdKey(&params.skinName, entry.category, &entry.partName);
             let (partW, partH, pixels) = if let Some(session) = sessions.get(&key) {
@@ -958,19 +1086,54 @@ impl ApiLayer for CoreApi {
                     Err(_) => continue,
                 }
             };
-            // override 优先；否则用装配表 entry.position。
-            let pos = overrides
-                .get(&(entry.partName.clone(), entry.category))
-                .copied()
-                .unwrap_or(entry.position.clone());
+            // override 优先；否则用装配表 entry 自身字段；翼分类还要叠 wings.json。
+            let ovr = overrides.get(&(entry.partName.clone(), entry.category));
+            let mut pos;
+            let mut rotation;
+            let flipX;
+            if entry.category == PartCategory::Wings {
+                pos = resolveWingPos(entry, ovr);
+                rotation = resolveWingRot(entry, ovr);
+                flipX = ovr.and_then(|o| o.flipX).unwrap_or(entry.flipX);
+            } else {
+                pos = ovr.map(|o| o.position).unwrap_or(entry.position.clone());
+                rotation = ovr.and_then(|o| o.rotation).unwrap_or(entry.rotation);
+                flipX = ovr.and_then(|o| o.flipX).unwrap_or(entry.flipX);
+            }
+            // 下翼链式（父子关节）：以上翼根为旋转中心，下翼局部偏移 (pos.x, halfH + pos.y) 绕上翼旋转。
+            // rotation 累加上翼旋转，让下翼姿态跟随上翼。用户在 wingDebugPanel 调下翼 (x,y,rotation) 全是相对偏移。
+            if entry.category == PartCategory::Wings {
+                let anchor = if entry.partName == "wingDL" {
+                    lowerLAnchor.as_ref()
+                } else if entry.partName == "wingDR" {
+                    lowerRAnchor.as_ref()
+                } else {
+                    None
+                };
+                if let Some((rootPos, rootRot, halfH)) = anchor {
+                    let localX = pos.x as f32;
+                    let localY = halfH + pos.y as f32;
+                    // 与 imageOps::blitWithRotation 内部约定一致：rad = -rotDeg。
+                    let rad = -rootRot.to_radians();
+                    let c = rad.cos();
+                    let s = rad.sin();
+                    let dx = localX * c - localY * s;
+                    let dy = localX * s + localY * c;
+                    pos = AssemblyPosition {
+                        x: rootPos.x + dx.round() as i32,
+                        y: rootPos.y + dy.round() as i32,
+                    };
+                    rotation = rootRot + rotation;
+                }
+            }
             // mod 用 `Sprite.Create(rect=整图, pivot=(0.5,0.5), pixelsPerUnit=8)` 创建 sprite，
             // 因此 sprite 视觉中心 = PNG 几何中心。预览以 (50+pos.x, 50+pos.y) 为中心
-            // 绕 sprite 中心旋转 entry.rotation 度（与 Unity rotZ 一致）。
+            // 绕 sprite 中心旋转 rotation 度（与 Unity rotZ 一致）。
             let centerX = (COMPOSITE_W as i32) / 2 + pos.x;
             let centerY = (COMPOSITE_H as i32) / 2 + pos.y;
             imageOps::blitWithRotation(
                 &mut canvas, COMPOSITE_W, COMPOSITE_H, &pixels, partW, partH,
-                centerX, centerY, entry.rotation, entry.flipX,
+                centerX, centerY, rotation, flipX,
             );
         }
         Ok(CompositeResult { width: COMPOSITE_W, height: COMPOSITE_H, pixels: canvas })
@@ -1017,8 +1180,63 @@ impl ApiLayer for CoreApi {
             code: "lock_poisoned".into(),
             message: "assemblyOverrides lock poisoned".into(),
         })?;
-        overrides.insert((params.partName, params.category), params.position);
+        overrides.insert(
+            (params.partName, params.category),
+            AssemblyOverride {
+                position: params.position,
+                rotation: params.rotation,
+                flipX: params.flipX,
+                zOrder: params.zOrder,
+            },
+        );
         Ok(())
+    }
+
+    fn loadWingsConfig(&self, params: WingsConfigPathParams) -> Result<WingsConfig, ApiError> {
+        let path = wingsConfigPath(&params.skinRoot, &params.skinName);
+        if !path.exists() {
+            return Ok(defaultWingsConfig());
+        }
+        let bytes = std::fs::read(&path).map_err(|e| ApiError {
+            code: "io".into(),
+            message: format!("read {}: {}", path.display(), e),
+        })?;
+        serde_json::from_slice::<WingsConfig>(&bytes).map_err(|e| ApiError {
+            code: "json".into(),
+            message: format!("parse {}: {}", path.display(), e),
+        })
+    }
+
+    fn saveWingsConfig(&self, params: SaveWingsConfigParams) -> Result<(), ApiError> {
+        let path = wingsConfigPath(&params.skinRoot, &params.skinName);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| ApiError {
+                code: "io".into(),
+                message: format!("mkdir {}: {}", parent.display(), e),
+            })?;
+        }
+        let bytes = serde_json::to_vec_pretty(&params.config).map_err(|e| ApiError {
+            code: "json".into(),
+            message: format!("serialize: {}", e),
+        })?;
+        std::fs::write(&path, bytes).map_err(|e| ApiError {
+            code: "io".into(),
+            message: format!("write {}: {}", path.display(), e),
+        })
+    }
+}
+
+fn wingsConfigPath(skinRoot: &str, skinName: &str) -> PathBuf {
+    PathBuf::from(skinRoot).join(skinName).join("wings.json")
+}
+
+fn defaultWingsConfig() -> WingsConfig {
+    // 与 assemblyTable defaultAssembly() 内 wing 条目一致
+    WingsConfig {
+        wingUL: WingPieceConfig { x: -2, y: -8, rotation: 314.0, zOrder: 5 },
+        wingDL: WingPieceConfig { x: -1, y: -10, rotation: 0.0, zOrder: 4 },
+        wingUR: WingPieceConfig { x: -2, y: -9, rotation: 318.0, zOrder: 5 },
+        wingDR: WingPieceConfig { x: 0, y: -12, rotation: 0.0, zOrder: 4 },
     }
 }
 
@@ -1104,6 +1322,7 @@ fn categoryDir(category: PartCategory) -> &'static str {
     match category {
         PartCategory::Body => "Body",
         PartCategory::Head => "Head",
+        PartCategory::Wings => "Wings",
     }
 }
 
@@ -1221,7 +1440,15 @@ fn motionBodyPartName(limbName: &str) -> Option<&'static str> {
 }
 
 fn motionCompositePosition(limb: &MotionCaptureLimb) -> AssemblyPosition {
-    let (x, y) = if limb.name == "Tail" || limb.name == "experimentTail" {
+    // Tail / Wings 是 body 子节点下的非 limb 物体（挂在 Tail tf / HwWings 容器），
+    // 它们的 px/py 是相对自己 parent 的局部坐标——用 bcx/bcy（已转回 body 局部）才能落到正确画布位。
+    let isAttached = limb.name == "Tail"
+        || limb.name == "experimentTail"
+        || limb.name == "wingUL"
+        || limb.name == "wingUR"
+        || limb.name == "wingDL"
+        || limb.name == "wingDR";
+    let (x, y) = if isAttached {
         (limb.bcx, limb.bcy)
     } else {
         (limb.px, limb.py)
@@ -1251,6 +1478,19 @@ fn buildMotionCompositeEntries(
                 partName,
                 category: PartCategory::Head,
                 position: pos,
+                zOrder: limb.sortingOrder,
+                flipX: false,
+                rotation: limb.rotZ,
+                variants: None,
+            });
+            continue;
+        }
+        // 翅膀：motionRecorder 抓取的 4 张翼名 wingUL/wingUR/wingDL/wingDR，partName 与 PNG 同名直接渲染。
+        if matches!(limb.name.as_str(), "wingUL" | "wingUR" | "wingDL" | "wingDR") {
+            out.push(AssemblyEntry {
+                partName: limb.name.clone(),
+                category: PartCategory::Wings,
+                position: motionCompositePosition(limb),
                 zOrder: limb.sortingOrder,
                 flipX: false,
                 rotation: limb.rotZ,

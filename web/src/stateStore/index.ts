@@ -45,6 +45,8 @@ export interface SessionState {
   lastAppliedDiff: AppliedDiff | null;
   /// layerPanel 增删改图层后递增；editorCanvas 监听变化重拉 flatten 刷新画布。
   layerSnapshotVersion: number;
+  /// wingDebugPanel 改 override 后递增；previewCanvas 监听变化重拉合成预览。
+  assemblyOverrideVersion: number;
   /// 历史环形缓冲，最多 50 条。
   history: HistoryRecord[];
   /// previewCanvas 合成预览的过滤参数。
@@ -56,6 +58,8 @@ export interface SessionState {
   shortcuts?: Record<string, string>;
   /// Motion 预览右侧当前帧部件调试面板显隐。
   showMotionDebugPanel: boolean;
+  /// 翼装配调试面板显隐；默认关闭，需要时去设置勾选。
+  showWingDebugPanel: boolean;
   /// 未保存改动追踪：brush/eraser/gradient/undo/redo 后置脏；savePart 成功后清脏。
   dirtyPartIds: string[];
 }
@@ -101,12 +105,14 @@ function buildInitialState(): SessionState {
     theme: defaultTheme(),
     lastAppliedDiff: null,
     layerSnapshotVersion: 0,
+    assemblyOverrideVersion: 0,
     history: [],
     orientation: "front",
     expressionIndex: 0,
     headVariant: "default",
     lang: "zh",
     showMotionDebugPanel: true,
+    showWingDebugPanel: false,
     dirtyPartIds: [],
   };
 }
@@ -146,4 +152,10 @@ export function markPartClean(partId: string): void {
 export function isPartDirty(partId: string | null): boolean {
   if (!partId) return false;
   return sessionStore.getState().dirtyPartIds.includes(partId);
+}
+
+/// 调试面板改装配 override 后调一次，让 previewCanvas 重拉合成预览。
+export function bumpAssemblyOverrideVersion(): void {
+  const v = sessionStore.getState().assemblyOverrideVersion ?? 0;
+  sessionStore.setState({ assemblyOverrideVersion: v + 1 });
 }

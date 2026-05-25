@@ -18,7 +18,8 @@ use crate::apiLayer::{
     LayersSnapshot, LoadPartParams, LoadPartResult, MotionCaptureListParams, MotionCaptureMeta,
     MotionCaptureResult, MotionCompositeParams, MotionCompositeResult, PartIdParams, PartsParams,
     RemoveLayerParams, ReorderLayersParams, SavePartParams, SaveWorkspaceParams,
-    SetActiveLayerParams, SetAssemblyOverrideParams, SkinsParams, WorkspacePathParams,
+    SetActiveLayerParams, SetAssemblyOverrideParams, SkinsParams, SaveWingsConfigParams,
+    WingsConfig, WingsConfigPathParams, WorkspacePathParams,
     WorkspaceResult,
 };
 use crate::historyManager::PixelDiff;
@@ -62,6 +63,8 @@ pub async fn serve(config: HttpConfig, api: SharedApi) {
         .route("/api/skinPack/export", post(handleExportSkinPack))
         .route("/api/skinPack/import", post(handleImportSkinPack))
         .route("/api/assembly/override", post(handleSetAssemblyOverride))
+        .route("/api/wings", post(handleLoadWingsConfig))
+        .route("/api/wings/save", post(handleSaveWingsConfig))
         .with_state(api)
         .fallback(handleStatic);
 
@@ -364,5 +367,21 @@ async fn handleSetAssemblyOverride(
     Json(params): Json<SetAssemblyOverrideParams>,
 ) -> axum::response::Response {
     let result: Result<(), ApiError> = api.setAssemblyOverride(params);
+    intoResponse(result)
+}
+
+async fn handleLoadWingsConfig(
+    State(api): State<SharedApi>,
+    Json(params): Json<WingsConfigPathParams>,
+) -> axum::response::Response {
+    let result: Result<WingsConfig, ApiError> = api.loadWingsConfig(params);
+    intoResponse(result)
+}
+
+async fn handleSaveWingsConfig(
+    State(api): State<SharedApi>,
+    Json(params): Json<SaveWingsConfigParams>,
+) -> axum::response::Response {
+    let result: Result<(), ApiError> = api.saveWingsConfig(params);
     intoResponse(result)
 }

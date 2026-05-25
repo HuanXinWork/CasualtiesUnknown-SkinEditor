@@ -19,9 +19,23 @@ export interface Translations {
     title: string;
     bodyGroup: string;
     headGroup: string;
+    wingsGroup: string;
     expressionGroup: string;
     loadFailed: string;
     corruptedTag: string;
+  };
+  wingDebugPanel: {
+    title: string;
+    hint: string;
+    x: string;
+    y: string;
+    rotation: string;
+    zOrder: string;
+    reset: string;
+    wingUL: string;
+    wingUR: string;
+    wingDL: string;
+    wingDR: string;
   };
   layerPanel: {
     title: string;
@@ -159,6 +173,7 @@ export interface Translations {
       title: string;
       debugTitle: string;
       showMotionDebugPanel: string;
+      showWingDebugPanel: string;
       shortcutsTitle: string;
       clickToRecord: string;
       recordingHint: string;
@@ -197,9 +212,23 @@ export const dictionaries: Record<Lang, Translations> = {
       title: "角色",
       bodyGroup: "身体",
       headGroup: "头部",
+      wingsGroup: "翅膀",
       expressionGroup: "表情部件",
       loadFailed: "加载失败",
       corruptedTag: "[损坏]",
+    },
+    wingDebugPanel: {
+      title: "翅膀调试",
+      hint: "调整 4 片翼的 (x, y) / 旋转 / 层级，预览实时刷新；右翼自动镜像，不写入磁盘。",
+      x: "X",
+      y: "Y",
+      rotation: "旋转",
+      zOrder: "层级",
+      reset: "重置默认值",
+      wingUL: "左上翼",
+      wingUR: "右上翼",
+      wingDL: "左下翼",
+      wingDR: "右下翼",
     },
     layerPanel: {
       title: "图层",
@@ -336,6 +365,7 @@ export const dictionaries: Record<Lang, Translations> = {
       title: "设置",
       debugTitle: "调试",
       showMotionDebugPanel: "显示当前帧部件调试面板",
+      showWingDebugPanel: "显示翅膀调试面板",
       shortcutsTitle: "快捷键",
       clickToRecord: "点击录制",
       recordingHint: "按下任意键…（Esc 取消）",
@@ -372,9 +402,23 @@ export const dictionaries: Record<Lang, Translations> = {
       title: "Character",
       bodyGroup: "Body",
       headGroup: "Head",
+      wingsGroup: "Wings",
       expressionGroup: "Expression Parts",
       loadFailed: "Load failed",
       corruptedTag: "[corrupted]",
+    },
+    wingDebugPanel: {
+      title: "Wing debug",
+      hint: "Tune (x, y) / rotation / zOrder of the 4 wing parts; right wings auto-mirror; preview refreshes live, not persisted.",
+      x: "X",
+      y: "Y",
+      rotation: "Rotation",
+      zOrder: "zOrder",
+      reset: "Reset to defaults",
+      wingUL: "Upper Left",
+      wingUR: "Upper Right",
+      wingDL: "Lower Left",
+      wingDR: "Lower Right",
     },
     layerPanel: {
       title: "Layers",
@@ -511,6 +555,7 @@ export const dictionaries: Record<Lang, Translations> = {
       title: "Settings",
       debugTitle: "Debug",
       showMotionDebugPanel: "Show current frame debug panel",
+      showWingDebugPanel: "Show wing debug panel",
       shortcutsTitle: "Shortcuts",
       clickToRecord: "Click to record",
       recordingHint: "Press any key... (Esc to cancel)",

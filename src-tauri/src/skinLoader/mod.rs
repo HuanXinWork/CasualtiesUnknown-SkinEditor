@@ -8,12 +8,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::apiLayer::ApiError;
 
-/// 单个皮肤：name 是目录名，body/head 是该目录下两个分类的 PartInfo 列表。
+/// 单个皮肤：name 是目录名，body/head/wings 是该目录下三个分类的 PartInfo 列表。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skin {
     pub name: String,
     pub body: Vec<PartInfo>,
     pub head: Vec<PartInfo>,
+    pub wings: Vec<PartInfo>,
 }
 
 /// 旧名别名，保留供仍引用 `Stage` 字面量的代码路径。
@@ -33,6 +34,7 @@ pub struct PartInfo {
 pub enum PartCategory {
     Body,
     Head,
+    Wings,
 }
 
 impl PartCategory {
@@ -40,6 +42,7 @@ impl PartCategory {
         match self {
             PartCategory::Body => "Body",
             PartCategory::Head => "Head",
+            PartCategory::Wings => "Wings",
         }
     }
 }
@@ -62,9 +65,10 @@ pub fn scanStages(skinRoot: &Path) -> Vec<Stage> {
                     name: id,
                     body: scanCategory(&stageDir, PartCategory::Body),
                     head: scanCategory(&stageDir, PartCategory::Head),
+                    wings: scanCategory(&stageDir, PartCategory::Wings),
                 }
             } else {
-                Skin { name: id, body: vec![], head: vec![] }
+                Skin { name: id, body: vec![], head: vec![], wings: vec![] }
             }
         })
         .collect()
@@ -74,12 +78,13 @@ pub fn scanStages(skinRoot: &Path) -> Vec<Stage> {
 pub fn scanSkin(skinsRoot: &Path, skinName: &str) -> Skin {
     let skinDir = skinsRoot.join(skinName);
     if !skinDir.is_dir() {
-        return Skin { name: skinName.to_string(), body: vec![], head: vec![] };
+        return Skin { name: skinName.to_string(), body: vec![], head: vec![], wings: vec![] };
     }
     Skin {
         name: skinName.to_string(),
         body: scanCategory(&skinDir, PartCategory::Body),
         head: scanCategory(&skinDir, PartCategory::Head),
+        wings: scanCategory(&skinDir, PartCategory::Wings),
     }
 }
 
