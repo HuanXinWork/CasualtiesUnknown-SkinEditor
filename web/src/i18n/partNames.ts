@@ -61,6 +61,40 @@ const ZH_MAP: Record<string, string> = {
   eyeLookBack: "眼·回望",
   eyeGone: "眼·缺失",
   eyeGoneHealed: "眼·愈合",
+
+  // ---- Accessories（配件 itemId → 通用习惯中文）----
+  autopump: "自动泵",
+  autozoomgoggles: "变焦护目镜",
+  balaclava: "头套",
+  bandolier: "弹链",
+  bellyarmor: "腹甲",
+  belt: "腰带",
+  bigpack: "大背包",
+  bikehelmet: "自行车头盔",
+  blindfold: "眼罩",
+  carapace: "甲壳护甲",
+  climbingclaws: "攀爬爪",
+  duffelbag: "帆布包",
+  dustmask: "防尘面罩",
+  fannypack: "腰包",
+  headlamp: "头灯",
+  holidayhat: "节日帽",
+  jetpack: "喷气背包",
+  latexgloves: "乳胶手套",
+  legpouch: "腿包",
+  makeshiftheadlamp: "自制头灯",
+  makeshifthelmet: "自制头盔",
+  materialpouch: "材料包",
+  safetyglasses: "护目镜",
+  scarf: "围巾",
+  slingbag: "单肩包",
+  smallpack: "小背包",
+  sneakers: "运动鞋",
+  woodsandals: "木凉鞋",
+
+  // ---- Blood（血液贴图）----
+  BloodParticle: "血液粒子",
+  bloodParticle: "血液粒子",
 };
 
 /// 把 PNG 文件名（不含扩展名）转成当前语言下的显示名。

@@ -11,6 +11,7 @@
 _✨ A standalone skin preview and pixel-level editor for the game `Casualties Unknown` ✨_
 
 <p>
+  <img src="https://img.shields.io/badge/version-1.0.2-blue.svg" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="license">
   <img src="https://img.shields.io/badge/tauri-v2-FFC131?logo=tauri" alt="tauri">
   <img src="https://img.shields.io/badge/rust-1.75+-orange.svg?logo=rust" alt="rust">
@@ -22,6 +23,8 @@ _✨ A standalone skin preview and pixel-level editor for the game `Casualties U
   <a href="README.md"><strong>中文项目说明</strong></a>
   ·
   <a href="docs/en/README.md"><strong>English User Guide</strong></a>
+  ·
+  <a href="changes.en.md"><strong>Changelog</strong></a>
 </p>
 
 <p>

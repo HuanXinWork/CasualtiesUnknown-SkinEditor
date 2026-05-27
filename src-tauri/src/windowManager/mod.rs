@@ -77,6 +77,18 @@ pub struct WorkspaceSettings {
     /// 翼装配调试面板显隐；默认关闭。
     #[serde(default)]
     pub showWingDebugPanel: bool,
+    /// 血液粒子配置面板显隐；默认关闭。
+    #[serde(default)]
+    pub showBloodPanel: bool,
+    /// 调色盘最近使用色 FIFO（最多 12 项）。
+    #[serde(default)]
+    pub colorPaletteRecent: Vec<[u8; 3]>,
+    /// 用户自定义色卡槽：固定 24 项（3 排 × 8）；None 表示空槽。
+    #[serde(default)]
+    pub colorPaletteCustom: Vec<Option<[u8; 3]>>,
+    /// partPanel 各分组折叠态（key = body/head/wings/expression/accessories）。
+    #[serde(default)]
+    pub partGroupsCollapsed: HashMap<String, bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +142,10 @@ pub fn defaultWorkspaceSettings() -> WorkspaceSettings {
     WorkspaceSettings {
         showMotionDebugPanel: true,
         showWingDebugPanel: false,
+        showBloodPanel: false,
+        colorPaletteRecent: Vec::new(),
+        colorPaletteCustom: Vec::new(),
+        partGroupsCollapsed: HashMap::new(),
     }
 }
 

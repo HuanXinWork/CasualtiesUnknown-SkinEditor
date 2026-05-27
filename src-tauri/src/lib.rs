@@ -10,6 +10,9 @@ pub mod windowManager;
 pub mod layerSidecar;
 pub mod imageStore;
 pub mod baseSizes;
+pub mod accessories;
+pub mod zones;
+pub mod blood;
 pub mod apiLayer;
 mod httpServer;
 mod tauriCommands;
@@ -144,6 +147,12 @@ pub fn runDesktop() {
             tauriCommands::api_setAssemblyOverride,
             tauriCommands::api_loadWingsConfig,
             tauriCommands::api_saveWingsConfig,
+            tauriCommands::api_setAccessoryEnabled,
+            tauriCommands::api_saveAccessoryConfig,
+            tauriCommands::api_loadBloodConfig,
+            tauriCommands::api_saveBloodConfig,
+            tauriCommands::api_loadZones,
+            tauriCommands::api_saveZones,
             tauriCommands::api_pollCloseRequest,
             tauriCommands::api_confirmCloseMain,
             tauriCommands::api_storeImage,

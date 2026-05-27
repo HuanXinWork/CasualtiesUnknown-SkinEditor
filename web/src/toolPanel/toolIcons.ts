@@ -38,6 +38,16 @@ export const ICON_GRADIENT =
   `<path d="M3 19l18-14"/>` +
   `</svg>`;
 
+/** 魔法笔（区块画笔）：斜笔杆 + 三颗散落星点暗示"魔法/区块"语义 */
+export const ICON_ZONE_BRUSH =
+  `<svg ${SVG_BASE}>` +
+  `<path d="M5 19l4-1 9-9a2 2 0 0 0-2.8-2.8l-9 9z"/>` +
+  `<path d="M14 7l2 2"/>` +
+  `<path d="M16 3l0.5 1.5L18 5l-1.5 0.5L16 7l-0.5-1.5L14 5l1.5-0.5z"/>` +
+  `<path d="M20 11l0.5 1.5L22 13l-1.5 0.5L20 15l-0.5-1.5L18 13l1.5-0.5z"/>` +
+  `<path d="M5 8l0.5 1.5L7 10l-1.5 0.5L5 12l-0.5-1.5L3 10l1.5-0.5z"/>` +
+  `</svg>`;
+
 /** 撤销：回转箭头 */
 export const ICON_UNDO =
   `<svg ${SVG_BASE}>` +
@@ -184,11 +194,12 @@ export const CURSOR_DROPPER_DATAURL = (() => {
   return `url("data:image/svg+xml;utf8,${svg}") 1 30, crosshair`;
 })();
 
-export const TOOL_ICONS: Record<"brush" | "eraser" | "pan" | "gradient", string> = {
+export const TOOL_ICONS: Record<"brush" | "eraser" | "pan" | "gradient" | "zoneBrush", string> = {
   brush: ICON_BRUSH,
   eraser: ICON_ERASER,
   pan: ICON_PAN,
   gradient: ICON_GRADIENT,
+  zoneBrush: ICON_ZONE_BRUSH,
 };
 
 // editorCanvas 鼠标 cursor SVG（黑描白填，确保在任何主题色下都可见）。
@@ -219,12 +230,22 @@ const CURSOR_GRADIENT_SVG =
   '<path d="M3 19l18-14"/>' +
   '</svg>';
 
+const CURSOR_ZONE_BRUSH_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" ' +
+  'fill="white" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
+  '<path d="M5 19l4-1 9-9a2 2 0 0 0-2.8-2.8l-9 9z"/>' +
+  '<path d="M14 7l2 2"/>' +
+  '<path d="M16 3l0.5 1.5L18 5l-1.5 0.5L16 7l-0.5-1.5L14 5l1.5-0.5z"/>' +
+  '</svg>';
+
 /** 画布 cursor：每个工具一份 data URL，调用方拼到 CSS `cursor` 字段。 */
-export const CANVAS_CURSORS: Record<"brush" | "eraser" | "gradient", string> = {
+export const CANVAS_CURSORS: Record<"brush" | "eraser" | "gradient" | "zoneBrush", string> = {
   // 画笔尖在 (4, 20) 笔尖位置
   brush: `${cursorUrl(CURSOR_BRUSH_SVG, 4, 20)}, crosshair`,
   // 橡皮尖在 (3, 21) 左下底边
   eraser: `${cursorUrl(CURSOR_ERASER_SVG, 3, 21)}, crosshair`,
   // 渐变光标位于左上角点
   gradient: `${cursorUrl(CURSOR_GRADIENT_SVG, 3, 3)}, crosshair`,
+  // 魔法笔尖位置同画笔
+  zoneBrush: `${cursorUrl(CURSOR_ZONE_BRUSH_SVG, 5, 19)}, crosshair`,
 };

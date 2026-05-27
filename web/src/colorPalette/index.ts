@@ -9,7 +9,7 @@
 import { sessionStore } from "../stateStore";
 import { subscribeLang, t } from "../i18n";
 import { ICON_DROPPER } from "../toolPanel/toolIcons";
-import { pickImagePixelByScreenCoord, getCursorScreenPos, isMouseLeftDown, setPickActive } from "../apiClient";
+import { pickImagePixelByScreenCoord, getCursorScreenPos, isMouseLeftDown, setPickActive, getWorkspace, saveWorkspace } from "../apiClient";
 import {
   hexToRgb,
   hsvToRgb,
@@ -22,10 +22,10 @@ import {
 import { SWATCH_GROUPS } from "./swatches";
 
 const RECENT_LIMIT = 12;
-const HUE_WHEEL_SIZE = 140;
-const HUE_WHEEL_INNER = 50;
-const HUE_WHEEL_OUTER = 68;
-const SV_BOX_SIZE = 88;
+const HUE_WHEEL_SIZE = 160;
+const HUE_WHEEL_INNER = 48;
+const HUE_WHEEL_OUTER = 76;
+const SV_BOX_SIZE = 96;
 
 export function mountColorPalette(container: HTMLElement): () => void {
   container.classList.add("color-palette");
@@ -84,15 +84,91 @@ export function mountColorPalette(container: HTMLElement): () => void {
 
   // 内部状态。curHsv 是用户操作的权威源——所有颜色变化都先改 HSV，
   // 再算 RGB 写 sessionStore，避免 RGB↔HSV 来回换算时 Hue 因饱和度=0 丢失。
-  // recent 是会话级最近用色 FIFO。
+  // recent 是持久化的最近用色 FIFO（通过 workspace.json 写盘）。
   let curHsv: Hsv = rgbToHsv(sessionStore.getState().color);
   const recent: Rgb[] = [];
+  // 用户自定义色卡 24 槽，初始全空；启动时从 workspace 读回。
+  const CUSTOM_SLOT_COUNT = 24;
+  const customSwatches: Array<Rgb | null> = new Array(CUSTOM_SLOT_COUNT).fill(null);
+  // workspace.json 路径与 main.ts 的 DEFAULT_WORKSPACE_PATH 保持一致。
+  const WORKSPACE_PATH = "data/workspace.json";
 
   function pushRecent(rgb: Rgb): void {
     const idx = recent.findIndex((c) => rgbEqual(c, rgb));
     if (idx >= 0) recent.splice(idx, 1);
     recent.unshift(rgb);
     if (recent.length > RECENT_LIMIT) recent.length = RECENT_LIMIT;
+    schedulePersistRecent();
+  }
+
+  // 启动时从 workspace.json 加载历史用色与自定义色卡；失败回退空数组不阻塞。
+  void getWorkspace(WORKSPACE_PATH).then((ws) => {
+    const stored = ws.layout.settings?.colorPaletteRecent;
+    if (Array.isArray(stored)) {
+      for (const c of stored) {
+        if (Array.isArray(c) && c.length >= 3) {
+          recent.push([c[0] | 0, c[1] | 0, c[2] | 0]);
+          if (recent.length >= RECENT_LIMIT) break;
+        }
+      }
+      renderRecent();
+    }
+    const custom = ws.layout.settings?.colorPaletteCustom;
+    if (Array.isArray(custom)) {
+      for (let i = 0; i < CUSTOM_SLOT_COUNT && i < custom.length; i++) {
+        const c = custom[i];
+        customSwatches[i] = (Array.isArray(c) && c.length >= 3) ? [c[0] | 0, c[1] | 0, c[2] | 0] : null;
+      }
+      renderSwatches();
+    }
+  }).catch((e) => console.warn("[colorPalette] load recent/custom failed", e));
+
+  // 改完 recent 用 500ms debounce 写盘——拖色相环 / 拖 SV 都会高频 push，避免每次都写。
+  let recentSaveTimer: number | null = null;
+  function schedulePersistRecent(): void {
+    if (recentSaveTimer !== null) window.clearTimeout(recentSaveTimer);
+    recentSaveTimer = window.setTimeout(() => {
+      recentSaveTimer = null;
+      void getWorkspace(WORKSPACE_PATH).then((ws) => {
+        const settings = ws.layout.settings ?? {
+          showMotionDebugPanel: true,
+          showWingDebugPanel: false,
+          showBloodPanel: false,
+        };
+        const next = {
+          ...ws.layout,
+          settings: {
+            ...settings,
+            colorPaletteRecent: recent.map((c): [number, number, number] => [c[0], c[1], c[2]]),
+          },
+        };
+        return saveWorkspace(WORKSPACE_PATH, next, ws.theme);
+      }).catch((e) => console.warn("[colorPalette] persist recent failed", e));
+    }, 500);
+  }
+
+  // 自定义色卡更新写盘 debounce 200ms（用户编辑频次低）。
+  let customSaveTimer: number | null = null;
+  function schedulePersistCustom(): void {
+    if (customSaveTimer !== null) window.clearTimeout(customSaveTimer);
+    customSaveTimer = window.setTimeout(() => {
+      customSaveTimer = null;
+      void getWorkspace(WORKSPACE_PATH).then((ws) => {
+        const settings = ws.layout.settings ?? {
+          showMotionDebugPanel: true,
+          showWingDebugPanel: false,
+          showBloodPanel: false,
+        };
+        const next = {
+          ...ws.layout,
+          settings: {
+            ...settings,
+            colorPaletteCustom: customSwatches.map((c) => c ? [c[0], c[1], c[2]] as [number, number, number] : null),
+          },
+        };
+        return saveWorkspace(WORKSPACE_PATH, next, ws.theme);
+      }).catch((e) => console.warn("[colorPalette] persist custom failed", e));
+    }, 200);
   }
 
   function renderRecent(): void {
@@ -171,11 +247,9 @@ export function mountColorPalette(container: HTMLElement): () => void {
     if (h < 0) h += 360;
     curHsv = { ...curHsv, h };
     const rgb = hsvToRgb(curHsv);
-    pushRecent(rgb);
     sessionStore.setState({ color: rgb });
     drawHueWheel();
     drawSvBox();
-    renderRecent();
   }
   hueCanvas.addEventListener("mousedown", (e) => {
     huePicking = true;
@@ -185,7 +259,12 @@ export function mountColorPalette(container: HTMLElement): () => void {
     if (huePicking) pickHue(e);
   });
   document.addEventListener("mouseup", () => {
-    huePicking = false;
+    if (huePicking) {
+      huePicking = false;
+      // 拖动结束记一次最终颜色
+      pushRecent(sessionStore.getState().color);
+      renderRecent();
+    }
   });
 
   // SV 方块渲染 + 拖拽取饱和度/明度。
@@ -225,10 +304,9 @@ export function mountColorPalette(container: HTMLElement): () => void {
     const y = Math.max(0, Math.min(SV_BOX_SIZE, e.clientY - rect.top));
     curHsv = { ...curHsv, s: x / SV_BOX_SIZE, v: 1 - y / SV_BOX_SIZE };
     const rgb = hsvToRgb(curHsv);
-    pushRecent(rgb);
     sessionStore.setState({ color: rgb });
+    // 仅重绘 SV 方块（hue 角没变，省一帧 hue canvas 重画）；记忆色等 mouseup 才记。
     drawSvBox();
-    renderRecent();
   }
   svCanvas.addEventListener("mousedown", (e) => {
     svPicking = true;
@@ -238,7 +316,11 @@ export function mountColorPalette(container: HTMLElement): () => void {
     if (svPicking) pickSv(e);
   });
   document.addEventListener("mouseup", () => {
-    svPicking = false;
+    if (svPicking) {
+      svPicking = false;
+      pushRecent(sessionStore.getState().color);
+      renderRecent();
+    }
   });
 
   // 当前色预览 + RGB/HEX/Alpha 输入双向同步。
@@ -296,6 +378,172 @@ export function mountColorPalette(container: HTMLElement): () => void {
       row.appendChild(list);
       swatchesEl.appendChild(row);
     }
+    // 用户自定义色卡 3 排 × 8：单击应用、长按 600ms 或右键弹 inline color picker 改色。
+    const customLabel = document.createElement("span");
+    customLabel.style.cssText = "opacity:0.6;font-size:10px;margin-top:6px;";
+    customLabel.textContent = t("colorPalette.swatchGroup_custom");
+    swatchesEl.appendChild(customLabel);
+    for (let row = 0; row < 3; row++) {
+      const rowEl = document.createElement("div");
+      rowEl.style.cssText = "display:flex;gap:2px;";
+      for (let col = 0; col < 8; col++) {
+        const idx = row * 8 + col;
+        const slot = customSwatches[idx];
+        const sw = document.createElement("button");
+        sw.className = "btn cp-swatch";
+        sw.dataset.role = "custom-swatch";
+        sw.dataset.idx = String(idx);
+        sw.title = slot ? rgbToHex(slot) : t("colorPalette.customSlotEmpty");
+        const bg = slot ? rgbToHex(slot) : "transparent";
+        const cross = slot
+          ? ""
+          : "background-image:linear-gradient(45deg,#ccc 25%,transparent 25%,transparent 75%,#ccc 75%),linear-gradient(45deg,#ccc 25%,transparent 25%,transparent 75%,#ccc 75%);background-size:6px 6px;background-position:0 0,3px 3px;";
+        sw.style.cssText = `width:22px;height:22px;padding:0;background:${bg};border:1px solid rgba(0,0,0,0.25);${cross}`;
+        attachCustomSwatchHandlers(sw, idx);
+        rowEl.appendChild(sw);
+      }
+      swatchesEl.appendChild(rowEl);
+    }
+  }
+
+  // 单击应用、长按 600ms / 右键 → 弹 inline picker 编辑该格颜色。
+  function attachCustomSwatchHandlers(sw: HTMLButtonElement, idx: number): void {
+    let pressTimer: number | null = null;
+    let longPressFired = false;
+    sw.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      longPressFired = false;
+      pressTimer = window.setTimeout(() => {
+        longPressFired = true;
+        openCustomSwatchEditor(sw, idx);
+      }, 600);
+    });
+    sw.addEventListener("mouseup", () => {
+      if (pressTimer !== null) {
+        window.clearTimeout(pressTimer);
+        pressTimer = null;
+      }
+    });
+    sw.addEventListener("mouseleave", () => {
+      if (pressTimer !== null) {
+        window.clearTimeout(pressTimer);
+        pressTimer = null;
+      }
+    });
+    sw.addEventListener("click", (e) => {
+      // 长按已弹编辑器时，本次 click 不触发应用色值。
+      if (longPressFired) {
+        e.preventDefault();
+        return;
+      }
+      const slot = customSwatches[idx];
+      if (slot) applyRgb(slot);
+      else openCustomSwatchEditor(sw, idx);
+    });
+    sw.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      openCustomSwatchEditor(sw, idx);
+    });
+  }
+
+  function openCustomSwatchEditor(_sw: HTMLButtonElement, idx: number): void {
+    // 自建 inline modal：HEX 输入 + 应用当前色 + 清空 + 取消。
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:10000;display:flex;align-items:center;justify-content:center;";
+
+    const card = document.createElement("div");
+    card.className = "panel";
+    card.style.cssText = "min-width:280px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;font-size:12px;";
+    overlay.appendChild(card);
+
+    const title = document.createElement("div");
+    title.textContent = t("colorPalette.customSlotEditTitle");
+    title.style.cssText = "font-weight:600;";
+    card.appendChild(title);
+
+    const slot = customSwatches[idx];
+    const initialHex = slot ? rgbToHex(slot) : rgbToHex(sessionStore.getState().color);
+
+    const previewRow = document.createElement("div");
+    previewRow.style.cssText = "display:flex;align-items:center;gap:8px;";
+    const previewBox = document.createElement("div");
+    previewBox.style.cssText = `width:40px;height:24px;background:${initialHex};border:1px solid rgba(0,0,0,0.3);`;
+    const hexInputEl = document.createElement("input");
+    hexInputEl.type = "text";
+    hexInputEl.value = initialHex;
+    hexInputEl.maxLength = 7;
+    hexInputEl.style.cssText = "flex:1;font-family:ui-monospace,monospace;";
+    hexInputEl.addEventListener("input", () => {
+      const rgb = hexToRgb(hexInputEl.value);
+      if (rgb) previewBox.style.background = rgbToHex(rgb);
+    });
+    previewRow.appendChild(previewBox);
+    previewRow.appendChild(hexInputEl);
+    card.appendChild(previewRow);
+
+    const useCurrentBtn = document.createElement("button");
+    useCurrentBtn.type = "button";
+    useCurrentBtn.className = "btn";
+    useCurrentBtn.textContent = t("colorPalette.customSlotUseCurrent");
+    useCurrentBtn.addEventListener("click", () => {
+      const cur = sessionStore.getState().color;
+      hexInputEl.value = rgbToHex(cur);
+      previewBox.style.background = rgbToHex(cur);
+    });
+    card.appendChild(useCurrentBtn);
+
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex;justify-content:space-between;gap:8px;";
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.className = "btn";
+    clearBtn.textContent = t("colorPalette.customSlotClear");
+    clearBtn.disabled = slot === null;
+    const rightGroup = document.createElement("div");
+    rightGroup.style.cssText = "display:flex;gap:8px;";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "btn";
+    cancelBtn.textContent = t("colorPalette.customSlotCancel");
+    const okBtn = document.createElement("button");
+    okBtn.type = "button";
+    okBtn.className = "btn btn-primary";
+    okBtn.textContent = t("colorPalette.customSlotSave");
+    rightGroup.appendChild(cancelBtn);
+    rightGroup.appendChild(okBtn);
+    btnRow.appendChild(clearBtn);
+    btnRow.appendChild(rightGroup);
+    card.appendChild(btnRow);
+
+    function close(): void {
+      document.removeEventListener("keydown", onKey);
+      overlay.remove();
+    }
+    function onKey(e: KeyboardEvent): void {
+      if (e.key === "Escape") close();
+      else if (e.key === "Enter") okBtn.click();
+    }
+    cancelBtn.addEventListener("click", close);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    clearBtn.addEventListener("click", () => {
+      customSwatches[idx] = null;
+      schedulePersistCustom();
+      renderSwatches();
+      close();
+    });
+    okBtn.addEventListener("click", () => {
+      const rgb = hexToRgb(hexInputEl.value);
+      if (!rgb) return;
+      customSwatches[idx] = rgb;
+      schedulePersistCustom();
+      renderSwatches();
+      close();
+    });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(overlay);
+    hexInputEl.focus();
+    hexInputEl.select();
   }
 
   function applyTexts(): void {
@@ -337,19 +585,17 @@ export function mountColorPalette(container: HTMLElement): () => void {
   };
 }
 
-// 取色针：激活后用 50ms setInterval 轮询光标的屏幕坐标 + 左键状态（Tauri 模式）。
-// 鼠标在主窗口内时优先用 elementsFromPoint 取本窗口 canvas 像素；
-// 鼠标在主窗口外（包括图片子窗口、浏览器、桌面）时调 Rust 后端按屏幕坐标查命中
-// `image_*` 子窗口取色。左键从未按 → 按下的边沿即视为确认。Esc 取消恢复原色。
+// 取色针：按下拖动持续预览，松手 commit；Esc 取消。
 const TOOLBAR_HEIGHT = 28;
-const POLL_INTERVAL_MS = 50;
+const POLL_INTERVAL_MS = 30;
 
 function attachDropper(btn: HTMLButtonElement, applyRgb: (rgb: Rgb) => void): () => void {
   let active = false;
   let originalColor: Rgb = sessionStore.getState().color;
   let pollTimer: number | null = null;
-  let lastMouseDown = false; // 上一帧左键状态——边沿检测用
-  let inflight = false; // 后端取色还在路上时跳过本帧避免堆积
+  // dragging：true 表示用户已按下左键进入"拖动取色"阶段，松手即确认。
+  let dragging = false;
+  let inflight = false;
 
   function start(): void {
     if (active) return;
@@ -359,9 +605,8 @@ function attachDropper(btn: HTMLButtonElement, applyRgb: (rgb: Rgb) => void): ()
     btn.classList.add("btn-primary");
     document.addEventListener("keydown", onKey, true);
     void setPickActive(true);
-    // 先 sample 一次当前左键状态：避免点击滴管按钮的 mouseup 残留触发"立即确认"。
-    isMouseLeftDown().then((down) => {
-      lastMouseDown = down;
+    void isMouseLeftDown().then((down) => {
+      dragging = down;
     });
     pollTimer = window.setInterval(() => void poll(), POLL_INTERVAL_MS);
   }
@@ -369,6 +614,7 @@ function attachDropper(btn: HTMLButtonElement, applyRgb: (rgb: Rgb) => void): ()
   function stop(commit: boolean): void {
     if (!active) return;
     active = false;
+    dragging = false;
     document.body.classList.remove("cp-picking");
     btn.classList.remove("btn-primary");
     document.removeEventListener("keydown", onKey, true);
@@ -390,14 +636,12 @@ function attachDropper(btn: HTMLButtonElement, applyRgb: (rgb: Rgb) => void): ()
       if (!active) return;
       let rgb: Rgb | null = null;
       if (pos) {
-        // 屏幕坐标 → 主窗口客户区坐标。鼠标在主窗口内则走本窗口 elementsFromPoint。
         const cx = pos.x - window.screenX;
         const cy = pos.y - window.screenY;
         if (cx >= 0 && cy >= 0 && cx < window.innerWidth && cy < window.innerHeight) {
           rgb = pickAt(cx, cy);
         }
         if (!rgb) {
-          // 鼠标在主窗口外（含图片子窗口）：让 Rust 按屏幕坐标查命中子窗口。
           rgb = await pickImagePixelByScreenCoord(pos.x, pos.y, TOOLBAR_HEIGHT);
         }
       }
@@ -405,17 +649,15 @@ function attachDropper(btn: HTMLButtonElement, applyRgb: (rgb: Rgb) => void): ()
       if (rgb) {
         sessionStore.setState({ color: rgb });
       }
-      // 左键边沿检测：未按 → 按下 视为确认。
       const down = await isMouseLeftDown();
       if (!active) return;
-      if (down && !lastMouseDown) {
-        // 用最后一次取到的颜色提交（rgb 可能为 null，此时取当前 sessionStore.color）。
+      if (!down && dragging) {
         const finalRgb = rgb ?? sessionStore.getState().color;
         applyRgb(finalRgb);
         stop(true);
         return;
       }
-      lastMouseDown = down;
+      if (down) dragging = true;
     } finally {
       inflight = false;
     }
@@ -439,6 +681,7 @@ function attachDropper(btn: HTMLButtonElement, applyRgb: (rgb: Rgb) => void): ()
 
 function pickAt(clientX: number, clientY: number): Rgb | null {
   // 优先 canvas；canvas 不在时尝试 <img>（图片子窗口的 <img>）。
+  // 取像素时用 round + 周围 3×3 平均，降低显示像素 → 源像素映射的 ±1 偏差。
   const els = document.elementsFromPoint(clientX, clientY);
   for (const el of els) {
     if (el instanceof HTMLCanvasElement) {
@@ -446,20 +689,17 @@ function pickAt(clientX: number, clientY: number): Rgb | null {
       if (rect.width === 0 || rect.height === 0) continue;
       const sx = (clientX - rect.left) * (el.width / rect.width);
       const sy = (clientY - rect.top) * (el.height / rect.height);
-      const cx = Math.max(0, Math.min(el.width - 1, Math.floor(sx)));
-      const cy = Math.max(0, Math.min(el.height - 1, Math.floor(sy)));
+      const cx = Math.max(0, Math.min(el.width - 1, Math.round(sx)));
+      const cy = Math.max(0, Math.min(el.height - 1, Math.round(sy)));
       try {
         const ctx = el.getContext("2d");
         if (!ctx) continue;
-        const data = ctx.getImageData(cx, cy, 1, 1).data;
-        return [data[0], data[1], data[2]];
+        return sampleCenter(ctx, cx, cy, el.width, el.height);
       } catch {
-        // tainted canvas（跨域 img 绘入）会抛 SecurityError，跳过继续找下一层。
         continue;
       }
     }
     if (el instanceof HTMLImageElement && el.complete && el.naturalWidth > 0) {
-      // 把 img 暂时画到离屏 canvas 取色。仅命中 same-origin / dataURL 时成功。
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) continue;
       const off = document.createElement("canvas");
@@ -471,14 +711,18 @@ function pickAt(clientX: number, clientY: number): Rgb | null {
         ctx.drawImage(el, 0, 0);
         const sx = ((clientX - rect.left) / rect.width) * el.naturalWidth;
         const sy = ((clientY - rect.top) / rect.height) * el.naturalHeight;
-        const cx = Math.max(0, Math.min(el.naturalWidth - 1, Math.floor(sx)));
-        const cy = Math.max(0, Math.min(el.naturalHeight - 1, Math.floor(sy)));
-        const data = ctx.getImageData(cx, cy, 1, 1).data;
-        return [data[0], data[1], data[2]];
+        const cx = Math.max(0, Math.min(el.naturalWidth - 1, Math.round(sx)));
+        const cy = Math.max(0, Math.min(el.naturalHeight - 1, Math.round(sy)));
+        return sampleCenter(ctx, cx, cy, el.naturalWidth, el.naturalHeight);
       } catch {
         continue;
       }
     }
   }
   return null;
+}
+
+function sampleCenter(ctx: CanvasRenderingContext2D, cx: number, cy: number, _w: number, _h: number): Rgb {
+  const data = ctx.getImageData(cx, cy, 1, 1).data;
+  return [data[0], data[1], data[2]];
 }

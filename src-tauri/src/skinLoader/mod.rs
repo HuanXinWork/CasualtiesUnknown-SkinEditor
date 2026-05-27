@@ -6,15 +6,24 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::accessories::{self, AccessoryEntry};
 use crate::apiLayer::ApiError;
 
-/// 单个皮肤：name 是目录名，body/head/wings 是该目录下三个分类的 PartInfo 列表。
+/// 单个皮肤：name 是目录名，body/head/wings/accessories 是该目录下四个分类的 PartInfo 列表，
+/// accessoryConfigs 是 `<skin>/accessories.json` 解析结果（缺失为空），用于 enabled / limb / 偏移叠加。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skin {
     pub name: String,
     pub body: Vec<PartInfo>,
     pub head: Vec<PartInfo>,
     pub wings: Vec<PartInfo>,
+    #[serde(default)]
+    pub accessories: Vec<PartInfo>,
+    #[serde(default)]
+    pub accessoryConfigs: Vec<AccessoryEntry>,
+    /// `<skin>/Blood/*.png` 列表——血液粒子贴图，可在编辑画布编辑像素，不参与装配预览。
+    #[serde(default)]
+    pub blood: Vec<PartInfo>,
 }
 
 /// 旧名别名，保留供仍引用 `Stage` 字面量的代码路径。
@@ -35,6 +44,8 @@ pub enum PartCategory {
     Body,
     Head,
     Wings,
+    Accessories,
+    Blood,
 }
 
 impl PartCategory {
@@ -43,6 +54,8 @@ impl PartCategory {
             PartCategory::Body => "Body",
             PartCategory::Head => "Head",
             PartCategory::Wings => "Wings",
+            PartCategory::Accessories => "Accessories",
+            PartCategory::Blood => "Blood",
         }
     }
 }
@@ -62,29 +75,53 @@ pub fn scanStages(skinRoot: &Path) -> Vec<Stage> {
             let stageDir = skinRoot.join(&id);
             if stageDir.is_dir() {
                 Skin {
-                    name: id,
+                    name: id.clone(),
                     body: scanCategory(&stageDir, PartCategory::Body),
                     head: scanCategory(&stageDir, PartCategory::Head),
                     wings: scanCategory(&stageDir, PartCategory::Wings),
+                    accessories: scanCategory(&stageDir, PartCategory::Accessories),
+                    accessoryConfigs: accessories::loadAccessories(
+                        &accessories::accessoriesPath(skinRoot, &id),
+                    ),
+                    blood: scanCategory(&stageDir, PartCategory::Blood),
                 }
             } else {
-                Skin { name: id, body: vec![], head: vec![], wings: vec![] }
+                Skin {
+                    name: id,
+                    body: vec![],
+                    head: vec![],
+                    wings: vec![],
+                    accessories: vec![],
+                    accessoryConfigs: vec![],
+                    blood: vec![],
+                }
             }
         })
         .collect()
 }
 
-/// 扫描单个皮肤目录。目录不存在时返回 body/head 都空的占位 Skin。
+/// 扫描单个皮肤目录。目录不存在时返回所有分类都空的占位 Skin。
 pub fn scanSkin(skinsRoot: &Path, skinName: &str) -> Skin {
     let skinDir = skinsRoot.join(skinName);
     if !skinDir.is_dir() {
-        return Skin { name: skinName.to_string(), body: vec![], head: vec![], wings: vec![] };
+        return Skin {
+            name: skinName.to_string(),
+            body: vec![],
+            head: vec![],
+            wings: vec![],
+            accessories: vec![],
+            accessoryConfigs: vec![],
+            blood: vec![],
+        };
     }
     Skin {
         name: skinName.to_string(),
         body: scanCategory(&skinDir, PartCategory::Body),
         head: scanCategory(&skinDir, PartCategory::Head),
         wings: scanCategory(&skinDir, PartCategory::Wings),
+        accessories: scanCategory(&skinDir, PartCategory::Accessories),
+        accessoryConfigs: accessories::loadAccessories(&accessories::accessoriesPath(skinsRoot, skinName)),
+        blood: scanCategory(&skinDir, PartCategory::Blood),
     }
 }
 
@@ -119,6 +156,14 @@ fn scanCategory(stageDir: &Path, category: PartCategory) -> Vec<PartInfo> {
         }
         if !isPng(&path) {
             // 非 PNG 扩展名一律跳过，不读内容也不计入结果。
+            continue;
+        }
+        // 区块 mask 文件名形如 `<part>.zones.png`，不是部件本体，从列表里剔除。
+        let fname = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if fname.to_ascii_lowercase().ends_with(".zones.png") {
             continue;
         }
         let name = path
@@ -346,15 +391,58 @@ pub struct ImportResult {
     pub skipped: usize,
 }
 
-/// 把 `<skinDir>/{Body,Head,Wings}/*.{png,txt}` 与 `<skinDir>/wings.json` 打成 zip，
-/// 顶层即 Body/ Head/ Wings/ 与根目录的 wings.json。
-pub fn exportSkinPack(skinDir: &Path, zipPath: &Path) -> Result<usize, ApiError> {
+/// 导出格式：flat = 全部平铺到 `<皮肤名>/Body/`；categorized = 按分类放 Body/Head/Wings/Accessories。
+/// 两种格式 zip 顶层都套 `<皮肤名>/`；wings.json / accessories.json / blood.json 始终落根。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportLayout {
+    Flat,
+    Categorized,
+}
+
+impl ExportLayout {
+    pub fn fromStr(s: &str) -> Self {
+        match s {
+            "flat" | "topLevel" => ExportLayout::Flat,
+            _ => ExportLayout::Categorized,
+        }
+    }
+}
+
+/// 把 `<skinDir>/{Body,Head,Wings,Accessories}/*.{png,txt}` 与根目录的 wings.json /
+/// accessories.json / blood.json（按 includeBlood 决定）打成 zip。
+/// 顶层结构由 layout 决定。
+pub fn exportSkinPack(
+    skinDir: &Path,
+    zipPath: &Path,
+    layout: ExportLayout,
+    includeBlood: bool,
+) -> Result<usize, ApiError> {
+    let skinName = skinDir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("skin");
+    let prefix = format!("{}/", skinName);
+    let categoryDir = |cat: &str| -> String {
+        match layout {
+            ExportLayout::Flat => "Body".to_string(),
+            ExportLayout::Categorized => cat.to_string(),
+        }
+    };
     let file = fs::File::create(zipPath).map_err(|e| ioErr("create zip", zipPath, e))?;
     let mut zip = zip::ZipWriter::new(file);
     let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
     let mut count = 0usize;
-    for cat in ["Body", "Head", "Wings"] {
+    let writeFile = |zip: &mut zip::ZipWriter<fs::File>, relInZip: &str, bytes: &[u8]| -> Result<(), ApiError> {
+        let entryPath = format!("{}{}", prefix, relInZip);
+        zip.start_file(&entryPath, opts).map_err(zipErr)?;
+        zip.write_all(bytes).map_err(|e| ApiError {
+            code: "zip_failed".into(),
+            message: format!("write zip entry {} failed: {}", entryPath, e),
+        })?;
+        Ok(())
+    };
+    for cat in ["Body", "Head", "Wings", "Accessories"] {
         let dir = skinDir.join(cat);
         let entries = match fs::read_dir(&dir) {
             Ok(e) => e,
@@ -369,26 +457,48 @@ pub fn exportSkinPack(skinDir: &Path, zipPath: &Path) -> Result<usize, ApiError>
                 Some(s) => s.to_string(),
                 None => continue,
             };
-            let zipEntry = format!("{}/{}", cat, fname);
+            let rel = format!("{}/{}", categoryDir(cat), fname);
             let bytes = fs::read(&path).map_err(|e| ioErr("read", &path, e))?;
-            zip.start_file(&zipEntry, opts).map_err(zipErr)?;
-            zip.write_all(&bytes).map_err(|e| ApiError {
-                code: "zip_failed".into(),
-                message: format!("write zip entry {} failed: {}", zipEntry, e),
-            })?;
+            writeFile(&mut zip, &rel, &bytes)?;
             count += 1;
         }
     }
-    // 单皮肤的 wings.json 配置位于 skinDir 根，附带一并打包，导入端按文件名落回原位。
-    let wingsJson = skinDir.join("wings.json");
-    if wingsJson.is_file() {
-        let bytes = fs::read(&wingsJson).map_err(|e| ioErr("read", &wingsJson, e))?;
-        zip.start_file("wings.json", opts).map_err(zipErr)?;
-        zip.write_all(&bytes).map_err(|e| ApiError {
-            code: "zip_failed".into(),
-            message: format!("write zip entry wings.json failed: {}", e),
-        })?;
-        count += 1;
+    // wings.json / accessories.json：与皮肤同级的元数据文件，永远跟随导出。
+    for meta in ["wings.json", "accessories.json"] {
+        let metaPath = skinDir.join(meta);
+        if metaPath.is_file() {
+            let bytes = fs::read(&metaPath).map_err(|e| ioErr("read", &metaPath, e))?;
+            writeFile(&mut zip, meta, &bytes)?;
+            count += 1;
+        }
+    }
+    // blood.json 由 includeBlood 单独控制——血液配置往往与皮肤无关（个人偏好），
+    // 用户可能希望分发不带血液偏好的皮肤包，故拆成独立开关。
+    if includeBlood {
+        let bloodPath = skinDir.join("blood.json");
+        if bloodPath.is_file() {
+            let bytes = fs::read(&bloodPath).map_err(|e| ioErr("read", &bloodPath, e))?;
+            writeFile(&mut zip, "blood.json", &bytes)?;
+            count += 1;
+        }
+        // Blood/*.png（自定义粒子贴图）也跟随血液配置一起导出。
+        let bloodDir = skinDir.join("Blood");
+        if let Ok(entries) = fs::read_dir(&bloodDir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() || !isExportable(&path) {
+                    continue;
+                }
+                let fname = match path.file_name().and_then(|s| s.to_str()) {
+                    Some(s) => s.to_string(),
+                    None => continue,
+                };
+                let rel = format!("Blood/{}", fname);
+                let bytes = fs::read(&path).map_err(|e| ioErr("read", &path, e))?;
+                writeFile(&mut zip, &rel, &bytes)?;
+                count += 1;
+            }
+        }
     }
     zip.finish().map_err(zipErr)?;
     Ok(count)
@@ -475,6 +585,32 @@ fn classifyEntry(name: &str) -> EntryKind {
     if fname.eq_ignore_ascii_case("wings.json") {
         return EntryKind::Accept(std::path::PathBuf::from("wings.json"));
     }
+    // 根级 accessories.json 同样直通。
+    if fname.eq_ignore_ascii_case("accessories.json") {
+        return EntryKind::Accept(std::path::PathBuf::from("accessories.json"));
+    }
+    // 根级 blood.json：跟随血液配置一起导入回原位。
+    if fname.eq_ignore_ascii_case("blood.json") {
+        return EntryKind::Accept(std::path::PathBuf::from("blood.json"));
+    }
+    // Blood/ 子目录：自定义粒子贴图整目录直通。
+    for seg in comps.iter().rev().skip(1) {
+        if seg.eq_ignore_ascii_case("Blood") {
+            if !isExportableName(fname) {
+                return EntryKind::Drop;
+            }
+            return EntryKind::Accept(std::path::PathBuf::from(format!("Blood/{}", fname)));
+        }
+    }
+    // Accessories/ 路径段：把 PNG 落回 <skinDir>/Accessories/<file>。
+    for seg in comps.iter().rev().skip(1) {
+        if seg.eq_ignore_ascii_case("Accessories") {
+            if !isExportableName(fname) {
+                return EntryKind::Drop;
+            }
+            return EntryKind::Accept(std::path::PathBuf::from(format!("Accessories/{}", fname)));
+        }
+    }
 
     if !isExportableName(fname) {
         return EntryKind::Drop;
@@ -487,15 +623,30 @@ fn classifyEntry(name: &str) -> EntryKind {
         }
     }
 
-    // 否则按文件名关键字归类，确保只含 Body/ 一个目录的旧式包也能正确分发。
+    // 按 baseSizes 部件表归类（含 F/B 后缀识别），不依赖 zip 内目录结构。
+    if fname.to_lowercase().ends_with(".png") {
+        let stem = std::path::Path::new(fname)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(fname);
+        if let Some(cat) = crate::baseSizes::categoryFor(stem) {
+            return EntryKind::Accept(std::path::PathBuf::from(format!("{}/{}", cat, fname)));
+        }
+    }
+
+    // 最后按文件名关键字归类。
     let cat = classifyByName(fname);
     EntryKind::Accept(std::path::PathBuf::from(format!("{}/{}", cat, fname)))
 }
 
-/// 文件名（不含路径）按关键字归类：含 wing → Wings，含 head/face/eye/mouth/disfigured → Head，
-/// 其余落到 Body。匹配大小写不敏感；wings.json 等元数据文件不进此函数（被 isExportableName 过滤）。
+/// 文件名（不含路径）按关键字归类：含 blood → Blood，含 wing → Wings，
+/// 含 head/face/eye/mouth/disfigured → Head，其余落到 Body。
+/// 匹配大小写不敏感；wings.json 等元数据文件不进此函数（被 isExportableName 过滤）。
 fn classifyByName(fname: &str) -> &'static str {
     let lower = fname.to_lowercase();
+    if lower.contains("blood") {
+        return "Blood";
+    }
     if lower.contains("wing") {
         return "Wings";
     }
@@ -594,32 +745,62 @@ mod skinPackTests {
     #[test]
     fn exportEmptyRootProducesZeroEntries() {
         let tmp = TempDir::new("expEmpty");
+        let skinDir = tmp.path().join("st1");
+        fs::create_dir_all(&skinDir).unwrap();
         let zipPath = tmp.path().join("out.zip");
-        let n = exportSkinPack(tmp.path(), &zipPath).expect("export");
+        let n = exportSkinPack(&skinDir, &zipPath, ExportLayout::Categorized, false).expect("export");
         assert_eq!(n, 0);
         assert!(listZipEntries(&zipPath).is_empty());
     }
 
     #[test]
-    fn exportPacksPngAndTxtUnderBodyAndHead() {
-        let tmp = TempDir::new("expSingle");
-        fs::create_dir_all(tmp.path().join("Body")).unwrap();
-        fs::create_dir_all(tmp.path().join("Head")).unwrap();
-        writePng(&tmp.path().join("Body").join("UpTorso.png"));
-        fs::write(tmp.path().join("Body").join("notes.txt"), b"hi").unwrap();
-        writePng(&tmp.path().join("Head").join("EyeOpen.png"));
+    fn exportFlatLayoutPutsAllUnderBody() {
+        let tmp = TempDir::new("expFlat");
+        let skinDir = tmp.path().join("st1");
+        fs::create_dir_all(skinDir.join("Body")).unwrap();
+        fs::create_dir_all(skinDir.join("Head")).unwrap();
+        fs::create_dir_all(skinDir.join("Wings")).unwrap();
+        writePng(&skinDir.join("Body").join("UpTorso.png"));
+        writePng(&skinDir.join("Head").join("EyeOpen.png"));
+        writePng(&skinDir.join("Wings").join("wingUL.png"));
 
         let zipPath = tmp.path().join("out.zip");
-        let n = exportSkinPack(tmp.path(), &zipPath).expect("export");
+        let n = exportSkinPack(&skinDir, &zipPath, ExportLayout::Flat, false).expect("export");
+        assert_eq!(n, 3);
+        let mut names = listZipEntries(&zipPath);
+        names.sort();
+        // flat 模式：所有 PNG 都落 `<皮肤名>/Body/`，无 Head/Wings 子目录。
+        assert_eq!(
+            names,
+            vec![
+                "st1/Body/EyeOpen.png".to_string(),
+                "st1/Body/UpTorso.png".to_string(),
+                "st1/Body/wingUL.png".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn exportCategorizedKeepsSubfolders() {
+        let tmp = TempDir::new("expCategorized");
+        let skinDir = tmp.path().join("st1");
+        fs::create_dir_all(skinDir.join("Body")).unwrap();
+        fs::create_dir_all(skinDir.join("Head")).unwrap();
+        writePng(&skinDir.join("Body").join("UpTorso.png"));
+        fs::write(skinDir.join("Body").join("notes.txt"), b"hi").unwrap();
+        writePng(&skinDir.join("Head").join("EyeOpen.png"));
+
+        let zipPath = tmp.path().join("out.zip");
+        let n = exportSkinPack(&skinDir, &zipPath, ExportLayout::Categorized, false).expect("export");
         assert_eq!(n, 3);
         let mut names = listZipEntries(&zipPath);
         names.sort();
         assert_eq!(
             names,
             vec![
-                "Body/UpTorso.png".to_string(),
-                "Body/notes.txt".to_string(),
-                "Head/EyeOpen.png".to_string(),
+                "st1/Body/UpTorso.png".to_string(),
+                "st1/Body/notes.txt".to_string(),
+                "st1/Head/EyeOpen.png".to_string(),
             ]
         );
     }
@@ -627,25 +808,26 @@ mod skinPackTests {
     #[test]
     fn exportIncludesWingsAndWingsJson() {
         let tmp = TempDir::new("expWings");
-        fs::create_dir_all(tmp.path().join("Body")).unwrap();
-        fs::create_dir_all(tmp.path().join("Wings")).unwrap();
-        writePng(&tmp.path().join("Body").join("UpTorso.png"));
-        writePng(&tmp.path().join("Wings").join("wingUL.png"));
-        writePng(&tmp.path().join("Wings").join("wingUR.png"));
-        fs::write(tmp.path().join("wings.json"), b"{\"wingUL\":{\"x\":-2}}").unwrap();
+        let skinDir = tmp.path().join("st1");
+        fs::create_dir_all(skinDir.join("Body")).unwrap();
+        fs::create_dir_all(skinDir.join("Wings")).unwrap();
+        writePng(&skinDir.join("Body").join("UpTorso.png"));
+        writePng(&skinDir.join("Wings").join("wingUL.png"));
+        writePng(&skinDir.join("Wings").join("wingUR.png"));
+        fs::write(skinDir.join("wings.json"), b"{\"wingUL\":{\"x\":-2}}").unwrap();
 
         let zipPath = tmp.path().join("out.zip");
-        let n = exportSkinPack(tmp.path(), &zipPath).expect("export");
+        let n = exportSkinPack(&skinDir, &zipPath, ExportLayout::Categorized, false).expect("export");
         assert_eq!(n, 4);
         let mut names = listZipEntries(&zipPath);
         names.sort();
         assert_eq!(
             names,
             vec![
-                "Body/UpTorso.png".to_string(),
-                "Wings/wingUL.png".to_string(),
-                "Wings/wingUR.png".to_string(),
-                "wings.json".to_string(),
+                "st1/Body/UpTorso.png".to_string(),
+                "st1/Wings/wingUL.png".to_string(),
+                "st1/Wings/wingUR.png".to_string(),
+                "st1/wings.json".to_string(),
             ]
         );
     }

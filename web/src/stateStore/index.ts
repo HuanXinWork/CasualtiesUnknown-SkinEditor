@@ -5,8 +5,8 @@ import type { Orientation, PartCategory, ThemeConfig } from "./types";
 import type { HeadVariant, PixelDiff } from "../apiClient";
 import { defaultTheme } from "./theme";
 
-/// 编辑工具：brush / eraser / pan / gradient。
-export type Tool = "brush" | "eraser" | "pan" | "gradient";
+/// 编辑工具：brush / eraser / pan / gradient / zoneBrush。
+export type Tool = "brush" | "eraser" | "pan" | "gradient" | "zoneBrush";
 
 /// i18n 语言；会话级，刷新页面回到默认 zh，不写盘。
 export type Lang = "zh" | "en";
@@ -49,6 +49,13 @@ export interface SessionState {
   assemblyOverrideVersion: number;
   /// 创建 F/B 前后侧副本等改动 part 列表后递增；partPanel 监听后重拉 listParts。
   partListVersion: number;
+  /// accessories.json 改动后递增；previewCanvas / partPanel 监听重拉合成预览与列表。
+  accessoriesVersion: number;
+  /// 当前活跃区块 ID（zoneBrush 工具下笔刷写入的目标 ID，1~255）；
+  /// editorCanvas 在 onload zones 时按已存在区块或 1 设置。
+  activeZoneId: number;
+  /// 橡皮模式：part 清部件像素；zone 清当前部件区块 mask。
+  eraserMode: "part" | "zone";
   /// 历史环形缓冲，最多 50 条。
   history: HistoryRecord[];
   /// previewCanvas 合成预览的过滤参数。
@@ -62,6 +69,8 @@ export interface SessionState {
   showMotionDebugPanel: boolean;
   /// 翼装配调试面板显隐；默认关闭，需要时去设置勾选。
   showWingDebugPanel: boolean;
+  /// 血液粒子配置面板显隐；默认关闭，需要时去设置勾选。
+  showBloodPanel: boolean;
   /// 未保存改动追踪：brush/eraser/gradient/undo/redo 后置脏；savePart 成功后清脏。
   dirtyPartIds: string[];
 }
@@ -109,6 +118,9 @@ function buildInitialState(): SessionState {
     layerSnapshotVersion: 0,
     assemblyOverrideVersion: 0,
     partListVersion: 0,
+    accessoriesVersion: 0,
+    activeZoneId: 1,
+    eraserMode: "part",
     history: [],
     orientation: "front",
     expressionIndex: 0,
@@ -116,6 +128,7 @@ function buildInitialState(): SessionState {
     lang: "zh",
     showMotionDebugPanel: true,
     showWingDebugPanel: false,
+    showBloodPanel: false,
     dirtyPartIds: [],
   };
 }

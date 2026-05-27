@@ -2,11 +2,15 @@
 // 前端按 runtimeMode 把同名调用分发到 Tauri IPC 或 HTTP REST。
 
 import type {
+  AccessoryEntry,
+  BloodConfig,
   Orientation,
   PartCategory,
   Skin,
   ThemeConfig,
   WorkspaceLayout,
+  ZoneEntry,
+  ZonesData,
 } from "../stateStore/types";
 import { getRuntimeMode } from "../runtimeMode";
 
@@ -415,6 +419,8 @@ export interface CompositeParams {
   orientation: Orientation;
   expressionIndex: number;
   headVariant: HeadVariant | null;
+  /// 播放时刻（秒）。前端 RAF 循环递增；缺省 0 渲染静态首帧。
+  timeSec?: number;
 }
 
 // CompositeResult：100×100 RGBA flat buffer。pixels 因 JSON 序列化为 number[]。
@@ -438,6 +444,8 @@ export interface MotionCompositeParams {
   frameIndex: number;
   expressionIndex: number;
   headVariant: HeadVariant | null;
+  /// 播放时刻（秒），同 CompositeParams.timeSec。
+  timeSec?: number;
 }
 
 export interface MotionCompositeResult {
@@ -502,13 +510,23 @@ export interface ImportSkinPackResult {
   skipped: number;
 }
 
-export function exportSkinPack(skinRoot: string, zipPath: string): Promise<ExportSkinPackResult> {
+/// 导出格式：
+/// - "flat" = 旧式：所有 PNG 平铺到单一 `<皮肤名>/Body/`
+/// - "categorized" = 新式：按分类放 `<皮肤名>/{Body,Head,Wings,Accessories}/`
+export type ExportLayout = "flat" | "categorized";
+
+export function exportSkinPack(
+  skinRoot: string,
+  zipPath: string,
+  layout: ExportLayout = "categorized",
+  includeBlood: boolean = false,
+): Promise<ExportSkinPackResult> {
   if (getRuntimeMode() === "tauri") {
     return tauriInvoke<ExportSkinPackResult>("api_exportSkinPack", {
-      params: { skinRoot, zipPath },
+      params: { skinRoot, zipPath, layout, includeBlood },
     });
   }
-  return httpPost<ExportSkinPackResult>("/api/skinPack/export", { skinRoot, zipPath });
+  return httpPost<ExportSkinPackResult>("/api/skinPack/export", { skinRoot, zipPath, layout, includeBlood });
 }
 
 export function importSkinPack(
@@ -597,6 +615,76 @@ export function saveWingsConfig(skinRoot: string, skinName: string, config: Wing
     return tauriInvoke<void>("api_saveWingsConfig", { params: { skinRoot, skinName, config } });
   }
   return httpPost<void>("/api/wings/save", { skinRoot, skinName, config });
+}
+
+/// 切换单皮肤指定 id 配件的 enabled 字段并落盘 accessories.json。
+export function setAccessoryEnabled(skinRoot: string, skinName: string, id: string, enabled: boolean): Promise<void> {
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<void>("api_setAccessoryEnabled", { params: { skinRoot, skinName, id, enabled } });
+  }
+  return httpPost<void>("/api/accessories/setEnabled", { skinRoot, skinName, id, enabled });
+}
+
+/// 写整条配件配置；entry.id 已存在则原位替换，否则追加。
+export function saveAccessoryConfig(skinRoot: string, skinName: string, entry: AccessoryEntry): Promise<void> {
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<void>("api_saveAccessoryConfig", { params: { skinRoot, skinName, entry } });
+  }
+  return httpPost<void>("/api/accessories/save", { skinRoot, skinName, entry });
+}
+
+/// 读 per-skin blood.json；缺失时返回全 null 默认。
+export function loadBloodConfig(skinRoot: string, skinName: string): Promise<BloodConfig> {
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<BloodConfig>("api_loadBloodConfig", { params: { skinRoot, skinName } });
+  }
+  return httpPost<BloodConfig>("/api/blood/load", { skinRoot, skinName });
+}
+
+/// 整体覆写 blood.json。
+export function saveBloodConfig(skinRoot: string, skinName: string, config: BloodConfig): Promise<void> {
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<void>("api_saveBloodConfig", { params: { skinRoot, skinName, config } });
+  }
+  return httpPost<void>("/api/blood/save", { skinRoot, skinName, config });
+}
+
+interface RawZonesData {
+  width: number;
+  height: number;
+  ids: number[];
+  config: { zones: ZoneEntry[] };
+}
+
+/// 读取部件区块 mask + 配置；缺失返回零 ids 数组与空 zones。
+export async function loadZones(skinRoot: string, skinName: string, category: PartCategory, partName: string): Promise<ZonesData> {
+  const raw = await (getRuntimeMode() === "tauri"
+    ? tauriInvoke<RawZonesData>("api_loadZones", { params: { skinRoot, skinName, category, partName } })
+    : httpPost<RawZonesData>("/api/zones/load", { skinRoot, skinName, category, partName }));
+  return {
+    width: raw.width,
+    height: raw.height,
+    ids: Uint8Array.from(raw.ids),
+    config: raw.config ?? { zones: [] },
+  };
+}
+
+/// 写整张 mask + 整份 config。
+export function saveZones(skinRoot: string, skinName: string, category: PartCategory, partName: string, data: ZonesData): Promise<void> {
+  const params = {
+    skinRoot,
+    skinName,
+    category,
+    partName,
+    width: data.width,
+    height: data.height,
+    ids: Array.from(data.ids),
+    config: data.config,
+  };
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<void>("api_saveZones", { params });
+  }
+  return httpPost<void>("/api/zones/save", params);
 }
 
 // 主窗口关闭拦截：仅 Tauri 桌面壳生效。Rust 端在用户点 X 时调 prevent_close

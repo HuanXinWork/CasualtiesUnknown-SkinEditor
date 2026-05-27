@@ -15,7 +15,8 @@ use crate::apiLayer::{
     MotionCaptureResult, MotionCompositeParams, MotionCompositeResult, PartIdParams, PartsParams,
     RemoveLayerParams, ReorderLayersParams, ResizePartParams, ResizePartResult, SavePartParams, SaveWorkspaceParams,
     CreateSidePartParams, CreateSidePartResult,
-    SetActiveLayerParams, SetAssemblyOverrideParams, SkinsParams, SaveWingsConfigParams,
+    SetActiveLayerParams, SetAssemblyOverrideParams, SetAccessoryEnabledParams, SaveAccessoryConfigParams, LoadZonesParams, LoadZonesResult, SaveZonesParams, SkinsParams, SaveWingsConfigParams,
+    BloodConfigPathParams, SaveBloodConfigParams,
     WingsConfig, WingsConfigPathParams, WorkspacePathParams,
     WorkspaceResult,
 };
@@ -288,6 +289,60 @@ pub fn api_saveWingsConfig(
     params: SaveWingsConfigParams,
 ) -> Result<(), String> {
     api.saveWingsConfig(params).map_err(toErrString)
+}
+
+/// 切换单皮肤指定 id 配件的 enabled 字段并落盘 accessories.json。
+#[tauri::command]
+pub fn api_setAccessoryEnabled(
+    api: State<'_, SharedApi>,
+    params: SetAccessoryEnabledParams,
+) -> Result<(), String> {
+    api.setAccessoryEnabled(params).map_err(toErrString)
+}
+
+/// 写整条配件配置；entry.id 已存在则原位替换，否则追加。
+#[tauri::command]
+pub fn api_saveAccessoryConfig(
+    api: State<'_, SharedApi>,
+    params: SaveAccessoryConfigParams,
+) -> Result<(), String> {
+    api.saveAccessoryConfig(params).map_err(toErrString)
+}
+
+/// 读 per-skin blood.json；缺失返回全 None 默认。
+#[tauri::command]
+pub fn api_loadBloodConfig(
+    api: State<'_, SharedApi>,
+    params: BloodConfigPathParams,
+) -> Result<crate::blood::BloodConfig, String> {
+    api.loadBloodConfig(params).map_err(toErrString)
+}
+
+/// 整体覆写 blood.json。
+#[tauri::command]
+pub fn api_saveBloodConfig(
+    api: State<'_, SharedApi>,
+    params: SaveBloodConfigParams,
+) -> Result<(), String> {
+    api.saveBloodConfig(params).map_err(toErrString)
+}
+
+/// 加载部件区块 mask + 配置；缺失返回零 ids 与空 zones。
+#[tauri::command]
+pub fn api_loadZones(
+    api: State<'_, SharedApi>,
+    params: LoadZonesParams,
+) -> Result<LoadZonesResult, String> {
+    api.loadZones(params).map_err(toErrString)
+}
+
+/// 写整张 mask + 整份 config。
+#[tauri::command]
+pub fn api_saveZones(
+    api: State<'_, SharedApi>,
+    params: SaveZonesParams,
+) -> Result<(), String> {
+    api.saveZones(params).map_err(toErrString)
 }
 
 /// 关闭拦截轮询。前端按 ~250ms 间隔读，返回 true 表示用户点过 X 触发了

@@ -17,17 +17,23 @@ import {
   getFlatten,
   listParts,
   loadPartImage,
+  loadZones,
   resizePart,
+  saveZones,
+  setAccessoryEnabled,
+  saveAccessoryConfig,
   type ApiError,
   type LoadPartResult,
   type PixelDiff,
 } from "../apiClient";
 import { sessionStore, pushHistoryRecord, markPartDirty, markPartClean, bumpPartListVersion } from "../stateStore";
-import type { PartCategory } from "../stateStore/types";
+import { zonesStore } from "../stateStore/zonesStore";
+import type { AccessoryEntry, PartCategory, ZoneEntry, ZonesData } from "../stateStore/types";
 import { subscribeLang, t } from "../i18n";
 import { localizePartName } from "../i18n/partNames";
 import { showToast } from "../toast";
 import { CANVAS_CURSORS } from "../toolPanel/toolIcons";
+import { getSize, setSize } from "../layoutEngine";
 
 const ZOOM_MIN = 0.1;
 
@@ -49,6 +55,9 @@ export function mountEditorCanvas(
   dock?: { setTitleBadge: (text: string, variant?: "default" | "ok" | "warn") => void },
 ): () => void {
   container.classList.add("panel");
+  container.style.flex = "1";
+  container.style.minHeight = "0";
+  container.style.display = "flex";
   container.style.flexDirection = "column";
   container.innerHTML =
     `<div class="editor-canvas-toolbar" style="display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid rgba(0,0,0,var(--border-opacity));">` +
@@ -58,13 +67,32 @@ export function mountEditorCanvas(
     `<span class="mono" data-role="meta" style="margin-left:8px;opacity:0.7;"></span>` +
     `</div>` +
     `<div class="editor-canvas-stage" style="flex:1;min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:16px;">` +
-    `<div class="transparent-grid" data-role="grid" style="display:none;"><canvas></canvas></div>` +
+    `<div class="transparent-grid" data-role="grid" style="display:none;position:relative;"><canvas></canvas><canvas data-role="zones-overlay" style="position:absolute;left:0;top:0;pointer-events:none;image-rendering:pixelated;"></canvas></div>` +
     `<div data-role="placeholder" style="opacity:0.6;">${t("editorCanvas.notSelected")}</div>` +
     `</div>` +
-    `<div class="editor-canvas-footer" style="display:flex;align-items:center;gap:8px;padding:8px;border-top:1px solid rgba(0,0,0,var(--border-opacity));flex-wrap:wrap;">` +
+    `<div class="editor-canvas-footer-grip" data-role="footer-grip" style="flex:none;height:6px;cursor:row-resize;background:transparent;position:relative;"><div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:32px;height:2px;border-radius:2px;background:rgba(0,0,0,0.18);pointer-events:none;"></div></div>` +
+    `<div class="editor-canvas-footer" data-role="footer" style="flex:none;display:flex;flex-direction:column;gap:6px;padding:8px;border-top:1px solid rgba(0,0,0,var(--border-opacity));overflow:auto;">` +
+    `<div data-role="footer-row1" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">` +
     `<button class="btn" data-role="resize-btn" disabled></button>` +
+    `<label data-role="acc-toggle-wrap" style="display:none;align-items:center;gap:6px;cursor:pointer;user-select:none;">` +
+      `<span data-role="acc-toggle-text" style="font-size:13px;"></span>` +
+      `<span data-role="acc-toggle-track" style="position:relative;display:inline-block;width:36px;height:18px;background:#bbb;border-radius:9px;transition:background 0.15s;">` +
+        `<span data-role="acc-toggle-knob" style="position:absolute;top:2px;left:2px;width:14px;height:14px;background:#fff;border-radius:50%;transition:left 0.15s;"></span>` +
+      `</span>` +
+    `</label>` +
+    `<button class="btn" data-role="acc-advanced-btn" style="display:none;"></button>` +
     `<button class="btn" data-role="side-f-btn" style="display:none;"></button>` +
     `<button class="btn" data-role="side-b-btn" style="display:none;"></button>` +
+    `</div>` +
+    `<div data-role="acc-advanced-panel" style="display:none;flex-direction:column;gap:6px;padding:6px 8px;background:rgba(0,0,0,0.04);border-radius:4px;">` +
+      `<div style="display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:12px;">` +
+        `<label style="display:flex;align-items:center;gap:4px;"><span data-role="acc-adv-offX-label"></span><input type="number" data-role="acc-adv-offX" style="width:56px;" /></label>` +
+        `<label style="display:flex;align-items:center;gap:4px;"><span data-role="acc-adv-offY-label"></span><input type="number" data-role="acc-adv-offY" style="width:56px;" /></label>` +
+        `<label style="display:flex;align-items:center;gap:4px;"><span data-role="acc-adv-rot-label"></span><input type="number" data-role="acc-adv-rot" step="1" style="width:60px;" /></label>` +
+        `<label style="display:flex;align-items:center;gap:4px;"><span data-role="acc-adv-z-label"></span><input type="number" data-role="acc-adv-z" style="width:56px;" /></label>` +
+        `<span data-role="acc-adv-status" style="font-size:11px;opacity:0.65;"></span>` +
+      `</div>` +
+    `</div>` +
     `</div>`;
 
   const zoomOutBtn = container.querySelector<HTMLButtonElement>('[data-role="zoom-out"]')!;
@@ -74,9 +102,26 @@ export function mountEditorCanvas(
   const resizeBtn = container.querySelector<HTMLButtonElement>('[data-role="resize-btn"]')!;
   const sideFBtn = container.querySelector<HTMLButtonElement>('[data-role="side-f-btn"]')!;
   const sideBBtn = container.querySelector<HTMLButtonElement>('[data-role="side-b-btn"]')!;
+  const accToggleWrap = container.querySelector<HTMLLabelElement>('[data-role="acc-toggle-wrap"]')!;
+  const accToggleText = container.querySelector<HTMLSpanElement>('[data-role="acc-toggle-text"]')!;
+  const accToggleTrack = container.querySelector<HTMLSpanElement>('[data-role="acc-toggle-track"]')!;
+  const accToggleKnob = container.querySelector<HTMLSpanElement>('[data-role="acc-toggle-knob"]')!;
+  const accAdvBtn = container.querySelector<HTMLButtonElement>('[data-role="acc-advanced-btn"]')!;
+  const accAdvPanel = container.querySelector<HTMLDivElement>('[data-role="acc-advanced-panel"]')!;
+  const accAdvOffX = container.querySelector<HTMLInputElement>('[data-role="acc-adv-offX"]')!;
+  const accAdvOffY = container.querySelector<HTMLInputElement>('[data-role="acc-adv-offY"]')!;
+  const accAdvRot = container.querySelector<HTMLInputElement>('[data-role="acc-adv-rot"]')!;
+  const accAdvZ = container.querySelector<HTMLInputElement>('[data-role="acc-adv-z"]')!;
+  const accAdvStatus = container.querySelector<HTMLSpanElement>('[data-role="acc-adv-status"]')!;
+  const accAdvOffXLabel = container.querySelector<HTMLSpanElement>('[data-role="acc-adv-offX-label"]')!;
+  const accAdvOffYLabel = container.querySelector<HTMLSpanElement>('[data-role="acc-adv-offY-label"]')!;
+  const accAdvRotLabel = container.querySelector<HTMLSpanElement>('[data-role="acc-adv-rot-label"]')!;
+  const accAdvZLabel = container.querySelector<HTMLSpanElement>('[data-role="acc-adv-z-label"]')!;
   const gridEl = container.querySelector<HTMLDivElement>('[data-role="grid"]')!;
   const placeholderEl = container.querySelector<HTMLDivElement>('[data-role="placeholder"]')!;
   const canvas = gridEl.querySelector("canvas")!;
+  const zonesOverlay = gridEl.querySelector<HTMLCanvasElement>('[data-role="zones-overlay"]')!;
+  const zonesCtx = zonesOverlay.getContext("2d");
   const ctx = canvas.getContext("2d");
 
   // 当前部件尺寸（render 后写入），resize 弹窗预填默认值用。
@@ -126,6 +171,7 @@ export function mountEditorCanvas(
     if (tool === "brush") return CANVAS_CURSORS.brush;
     if (tool === "eraser") return CANVAS_CURSORS.eraser;
     if (tool === "gradient") return CANVAS_CURSORS.gradient;
+    if (tool === "zoneBrush") return CANVAS_CURSORS.zoneBrush;
     return "crosshair";
   }
 
@@ -145,6 +191,7 @@ export function mountEditorCanvas(
       sideBBtn.style.display = "none";
       sideFBtn.textContent = t("editorCanvas.createSideFBtn");
       sideBBtn.textContent = t("editorCanvas.createSideBBtn");
+      accToggleWrap.style.display = "none";
       return;
     }
     metaEl.textContent = `${localizePartName(currentPartName)} ${currentWidth}×${currentHeight}`;
@@ -154,6 +201,135 @@ export function mountEditorCanvas(
     sideBBtn.textContent = t("editorCanvas.createSideBBtn");
     sideFBtn.style.display = sideFBtnAvailable && currentPartId ? "" : "none";
     sideBBtn.style.display = sideBBtnAvailable && currentPartId ? "" : "none";
+    refreshAccessoryToggle();
+  }
+
+  // 当前选中部件的 accessoryConfig 缓存；selectedCategory==='Accessories' 才填充。
+  let currentAccessoryEnabled: boolean | null = null;
+  let currentAccessoryEntry: AccessoryEntry | null = null;
+  let advancedOpen = false;
+
+  function applyAdvancedVisible(): void {
+    accAdvPanel.style.display = advancedOpen && currentAccessoryEntry ? "flex" : "none";
+    accAdvBtn.textContent = advancedOpen
+      ? t("editorCanvas.accessoryAdvancedHide")
+      : t("editorCanvas.accessoryAdvancedShow");
+  }
+
+  function fillAdvancedInputs(entry: AccessoryEntry): void {
+    accAdvOffX.value = String(entry.offX);
+    accAdvOffY.value = String(entry.offY);
+    accAdvRot.value = String(entry.rot);
+    accAdvZ.value = String(entry.z);
+    accAdvOffXLabel.textContent = t("editorCanvas.accessoryOffsetX");
+    accAdvOffYLabel.textContent = t("editorCanvas.accessoryOffsetY");
+    accAdvRotLabel.textContent = t("editorCanvas.accessoryRotation");
+    accAdvZLabel.textContent = t("editorCanvas.accessoryZOrder");
+  }
+
+  function refreshAccessoryToggle(): void {
+    const { selectedCategory } = sessionStore.getState();
+    if (selectedCategory !== "Accessories" || !currentPartName || !currentPartId) {
+      accToggleWrap.style.display = "none";
+      accAdvBtn.style.display = "none";
+      accAdvPanel.style.display = "none";
+      currentAccessoryEnabled = null;
+      currentAccessoryEntry = null;
+      return;
+    }
+    const skinName = currentPartId.split("::")[0];
+    listParts(skinRoot, skinName)
+      .then((skin) => {
+        const cfg = skin.accessoryConfigs.find(
+          (c) => c.id === currentPartName || c.sprite === currentPartName,
+        );
+        currentAccessoryEntry = cfg ?? null;
+        currentAccessoryEnabled = cfg?.enabled ?? null;
+        if (currentAccessoryEnabled === null) {
+          accToggleWrap.style.display = "none";
+          accAdvBtn.style.display = "none";
+          accAdvPanel.style.display = "none";
+          return;
+        }
+        accToggleWrap.style.display = "inline-flex";
+        accToggleText.textContent = currentAccessoryEnabled
+          ? t("editorCanvas.accessoryEnabledLabel")
+          : t("editorCanvas.accessoryDisabledLabel");
+        accToggleTrack.style.background = currentAccessoryEnabled ? "#4caf50" : "#bbb";
+        accToggleKnob.style.left = currentAccessoryEnabled ? "20px" : "2px";
+        accAdvBtn.style.display = "";
+        if (cfg) fillAdvancedInputs(cfg);
+        applyAdvancedVisible();
+      })
+      .catch(() => {
+        accToggleWrap.style.display = "none";
+        accAdvBtn.style.display = "none";
+        accAdvPanel.style.display = "none";
+        currentAccessoryEnabled = null;
+        currentAccessoryEntry = null;
+      });
+  }
+
+  accToggleWrap.addEventListener("click", () => {
+    if (currentAccessoryEnabled === null || !currentPartName || !currentPartId) return;
+    const skinName = currentPartId.split("::")[0];
+    const next = !currentAccessoryEnabled;
+    setAccessoryEnabled(skinRoot, skinName, currentPartName, next)
+      .then(() => {
+        currentAccessoryEnabled = next;
+        if (currentAccessoryEntry) currentAccessoryEntry.enabled = next;
+        accToggleText.textContent = next
+          ? t("editorCanvas.accessoryEnabledLabel")
+          : t("editorCanvas.accessoryDisabledLabel");
+        accToggleTrack.style.background = next ? "#4caf50" : "#bbb";
+        accToggleKnob.style.left = next ? "20px" : "2px";
+        sessionStore.setState({
+          accessoriesVersion: (sessionStore.getState().accessoriesVersion ?? 0) + 1,
+        });
+      })
+      .catch((e) => {
+        console.error("setAccessoryEnabled failed", e);
+      });
+  });
+
+  accAdvBtn.addEventListener("click", () => {
+    advancedOpen = !advancedOpen;
+    applyAdvancedVisible();
+  });
+
+  // 配件高级参数实时去抖保存：输入停止 200ms 后写盘 + bump 触发预览重拉。
+  let accAdvSaveTimer: number | null = null;
+  function scheduleAccessoryAdvancedSave(): void {
+    if (!currentAccessoryEntry || !currentPartId) return;
+    if (accAdvSaveTimer !== null) window.clearTimeout(accAdvSaveTimer);
+    accAdvStatus.textContent = t("editorCanvas.accessoryAdvancedSaving");
+    accAdvSaveTimer = window.setTimeout(() => {
+      accAdvSaveTimer = null;
+      if (!currentAccessoryEntry || !currentPartId) return;
+      const skinName = currentPartId.split("::")[0];
+      const entry: AccessoryEntry = {
+        ...currentAccessoryEntry,
+        offX: Number.parseInt(accAdvOffX.value, 10) || 0,
+        offY: Number.parseInt(accAdvOffY.value, 10) || 0,
+        rot: Number.parseFloat(accAdvRot.value) || 0,
+        z: Number.parseInt(accAdvZ.value, 10) || 0,
+      };
+      saveAccessoryConfig(skinRoot, skinName, entry)
+        .then(() => {
+          currentAccessoryEntry = entry;
+          accAdvStatus.textContent = t("editorCanvas.accessoryAdvancedSaved");
+          sessionStore.setState({
+            accessoriesVersion: (sessionStore.getState().accessoriesVersion ?? 0) + 1,
+          });
+        })
+        .catch((e) => {
+          accAdvStatus.textContent = "";
+          console.error("saveAccessoryConfig failed", e);
+        });
+    }, 200);
+  }
+  for (const el of [accAdvOffX, accAdvOffY, accAdvRot, accAdvZ]) {
+    el.addEventListener("input", scheduleAccessoryAdvancedSave);
   }
 
   /// 刷新 side*Btn 的可见性：白名单内 + 当前 part 不带 F/B 后缀 + 同分类下不存在 <name>F.png / <name>B.png。
@@ -180,7 +356,9 @@ export function mountEditorCanvas(
         const list =
           category === "Body" ? skin.body :
           category === "Head" ? skin.head :
-          skin.wings;
+          category === "Wings" ? skin.wings :
+          category === "Blood" ? skin.blood :
+          skin.accessories;
         const fName = `${currentPartName}F`;
         const bName = `${currentPartName}B`;
         sideFBtnAvailable = !list.some((p) => p.name === fName);
@@ -206,6 +384,10 @@ export function mountEditorCanvas(
     currentHeight = 0;
     sideFBtnAvailable = false;
     sideBBtnAvailable = false;
+    currentZones = null;
+    zonesDirty = false;
+    zonesStore.set(null);
+    if (zonesCtx) zonesCtx.clearRect(0, 0, zonesOverlay.width, zonesOverlay.height);
     updateInfoPanel();
     // 未加载 / 加载中 / 加载失败时清空共享 partId，layerPanel 收到 null 后回到空态。
     if (sessionStore.getState().currentPartId !== null) {
@@ -230,6 +412,8 @@ export function mountEditorCanvas(
     if (!ctx) return;
     canvas.width = result.width;
     canvas.height = result.height;
+    zonesOverlay.width = result.width;
+    zonesOverlay.height = result.height;
     gridEl.style.width = `${result.width}px`;
     gridEl.style.height = `${result.height}px`;
     const data = new ImageData(
@@ -249,6 +433,8 @@ export function mountEditorCanvas(
     refreshMirrorAvailability();
     // 写入共享 partId，layerPanel 据此拉取图层快照。
     sessionStore.setState({ currentPartId: result.partId });
+    // 加载该部件的区块数据（mask + 配置）；缺失返回零 mask。
+    loadZonesForCurrent();
     // 切换部件时按 stage 容器尺寸自动选择"贴边铺满"的 zoom，
     // 避免小部件（6×11）默认 1× 显示成几像素难以编辑。stage padding 16px ×2 留边。
     fitZoomToStage(result.width, result.height);
@@ -345,10 +531,252 @@ export function mountEditorCanvas(
       });
   }
 
+  // 调色板：每个区块 ID 一种 hue（自动配色），主件 + overlay 都用它。
+  // displayColor 显式指定时优先；该函数只作为 fallback。
+  function zoneHue(id: number): number {
+    return ((id * 47) % 360 + 360) % 360;
+  }
+
+  /// 取区块在 overlay 上的最终填充 RGB——优先 displayColor，否则按 hue 自动调色板。
+  function zoneFillRgb(id: number, cfg?: ZoneEntry): [number, number, number] {
+    if (cfg?.displayColor && cfg.displayColor.length >= 3) {
+      return [cfg.displayColor[0], cfg.displayColor[1], cfg.displayColor[2]];
+    }
+    return hslToRgb(zoneHue(id), 0.85, 0.55);
+  }
+
+  function getThemePrimary(): string {
+    const v = getComputedStyle(container).getPropertyValue("--cp-primary").trim();
+    return v.length > 0 ? v : "#3b82f6";
+  }
+
+  function redrawZonesOverlay(): void {
+    if (!zonesCtx) return;
+    zonesCtx.clearRect(0, 0, zonesOverlay.width, zonesOverlay.height);
+    if (!currentZones) return;
+    const w = currentZones.width;
+    const h = currentZones.height;
+    if (w === 0 || h === 0) return;
+    if (zonesOverlay.width !== w || zonesOverlay.height !== h) {
+      zonesOverlay.width = w;
+      zonesOverlay.height = h;
+    }
+    // 收集所有出现过的区块 ID（去 0）。
+    const seenIds = new Set<number>();
+    for (let i = 0; i < currentZones.ids.length; i++) {
+      const id = currentZones.ids[i];
+      if (id !== 0) seenIds.add(id);
+    }
+    if (seenIds.size === 0) return;
+    const cfgById = new Map(currentZones.config.zones.map((z) => [z.id, z]));
+    // 半透明填充：每 ID 一个浅色（displayColor 优先），整体不透明度 0.28。
+    const fill = zonesCtx.createImageData(w, h);
+    for (let i = 0; i < currentZones.ids.length; i++) {
+      const id = currentZones.ids[i];
+      if (id === 0) continue;
+      const [r, g, b] = zoneFillRgb(id, cfgById.get(id));
+      fill.data[i * 4] = r;
+      fill.data[i * 4 + 1] = g;
+      fill.data[i * 4 + 2] = b;
+      fill.data[i * 4 + 3] = 71;
+    }
+    zonesCtx.putImageData(fill, 0, 0);
+    // 主题色描边：每个像素如果上下左右有不同 ID 邻居，就在 overlay 上画一个像素的描边色。
+    const edge = zonesCtx.createImageData(w, h);
+    const themeRgb = parseHexRgb(getThemePrimary()) ?? [59, 130, 246];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = y * w + x;
+        const id = currentZones.ids[idx];
+        if (id === 0) continue;
+        const left = x > 0 ? currentZones.ids[idx - 1] : 0;
+        const right = x < w - 1 ? currentZones.ids[idx + 1] : 0;
+        const up = y > 0 ? currentZones.ids[idx - w] : 0;
+        const down = y < h - 1 ? currentZones.ids[idx + w] : 0;
+        if (left !== id || right !== id || up !== id || down !== id) {
+          edge.data[idx * 4] = themeRgb[0];
+          edge.data[idx * 4 + 1] = themeRgb[1];
+          edge.data[idx * 4 + 2] = themeRgb[2];
+          edge.data[idx * 4 + 3] = 255;
+        }
+      }
+    }
+    // 把 edge 叠到 fill 之上：用 source-over 直接 putImageData 会覆盖；改 createImageData 后用临时 canvas 合成。
+    const tmp = document.createElement("canvas");
+    tmp.width = w;
+    tmp.height = h;
+    const tctx = tmp.getContext("2d");
+    if (tctx) {
+      tctx.putImageData(edge, 0, 0);
+      zonesCtx.drawImage(tmp, 0, 0);
+    }
+  }
+
+  function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = l - c / 2;
+    let r1 = 0, g1 = 0, b1 = 0;
+    if (h < 60) [r1, g1, b1] = [c, x, 0];
+    else if (h < 120) [r1, g1, b1] = [x, c, 0];
+    else if (h < 180) [r1, g1, b1] = [0, c, x];
+    else if (h < 240) [r1, g1, b1] = [0, x, c];
+    else if (h < 300) [r1, g1, b1] = [x, 0, c];
+    else [r1, g1, b1] = [c, 0, x];
+    return [
+      Math.round((r1 + m) * 255),
+      Math.round((g1 + m) * 255),
+      Math.round((b1 + m) * 255),
+    ];
+  }
+
+  function parseHexRgb(hex: string): [number, number, number] | null {
+    const h = hex.replace(/^#/, "");
+    if (h.length !== 3 && h.length !== 6) return null;
+    const norm = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+    const r = Number.parseInt(norm.substring(0, 2), 16);
+    const g = Number.parseInt(norm.substring(2, 4), 16);
+    const b = Number.parseInt(norm.substring(4, 6), 16);
+    if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return null;
+    return [r, g, b];
+  }
+  let currentZones: ZonesData | null = null;
+  let zonesDirty = false;
+
+  function loadZonesForCurrent(): void {
+    currentZones = null;
+    zonesDirty = false;
+    const partId = currentPartId;
+    if (!partId) return;
+    const parts = partId.split("::");
+    if (parts.length !== 3) return;
+    const [skinName, categoryDir, partName] = parts;
+    const category = categoryDir as PartCategory;
+    loadZones(skinRoot, skinName, category, partName)
+      .then((data) => {
+        if (currentPartId !== partId) return;
+        currentZones = data;
+        const ids = collectActiveZoneIds();
+        if (syncZonesConfig(ids)) zonesDirty = true;
+        zonesStore.set(currentZones);
+        redrawZonesOverlay();
+      })
+      .catch((e: ApiError) => {
+        console.warn(`[editorCanvas] loadZones failed: ${e?.message ?? String(e)}`);
+      });
+  }
+
+  function flushZonesIfDirty(): void {
+    if (!zonesDirty || !currentZones || !currentPartId) return;
+    const partId = currentPartId;
+    const data = currentZones;
+    const parts = partId.split("::");
+    if (parts.length !== 3) return;
+    const [skinName, categoryDir, partName] = parts;
+    zonesDirty = false;
+    saveZones(skinRoot, skinName, categoryDir as PartCategory, partName, data)
+      .then(() => {
+        zonesStore.bump();
+        sessionStore.setState({
+          accessoriesVersion: (sessionStore.getState().accessoriesVersion ?? 0) + 1,
+        });
+      })
+      .catch((e: ApiError) => console.warn(`[editorCanvas] saveZones failed: ${e?.message ?? String(e)}`));
+  }
+
+  // 收集 mask 中实际出现过的区块 ID（去 0），用于渲染区块列表。
+  function collectActiveZoneIds(): number[] {
+    if (!currentZones) return [];
+    const seen = new Set<number>();
+    for (let i = 0; i < currentZones.ids.length; i++) {
+      const id = currentZones.ids[i];
+      if (id !== 0) seen.add(id);
+    }
+    return Array.from(seen).sort((a, b) => a - b);
+  }
+
+  // 同步配置数组与 mask 中的实际 ID 集合：
+  // - mask 出现但 config 没有的 ID：补默认 ZoneEntry
+  // - config 有但 mask 没有的 ID：从 config 删
+  function syncZonesConfig(activeIds: number[]): boolean {
+    if (!currentZones) return false;
+    const existing = new Map(currentZones.config.zones.map((z) => [z.id, z]));
+    const next: typeof currentZones.config.zones = [];
+    let changed = false;
+    for (const id of activeIds) {
+      const entry = existing.get(id);
+      if (entry) {
+        next.push(entry);
+        existing.delete(id);
+      } else {
+        next.push({ id });
+        changed = true;
+      }
+    }
+    if (existing.size > 0) changed = true;
+    if (changed) currentZones.config.zones = next;
+    return changed;
+  }
+
+  // 区块详情面板的展开态（以 zoneId 为 key）；切换部件时不重置——同名 ID 持续展开。
+  const expandedZoneIds = new Set<number>();
+
+  // 区块画笔：在以 (cx, cy) 为圆心、半径 = brushSize/2 的圆内
+  // 把 mask ids 写为 activeZoneId（擦除模式则写 0）；只对当前画布像素 alpha>0 的位置生效。
+  // 仅修改内存 mask + 重绘 overlay；mouseup 时由 endStroke 一次性 saveZones。
+  function paintZone(event: MouseEvent, erase: boolean): void {
+    if (!ctx || !currentZones) return;
+    const { cx, cy } = eventToPixel(event);
+    const w = currentZones.width;
+    const h = currentZones.height;
+    if (w === 0 || h === 0) return;
+    if (cx === lastCx && cy === lastCy) return;
+    lastCx = cx;
+    lastCy = cy;
+    const { brushSize, activeZoneId } = sessionStore.getState();
+    const radius = Math.max(0.5, brushSize / 2);
+    const r2 = radius * radius;
+    const x0 = Math.max(0, Math.floor(cx - radius));
+    const y0 = Math.max(0, Math.floor(cy - radius));
+    const x1 = Math.min(w - 1, Math.ceil(cx + radius));
+    const y1 = Math.min(h - 1, Math.ceil(cy + radius));
+    if (x1 < x0 || y1 < y0) return;
+    const pix = ctx.getImageData(x0, y0, x1 - x0 + 1, y1 - y0 + 1).data;
+    let dirty = false;
+    const targetId = erase ? 0 : Math.max(1, Math.min(255, activeZoneId | 0));
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const dx = x - cx;
+        const dy = y - cy;
+        if (dx * dx + dy * dy > r2) continue;
+        if (!erase) {
+          const ai = ((y - y0) * (x1 - x0 + 1) + (x - x0)) * 4 + 3;
+          if (pix[ai] === 0) continue;
+        }
+        const idx = y * w + x;
+        if (currentZones.ids[idx] !== targetId) {
+          currentZones.ids[idx] = targetId;
+          dirty = true;
+        }
+      }
+    }
+    if (dirty) {
+      zonesDirty = true;
+      const ids = collectActiveZoneIds();
+      if (syncZonesConfig(ids)) zonesDirty = true;
+      zonesStore.bump();
+      redrawZonesOverlay();
+    }
+  }
+
   // 渐变拖线状态。activeTool === "gradient" 时按下记起点，松开调 applyGradient。
   let isGradient = false;
   let gradientStartCx = -1;
   let gradientStartCy = -1;
+
+  // 区块画笔拖拽状态。
+  let isZonePainting = false;
+  let isZoneErasing = false;
 
   function onMouseDown(event: MouseEvent): void {
     // activeTool === "pan" 时左键直接拖；否则中键 / 右键 / Shift+左键 = 拖动。
@@ -374,6 +802,16 @@ export function mountEditorCanvas(
       isGradient = true;
       gradientStartCx = cx;
       gradientStartCy = cy;
+      return;
+    }
+    const eraserMode = sessionStore.getState().eraserMode ?? "part";
+    if (tool === "zoneBrush" || (tool === "eraser" && eraserMode === "zone")) {
+      // alt 键 = 擦除该区块；普通点击 = 绘制 activeZoneId（橡皮 zone 模式恒擦）。
+      isZonePainting = true;
+      isZoneErasing = tool === "eraser" || event.altKey;
+      lastCx = -1;
+      lastCy = -1;
+      paintZone(event, isZoneErasing);
       return;
     }
     isPainting = true;
@@ -427,6 +865,10 @@ export function mountEditorCanvas(
       applyZoom();
       return;
     }
+    if (isZonePainting) {
+      paintZone(event, isZoneErasing);
+      return;
+    }
     if (!isPainting) return;
     paint(event);
   }
@@ -440,6 +882,11 @@ export function mountEditorCanvas(
       // 恢复 cursor 跟随 activeTool 提示。
       const tool = sessionStore.getState().activeTool;
       gridEl.style.cursor = cursorForTool(tool, false);
+    }
+    if (isZonePainting) {
+      isZonePainting = false;
+      // 一次笔画结束写盘一次。
+      flushZonesIfDirty();
     }
     // 结束 brush/eraser 笔画：拿后端合并 diff 一次性 push 历史；
     // 空笔画（width=0/height=0，仅点击未拖）后端不入栈，前端也不 push。
@@ -667,6 +1114,13 @@ export function mountEditorCanvas(
   );
 
   const unsubscribe = sessionStore.subscribe(onSessionChange);
+  // zonesStore 变化（layerPanel 改 displayColor / 删除区块 / 新建区块 / 详情面板改光粒子等）
+  // 同步 currentZones 引用并重绘 overlay，让画布即时反映区块管理面板的操作。
+  const unsubZones = zonesStore.subscribe(() => {
+    const data = zonesStore.get().data;
+    currentZones = data;
+    redrawZonesOverlay();
+  });
   const detachInvertedBorder = attachInvertedBorder(stageEl);
   applyZoom();
   updateInfoPanel();
@@ -708,8 +1162,51 @@ export function mountEditorCanvas(
     refreshBadge();
   });
 
+  // footer 高度按 layoutEngine `editorCanvas.footerPct` 百分比持久化，顶部 grip 拖拽调节。
+  const footerEl = container.querySelector<HTMLDivElement>('[data-role="footer"]')!;
+  const footerGripEl = container.querySelector<HTMLDivElement>('[data-role="footer-grip"]')!;
+  const FOOTER_PCT_MIN = 10;
+  const FOOTER_PCT_MAX = 70;
+  const FOOTER_PCT_DEFAULT = 25;
+  function clampPct(n: number): number {
+    return Math.max(FOOTER_PCT_MIN, Math.min(FOOTER_PCT_MAX, n));
+  }
+  let footerPct = clampPct(getSize("editorCanvas.footerPct") ?? FOOTER_PCT_DEFAULT);
+  function applyFooterHeight(): void {
+    footerEl.style.flex = `0 0 ${footerPct}%`;
+  }
+  applyFooterHeight();
+  footerGripEl.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const containerRect = container.getBoundingClientRect();
+    if (containerRect.height <= 0) return;
+    const startY = event.clientY;
+    const startPct = footerPct;
+    const prevCursor = document.body.style.cursor;
+    const prevSelect = document.body.style.userSelect;
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+    function onMove(ev: MouseEvent): void {
+      const dy = ev.clientY - startY;
+      const deltaPct = (dy / containerRect.height) * 100;
+      footerPct = clampPct(startPct - deltaPct);
+      applyFooterHeight();
+    }
+    function onUp(): void {
+      document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevSelect;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      setSize("editorCanvas.footerPct", footerPct);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+
   return () => {
     unsubscribe();
+    unsubZones();
     unsubBadge();
     unsubLang();
     detachInvertedBorder();

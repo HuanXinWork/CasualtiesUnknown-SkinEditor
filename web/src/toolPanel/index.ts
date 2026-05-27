@@ -57,6 +57,7 @@ export function mountToolPanel(
     `<button class="btn cp-tool-btn" data-tool="brush">${TOOL_ICONS.brush}</button>` +
     `<button class="btn cp-tool-btn" data-tool="gradient">${TOOL_ICONS.gradient}</button>` +
     `<button class="btn cp-tool-btn" data-tool="eraser">${TOOL_ICONS.eraser}</button>` +
+    `<button class="btn cp-tool-btn" data-tool="zoneBrush">${TOOL_ICONS.zoneBrush}</button>` +
     `</div>` +
     `<div data-role="brush-size" style="display:flex;align-items:center;gap:4px;">` +
     `<span data-role="size-label" style="opacity:0.7;"></span>` +
@@ -81,6 +82,7 @@ export function mountToolPanel(
   const eraserBtn = container.querySelector<HTMLButtonElement>('[data-tool="eraser"]')!;
   const panBtn = container.querySelector<HTMLButtonElement>('[data-tool="pan"]')!;
   const gradientBtn = container.querySelector<HTMLButtonElement>('[data-tool="gradient"]')!;
+  const zoneBrushBtn = container.querySelector<HTMLButtonElement>('[data-tool="zoneBrush"]')!;
   const sizeLabelEl = container.querySelector<HTMLSpanElement>('[data-role="size-label"]')!;
   const sizeDecBtn = container.querySelector<HTMLButtonElement>('[data-role="size-dec"]')!;
   const sizeIncBtn = container.querySelector<HTMLButtonElement>('[data-role="size-inc"]')!;
@@ -103,9 +105,13 @@ export function mountToolPanel(
   function applyTexts(): void {
     // 工具按钮内容是 SVG 图标，不能 textContent 覆盖；只设 title 提示。
     brushBtn.title = t("toolPanel.brush");
-    eraserBtn.title = t("toolPanel.eraser");
+    const eraserMode = sessionStore.getState().eraserMode ?? "part";
+    eraserBtn.title = eraserMode === "zone"
+      ? `${t("toolPanel.eraser")} · ${t("toolPanel.eraserModeZone")}`
+      : `${t("toolPanel.eraser")} · ${t("toolPanel.eraserModePart")}`;
     panBtn.title = t("toolPanel.pan");
     gradientBtn.title = t("toolPanel.gradient");
+    zoneBrushBtn.title = t("toolPanel.zoneBrush");
     sizeLabelEl.textContent = t("toolPanel.size");
     // undo/redo/history/import/export/resetLayout 全部改为图标按钮，仅设 title。
     undoBtn.title = t("toolPanel.undo");
@@ -126,17 +132,30 @@ export function mountToolPanel(
     eraserBtn.classList.toggle("btn-primary", activeTool === "eraser");
     panBtn.classList.toggle("btn-primary", activeTool === "pan");
     gradientBtn.classList.toggle("btn-primary", activeTool === "gradient");
+    zoneBrushBtn.classList.toggle("btn-primary", activeTool === "zoneBrush");
     sizeValEl.textContent = String(brushSize);
     sizeDecBtn.disabled = brushSize <= BRUSH_MIN;
     sizeIncBtn.disabled = brushSize >= BRUSH_MAX;
     undoBtn.disabled = currentPartId === null;
     redoBtn.disabled = currentPartId === null;
+    applyTexts();
   }
 
   brushBtn.addEventListener("click", () => sessionStore.setState({ activeTool: "brush" }));
-  eraserBtn.addEventListener("click", () => sessionStore.setState({ activeTool: "eraser" }));
+  eraserBtn.addEventListener("click", () => {
+    const state = sessionStore.getState();
+    if (state.activeTool !== "eraser") {
+      sessionStore.setState({ activeTool: "eraser" });
+    } else {
+      // 当前已是橡皮，再次点击在 part / zone 模式间循环。
+      const next = state.eraserMode === "zone" ? "part" : "zone";
+      sessionStore.setState({ eraserMode: next });
+      applyTexts();
+    }
+  });
   panBtn.addEventListener("click", () => sessionStore.setState({ activeTool: "pan" }));
   gradientBtn.addEventListener("click", () => sessionStore.setState({ activeTool: "gradient" }));
+  zoneBrushBtn.addEventListener("click", () => sessionStore.setState({ activeTool: "zoneBrush" }));
 
   sizeDecBtn.addEventListener("click", () => {
     const cur = sessionStore.getState().brushSize;
@@ -248,6 +267,9 @@ export function mountToolPanel(
       showToast(t("toolPanel.exportNoSkin"), "warn");
       return;
     }
+    // 先弹格式 modal 选 layout / includeBlood，再弹系统保存对话框选路径，最后落盘。
+    const opts = await pickExportOptions();
+    if (opts === null) return;
     const skinDir = `${skinRoot}/${skinName}`;
     const def = `${skinName}.zip`;
     let path: string | null = null;
@@ -266,7 +288,7 @@ export function mountToolPanel(
     }
     if (!path) return;
     exportBtn.disabled = true;
-    exportSkinPack(skinDir, path)
+    exportSkinPack(skinDir, path, opts.layout, opts.includeBlood)
       .then((r) => {
         showToast(t("toolPanel.exportSuccess").replace("{n}", String(r.fileCount)), "info");
       })
@@ -431,4 +453,91 @@ function mountHistoryPopover(triggerBtn: HTMLElement): () => void {
     document.removeEventListener("keydown", onKey);
     popover.remove();
   };
+}
+
+// 弹 inline modal 让用户选 layout（radio）+ includeBlood（checkbox），返回选项或 null（取消）。
+function pickExportOptions(): Promise<{ layout: "flat" | "categorized"; includeBlood: boolean } | null> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:10000;display:flex;align-items:center;justify-content:center;";
+
+    const card = document.createElement("div");
+    card.style.cssText =
+      "min-width:320px;max-width:480px;background:var(--surface,#fff);color:var(--on-background,#222);" +
+      "padding:16px 20px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);font-size:13px;";
+    overlay.appendChild(card);
+
+    const title = document.createElement("div");
+    title.textContent = t("toolPanel.exportLayoutPrompt");
+    title.style.cssText = "font-weight:600;margin-bottom:10px;";
+    card.appendChild(title);
+
+    const radioGroup = document.createElement("div");
+    radioGroup.style.cssText = "display:flex;flex-direction:column;gap:6px;margin-bottom:12px;";
+    const groupName = `export-layout-${Date.now()}`;
+    for (const [val, labelKey] of [
+      ["categorized", "toolPanel.exportLayoutCategorized"],
+      ["flat", "toolPanel.exportLayoutFlat"],
+    ] as const) {
+      const row = document.createElement("label");
+      row.style.cssText = "display:flex;gap:8px;align-items:center;cursor:pointer;";
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = groupName;
+      radio.value = val;
+      if (val === "categorized") radio.checked = true;
+      const span = document.createElement("span");
+      span.textContent = t(labelKey);
+      row.appendChild(radio);
+      row.appendChild(span);
+      radioGroup.appendChild(row);
+    }
+    card.appendChild(radioGroup);
+
+    const bloodRow = document.createElement("label");
+    bloodRow.style.cssText = "display:flex;gap:8px;align-items:center;cursor:pointer;margin-bottom:14px;";
+    const bloodCb = document.createElement("input");
+    bloodCb.type = "checkbox";
+    const bloodSpan = document.createElement("span");
+    bloodSpan.textContent = t("toolPanel.exportIncludeBloodPrompt");
+    bloodRow.appendChild(bloodCb);
+    bloodRow.appendChild(bloodSpan);
+    card.appendChild(bloodRow);
+
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex;justify-content:flex-end;gap:8px;";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "btn";
+    cancelBtn.textContent = t("toolPanel.exportCancelBtn");
+    const confirmBtn = document.createElement("button");
+    confirmBtn.type = "button";
+    confirmBtn.className = "btn btn-primary";
+    confirmBtn.textContent = t("toolPanel.exportConfirmBtn");
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(confirmBtn);
+    card.appendChild(btnRow);
+
+    function close(result: { layout: "flat" | "categorized"; includeBlood: boolean } | null): void {
+      document.removeEventListener("keydown", onKey);
+      overlay.remove();
+      resolve(result);
+    }
+    function onKey(e: KeyboardEvent): void {
+      if (e.key === "Escape") close(null);
+      else if (e.key === "Enter") confirmBtn.click();
+    }
+    cancelBtn.addEventListener("click", () => close(null));
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(null); });
+    confirmBtn.addEventListener("click", () => {
+      const checkedRadio = card.querySelector<HTMLInputElement>('input[type="radio"]:checked');
+      const picked: "flat" | "categorized" =
+        checkedRadio?.value === "flat" ? "flat" : "categorized";
+      close({ layout: picked, includeBlood: bloodCb.checked });
+    });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(overlay);
+    confirmBtn.focus();
+  });
 }

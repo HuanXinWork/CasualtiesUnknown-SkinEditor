@@ -9,8 +9,10 @@ import { mountToolPanel } from "./toolPanel";
 import { mountColorPalette } from "./colorPalette";
 import { mountPreviewCanvas } from "./previewCanvas";
 import { mountWingDebugPanel } from "./wingDebugPanel";
+import { mountBloodPanel } from "./bloodPanel";
 import { createDockable, registerDockHost, type DockableHandle } from "./dockHost";
 import { getWorkspace } from "./apiClient";
+import { saveWorkspace } from "./apiClient";
 import { hydrateFromWorkspace, makeDragHandle, getSize, setPersistContext } from "./layoutEngine";
 import type { PanelLayout } from "./stateStore/types";
 import { subscribeLang, t } from "./i18n";
@@ -20,7 +22,7 @@ import { storeImage, releaseImage } from "./apiClient";
 import { startUpdateChecker } from "./updateChecker";
 
 // 与 src-tauri/Cargo.toml `version` / settingsPanel APP_META.version 保持一致。
-const APP_VERSION = "1.0.1";
+const APP_VERSION = "1.0.2";
 import {
   ICON_PIN,
   ICON_PIN_OFF,
@@ -64,6 +66,7 @@ const imageTokenParam = new URLSearchParams(location.search).get("image");
 // theme 同步写到 CSS 变量。失败 / fallback 都用默认值，不阻塞挂载。
 // vite build 默认目标不支持 top-level await，挂载逻辑包在 async 函数内。
 const workspaceSizeByPanelId = new Map<string, { width: number; height: number }>();
+const workspaceCollapsedByPanelId = new Map<string, boolean>();
 // 4 个 mainPane.* size 持久化到 workspace.json 的 sizes 字段。
 let lastLoadedPanels: PanelLayout[] = [];
 
@@ -77,10 +80,11 @@ const SINGLE_PANEL_CONFIG: Record<
 > = {
   partPanel: { titleKey: "partPanel.title", mount: (el) => mountPartPanel(el, DEFAULT_SKIN_ROOT) },
   previewCanvas: { titleKey: "previewCanvas.title", mount: (el) => mountPreviewCanvas(el, DEFAULT_SKIN_ROOT) },
-  layerPanel: { titleKey: "layerPanel.title", mount: (el) => mountLayerPanel(el) },
+  layerPanel: { titleKey: "layerPanel.title", mount: (el) => mountLayerPanel(el, DEFAULT_SKIN_ROOT) },
   colorPalette: { titleKey: "colorPalette.title", mount: (el) => mountColorPalette(el) },
   editorCanvas: { titleKey: "editorCanvas.title", mount: (el) => mountEditorCanvas(el, DEFAULT_SKIN_ROOT) },
   wingDebugPanel: { titleKey: "wingDebugPanel.title", mount: (el) => mountWingDebugPanel(el, DEFAULT_SKIN_ROOT) },
+  bloodPanel: { titleKey: "bloodPanel.title", mount: (el) => mountBloodPanel(el, DEFAULT_SKIN_ROOT) },
 };
 
 if (panelIdParam) {
@@ -100,11 +104,13 @@ async function mountMainWindow(): Promise<void> {
       theme: ws.theme,
       showMotionDebugPanel: ws.layout.settings?.showMotionDebugPanel ?? true,
       showWingDebugPanel: ws.layout.settings?.showWingDebugPanel ?? false,
+      showBloodPanel: ws.layout.settings?.showBloodPanel ?? false,
     });
     if (ws.source === "file") {
       lastLoadedPanels = ws.layout.panels as PanelLayout[];
       for (const p of ws.layout.panels as PanelLayout[]) {
         workspaceSizeByPanelId.set(p.id, { width: p.size.width, height: p.size.height });
+        workspaceCollapsedByPanelId.set(p.id, p.collapsed === true);
       }
       // 列宽 / 行高交给 layoutEngine 反序列化（含 splitRatios → sizes 兼容）。
       hydrateFromWorkspace(ws.layout);
@@ -169,6 +175,7 @@ async function mountSinglePanel(id: string): Promise<void> {
       theme: ws.theme,
       showMotionDebugPanel: ws.layout.settings?.showMotionDebugPanel ?? true,
       showWingDebugPanel: ws.layout.settings?.showWingDebugPanel ?? false,
+      showBloodPanel: ws.layout.settings?.showBloodPanel ?? false,
     });
   } catch (e) {
     console.warn("[main] getWorkspace failed (single panel)", e);
@@ -299,7 +306,7 @@ function mountApp(): void {
       titleKey: "layerPanel.title",
       panelId: "layerPanel",
       initialSize: { width: 480, height: 200 },
-      mount: (el) => mountLayerPanel(el),
+      mount: (el) => mountLayerPanel(el, DEFAULT_SKIN_ROOT),
     },
     {
       host: "app-sidebar-right",
@@ -315,10 +322,34 @@ function mountApp(): void {
       initialSize: { width: 280, height: 600 },
       mount: (el) => mountWingDebugPanel(el, DEFAULT_SKIN_ROOT),
     },
+    {
+      host: "app-sidebar-right",
+      titleKey: "bloodPanel.title",
+      panelId: "bloodPanel",
+      initialSize: { width: 280, height: 600 },
+      mount: (el) => mountBloodPanel(el, DEFAULT_SKIN_ROOT),
+    },
   ];
   // dock 与 titleKey 映射：lang 切换时遍历重写每个 dockable 的标题。
   const dockTitleKeys: Array<{ dock: DockableHandle; titleKey: string }> = [];
   let wingDebugDock: DockableHandle | null = null;
+  let bloodPanelDock: DockableHandle | null = null;
+
+  // dock 折叠状态写盘：300ms debounce，按 collapsed map 覆盖现有 panels 整体写回。
+  let collapsedSaveTimer: number | null = null;
+  function schedulePersistCollapsed(): void {
+    if (collapsedSaveTimer !== null) window.clearTimeout(collapsedSaveTimer);
+    collapsedSaveTimer = window.setTimeout(() => {
+      collapsedSaveTimer = null;
+      void getWorkspace(DEFAULT_WORKSPACE_PATH).then((ws) => {
+        const panels = ws.layout.panels.map((p) => {
+          const c = workspaceCollapsedByPanelId.get(p.id);
+          return c === undefined ? p : { ...p, collapsed: c };
+        });
+        return saveWorkspace(DEFAULT_WORKSPACE_PATH, { ...ws.layout, panels }, ws.theme);
+      }).catch((e) => console.warn("[main] persist collapsed failed", e));
+    }, 300);
+  }
   for (const cfg of panels) {
     const host = document.getElementById(cfg.host) as HTMLElement;
     const persisted = workspaceSizeByPanelId.get(cfg.panelId);
@@ -339,6 +370,14 @@ function mountApp(): void {
     dockables.push(dock);
     dockTitleKeys.push({ dock, titleKey: cfg.titleKey });
     if (cfg.panelId === "wingDebugPanel") wingDebugDock = dock;
+    if (cfg.panelId === "bloodPanel") bloodPanelDock = dock;
+    if (workspaceCollapsedByPanelId.get(cfg.panelId)) {
+      dock.collapse();
+    }
+    dock.onCollapsedChange((collapsed) => {
+      workspaceCollapsedByPanelId.set(cfg.panelId, collapsed);
+      schedulePersistCollapsed();
+    });
     // 启动时让 dockable 视觉填满 host：取 host 实际尺寸塞回 dockable 自身 width/height，
     // 后续用户拖边把手按数值自由调节，max-width/max-height: 100% 防溢出邻居。
     queueMicrotask(() => {
@@ -358,6 +397,20 @@ function mountApp(): void {
     if (s.showWingDebugPanel !== lastShowWing) {
       lastShowWing = s.showWingDebugPanel;
       applyWingDebugVisible();
+    }
+  });
+
+  // 血液粒子面板默认隐藏；与 wing debug 同模式。
+  function applyBloodPanelVisible(): void {
+    if (!bloodPanelDock) return;
+    bloodPanelDock.rootEl.style.display = sessionStore.getState().showBloodPanel ? "" : "none";
+  }
+  applyBloodPanelVisible();
+  let lastShowBlood = sessionStore.getState().showBloodPanel;
+  sessionStore.subscribe((s) => {
+    if (s.showBloodPanel !== lastShowBlood) {
+      lastShowBlood = s.showBloodPanel;
+      applyBloodPanelVisible();
     }
   });
 

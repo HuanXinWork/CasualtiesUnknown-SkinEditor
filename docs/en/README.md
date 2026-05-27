@@ -4,11 +4,13 @@
 
 This document focuses on how to use the editor. For build and development details, see the repository [README.md](../../README.md). The repository overview is also available in English at [README.en.md](../../README.en.md).
 
+Current version: **1.0.2** (changes listed in [Changelog](../../changes.en.md)).
+
 ---
 
 ## 1. Skin Package Layout
 
-The mod `body_sprite_replacer` reads two fixed subdirectories from each skin folder: `Body/` and `Head/`. They hold the body and head PNG parts respectively. The editor adds a `layers/` directory next to them, used only by the editor itself to preserve multi-layer state.
+The mod `body_sprite_replacer` reads several fixed subdirectories from each skin folder: `Body/`, `Head/`, `Wings/`, `Accessories/`, and `Blood/` for the body, head, wing, accessory, and blood-particle textures respectively. The editor adds a `layers/` directory next to them for multi-layer project data, and supports three optional config files (`wings.json` / `accessories.json` / `blood.json`).
 
 ```text
 data/
@@ -17,13 +19,19 @@ data/
     └── <skinName>/           # One skin = one directory; the directory name is the skin name
         ├── Body/             # Body parts as flat PNG (read by the mod)
         ├── Head/             # Head parts as flat PNG (read by the mod)
+        ├── Wings/            # Wing PNG (4 sprites: wingUL/wingUR/wingDL/wingDR)
+        ├── Accessories/      # Accessory PNG (autopump.png etc.)
+        ├── Blood/            # Blood particle textures (e.g. BloodParticle.png)
+        ├── wings.json        # Wing assembly overrides (optional)
+        ├── accessories.json  # Accessory enable / position overrides (optional)
+        ├── blood.json        # Blood particle config (optional)
         └── layers/           # Editor project files; the mod ignores this folder entirely
             └── <Cat>/<part>/
                 ├── manifest.json
                 └── layerN.png
 ```
 
-The mod only reads the flat PNG files under `Body/` and `Head/`. `layers/` is extra project data maintained by the editor so it can preserve undo state and layer structure.
+The mod loads PNGs from `Body/` / `Head/` / `Wings/` / `Accessories/` / `Blood/` and the three optional JSON configs at the skin root. `layers/` is extra project data maintained by the editor to preserve undo state and layer structure; it has no effect on the mod.
 
 ## 2. First Launch
 
@@ -88,15 +96,25 @@ On success the skin dropdown switches to the newly imported skin.
 
 If you just want to drop in a few skin folders, copy them into `data/skin/<skinName>/` directly. The skin dropdown picks them up after a refresh or restart. This path skips all validation; non-PNG files in the directory cause no error but are not used either.
 
+### 3.4 Smart import: flat zip
+
+If a zip has no `Body/` / `Head/` subfolders and only flat PNGs, the importer routes each PNG by filename against the standard part table, landing at `<newSkin>/<category>/<filename>.png`:
+
+- Filenames matching Body / Head / Wings / Accessories standard parts go to the matching category folder
+- Filenames containing the `blood` keyword go to `Blood/`
+- Unmatched PNGs are skipped; the success toast counts only the routed ones
+
+The detection also handles sided copies like `experimentEyeOpenF` / `HandB`, falling back to the base name to look up standard sizes.
+
 ## 4. Editing Workflow
 
 ### 4.1 Selecting a part
 
-The left panel groups parts by Skin → Category → Part. Click a part to load its PNG into the central canvas. The canvas title bar shows a saved badge: green for clean, yellow for unsaved.
+The left panel groups parts by Skin → Category → Part. Categories are split into five groups — **Body / Head / Wings / Accessories / Blood textures** — each independently collapsible; the collapse state is saved to workspace config. Click a part to load its PNG into the central canvas. The canvas title bar shows a saved badge: green for clean, yellow for unsaved.
 
 ![Part selected](images/partSelected.png)
 
-Part names render through a localization map (e.g. `experimentBody` shows up as "Body"). The backend identifier is still the raw file name, so renaming a PNG does not break existing project files but will be treated as a new part.
+Part names render through a localization map (e.g. `experimentBody` shows up as "Body", `autopump` as "自动泵" under zh, `BloodParticle` as "血液粒子"). The backend identifier is still the raw file name, so renaming a PNG does not break existing project files but will be treated as a new part.
 
 ### 4.2 Toolbar
 
@@ -138,11 +156,23 @@ New layers land on top of the active layer. Saving the part writes layer data to
 
 The right-most palette offers:
 
-- HSV color wheel with a value slider
+- HSV color wheel with a value slider (hue ring 28px wide, SV box 96px)
 - Current color preview and an eyedropper button (PS-style picker)
-- 8 most-recent colors
+- 12 most-recent colors (FIFO)
+- Custom swatches: 3 rows × 8 = 24 user slots
 
-Activating the eyedropper turns the cursor into a dropper. It picks colors from the editor canvas, the composite preview, and any drag-in image window — anywhere within this app's webview. The color updates live as the cursor moves; click to commit into "recent", press Esc to cancel and restore the previous color.
+The eyedropper supports two interaction modes:
+
+- **Click-pick**: a single click on the editor canvas, composite preview, or any drag-in image window commits the color under the cursor into "recent".
+- **Drag-pick**: hold the left mouse button after activating the dropper for a live preview as the cursor moves; release to commit into "recent".
+- Press Esc at any time to cancel and restore the previous color.
+
+Custom swatches:
+
+- Click an empty slot → fills it with the current color
+- Click a filled slot → switches to that color
+- **Long-press 600ms** or **right-click** any slot → opens an inline editor (HEX input / use current color / clear)
+- All 24 slots persist to workspace config across sessions
 
 ![Color palette](images/colorPalette.png)
 
@@ -169,6 +199,33 @@ Expression, head variant, and facing controls stay active in motion mode. Changi
 
 Switching skins ignores the live-preview toggle and forces one refresh, to avoid mismatched visuals.
 
+### 4.7 Blood particle editor panel
+
+Blood particles are an independent mod subsystem for hit and bleed effects. They live as a `<skinName>/blood.json` config plus a `<skinName>/Blood/BloodParticle.png` texture. The editor wires both paths to two separate entry points:
+
+- **Texture editing**: open the "Blood textures" group in the part panel and click `BloodParticle`. It edits like any other part — pixels, resize, multi-layer, undo/redo.
+- **Parameter editing**: the blood particle button on the toolbar opens the right-side blood panel, which visually edits all 14 fields of `blood.json`.
+
+Fields covered by the blood panel:
+
+| Group | Fields |
+| --- | --- |
+| Particle color | Start color / End color |
+| Particle size | Start size / End size |
+| Lifetime / Alpha | Particle lifetime, Alpha start / end curve |
+| Limb wound colors | Dark color / Light color (used by limb-bound wound effects) |
+| Glow | Additive toggle and intensity |
+| Sprite-sheet animation | Rows / Columns / Frame duration |
+| Random palette | Color list (add / remove / edit) |
+
+Every field has an **override tri-state toggle** on its left:
+
+- Off: use the mod default (do not write to `blood.json`)
+- On: use the value set in the panel (write to `blood.json`)
+- Mid: leave the existing value in `blood.json` untouched
+
+Switching the active skin reloads values; edits are auto-saved with a 300ms debounce, no manual save needed. Deleting `blood.json` does not break the game — the mod falls back to defaults.
+
 ## 5. Saving and Exporting
 
 ### 5.1 Saving the current part
@@ -188,15 +245,30 @@ A part with unsaved changes shows a yellow badge in the title bar. Closing the m
 
 ### 5.2 Exporting the whole skin
 
-The export button packages the current skin into a zip. The zip's top level is `Body/` and `Head/`, with no wrapper directory:
+The export button packages the current skin into a zip. Clicking it first opens an inline modal to pick the export format and whether to include the blood config:
+
+| Option | What you get |
+| --- | --- |
+| **Legacy** | `<skinName>/Body/` flat with all parts in one folder (compatible with older mod versions) |
+| **Categorized** | `<skinName>/{Body, Head, Wings, Accessories}/` (recommended; aligned with the 1.0.2 mod) |
+| **Include blood** | When checked, also packs `blood.json` and `Blood/*.png` |
+
+After confirming the format, the OS save dialog opens for the destination. Both formats wrap the output under a `<skinName>/` top-level directory:
 
 ```text
 <skinName>.zip
-├── Body/...
-└── Head/...
+└── <skinName>/
+    ├── Body/...
+    ├── Head/...
+    ├── Wings/...        # categorized only
+    ├── Accessories/...  # categorized only
+    ├── Blood/...        # only when "Include blood" is checked
+    ├── wings.json       # categorized + present
+    ├── accessories.json # categorized + present
+    └── blood.json       # only when "Include blood" + present
 ```
 
-Export contains **only the flat PNGs the mod needs**; `layers/` project data is intentionally left out. The cost is that re-importing the export on another machine loses layer history; the benefit is that you can hand the zip directly to mod users without post-processing.
+Export contains **only the flat PNGs and JSON the mod needs**; `layers/` project data is intentionally left out. The cost is that re-importing the export on another machine loses layer history; the benefit is that you can hand the zip directly to mod users without post-processing.
 
 If you need to migrate project files too, copy the entire `data/skin/<skinName>/` directory by hand.
 

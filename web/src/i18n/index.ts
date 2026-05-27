@@ -21,6 +21,8 @@ export interface Translations {
     headGroup: string;
     wingsGroup: string;
     expressionGroup: string;
+    accessoriesGroup: string;
+    bloodGroup: string;
     loadFailed: string;
     corruptedTag: string;
   };
@@ -37,9 +39,47 @@ export interface Translations {
     wingDL: string;
     wingDR: string;
   };
+  bloodPanel: {
+    title: string;
+    hint: string;
+    sectionParticle: string;
+    sectionLimbShader: string;
+    sectionVisual: string;
+    sectionRandomColors: string;
+    particleStartColor: string;
+    particleEndColor: string;
+    particleSize: string;
+    particleLifetime: string;
+    fadeCurve: string;
+    fadeCurveLinear: string;
+    fadeCurveEaseOut: string;
+    fadeCurveBlink: string;
+    fadeCurveConstant: string;
+    bloodDark: string;
+    bloodLight: string;
+    glow: string;
+    glowIntensity: string;
+    animated: string;
+    animFrames: string;
+    animFps: string;
+    randomColorsHint: string;
+    randomColorAdd: string;
+    randomColorRemove: string;
+    reset: string;
+    notSelected: string;
+    saving: string;
+    saved: string;
+    saveFailed: string;
+    overrideOn: string;
+    overrideOff: string;
+    overrideOnHint: string;
+    overrideOffHint: string;
+    alpha: string;
+  };
   layerPanel: {
     title: string;
     addLayer: string;
+    addZone: string;
     moveUp: string;
     moveDown: string;
     removeLayer: string;
@@ -54,12 +94,17 @@ export interface Translations {
     errSetVisible: string;
     errSetOpacity: string;
     errLoad: string;
+    removeZone: string;
+    zonesEmpty: string;
   };
   toolPanel: {
     brush: string;
     eraser: string;
     pan: string;
     gradient: string;
+    zoneBrush: string;
+    eraserModePart: string;
+    eraserModeZone: string;
     history: string;
     historyEmpty: string;
     historyTool_brush: string;
@@ -73,6 +118,12 @@ export interface Translations {
     resetLayout: string;
     export: string;
     importPack: string;
+    exportLayoutPrompt: string;
+    exportLayoutFlat: string;
+    exportLayoutCategorized: string;
+    exportIncludeBloodPrompt: string;
+    exportConfirmBtn: string;
+    exportCancelBtn: string;
     exportSuccess: string;
     importSuccess: string;
     exportPrompt: string;
@@ -94,6 +145,13 @@ export interface Translations {
     swatchGroup_nature: string;
     swatchGroup_blood: string;
     swatchGroup_vintage: string;
+    swatchGroup_custom: string;
+    customSlotEmpty: string;
+    customSlotEditTitle: string;
+    customSlotUseCurrent: string;
+    customSlotClear: string;
+    customSlotCancel: string;
+    customSlotSave: string;
   };
   editorCanvas: {
     title: string;
@@ -117,6 +175,58 @@ export interface Translations {
     resizeInvalid: string;
     createSideFBtn: string;
     createSideBBtn: string;
+    accessoryEnabledLabel: string;
+    accessoryDisabledLabel: string;
+    accessoryAdvancedShow: string;
+    accessoryAdvancedHide: string;
+    accessoryAdvancedSaving: string;
+    accessoryAdvancedSaved: string;
+    accessoryOffsetX: string;
+    accessoryOffsetY: string;
+    accessoryRotation: string;
+    accessoryZOrder: string;
+    accessoryLight: string;
+    accessoryLightIntensity: string;
+    accessoryLightOuter: string;
+    accessoryLightInner: string;
+    accessoryParticle: string;
+    accessoryParticleRate: string;
+    accessoryParticleLifetime: string;
+    accessoryParticleSize: string;
+    accessoryAnimation: string;
+    accessoryAnimationFrames: string;
+    accessoryAnimationFps: string;
+    accessoryAnimationLoop: string;
+    zoneLightColor2: string;
+    zoneLightMode: string;
+    zoneLightModeRadial: string;
+    zoneLightModeDirectional: string;
+    zoneLightModeScatter: string;
+    zoneLightDirection: string;
+    zoneLightSpread: string;
+    zoneLightFalloff: string;
+    zoneLightBreathing: string;
+    zoneLightBreathSpeed: string;
+    zoneLightBreathAmp: string;
+    zoneParticleEndColor: string;
+    zoneParticleMode: string;
+    zoneParticleModeGravity: string;
+    zoneParticleModeStar: string;
+    zoneParticleModeFire: string;
+    zoneParticleModeWater: string;
+    zoneParticleModeOrbit: string;
+    zoneParticleSpeed: string;
+    zoneParticleDirection: string;
+    zoneParticleSpread: string;
+    zoneParticleEndScale: string;
+    zoneParticleFadeCurve: string;
+    zoneParticleFadeLinear: string;
+    zoneParticleFadeEaseOut: string;
+    zoneParticleFadeBlink: string;
+    zoneParticleFadeConstant: string;
+    zoneNamePlaceholder: string;
+    zoneDelete: string;
+    zoneDisplayColor: string;
   };
   imageWindow: {
     title: string;
@@ -183,6 +293,7 @@ export interface Translations {
       debugTitle: string;
       showMotionDebugPanel: string;
       showWingDebugPanel: string;
+      showBloodPanel: string;
       shortcutsTitle: string;
       clickToRecord: string;
       recordingHint: string;
@@ -226,6 +337,8 @@ export const dictionaries: Record<Lang, Translations> = {
       headGroup: "头部",
       wingsGroup: "翅膀",
       expressionGroup: "表情部件",
+      accessoriesGroup: "配件",
+      bloodGroup: "血液贴图",
       loadFailed: "加载失败",
       corruptedTag: "[损坏]",
     },
@@ -242,9 +355,47 @@ export const dictionaries: Record<Lang, Translations> = {
       wingDL: "左下翼",
       wingDR: "右下翼",
     },
+    bloodPanel: {
+      title: "血液粒子",
+      hint: "为当前皮肤定制流血粒子与 Limb 受伤色；改动 300ms 后写入 <skin>/blood.json，mod 端按皮肤自动套用。",
+      sectionParticle: "粒子",
+      sectionLimbShader: "Limb 受伤色",
+      sectionVisual: "光影 / 动画",
+      sectionRandomColors: "随机配色",
+      particleStartColor: "起始色",
+      particleEndColor: "结束色",
+      particleSize: "粒子尺寸",
+      particleLifetime: "粒子寿命（秒）",
+      fadeCurve: "Alpha 曲线",
+      fadeCurveLinear: "线性",
+      fadeCurveEaseOut: "缓出",
+      fadeCurveBlink: "闪烁",
+      fadeCurveConstant: "常驻",
+      bloodDark: "暗部血色",
+      bloodLight: "亮部血色",
+      glow: "Additive 发光",
+      glowIntensity: "发光强度倍率",
+      animated: "粒子帧动画",
+      animFrames: "帧数",
+      animFps: "FPS",
+      randomColorsHint: "非空时，每个粒子随机抽一种颜色发射；为空走起始/结束色渐变。",
+      randomColorAdd: "添加颜色",
+      randomColorRemove: "删除",
+      reset: "全部恢复默认（清空覆盖）",
+      notSelected: "未选择皮肤",
+      saving: "保存中…",
+      saved: "已保存",
+      saveFailed: "保存失败",
+      overrideOn: "已覆盖",
+      overrideOff: "默认",
+      overrideOnHint: "字段已写入 blood.json；点击恢复默认。",
+      overrideOffHint: "字段未覆盖，按游戏默认；点击启用并使用当前控件值。",
+      alpha: "Alpha",
+    },
     layerPanel: {
       title: "图层",
       addLayer: "新增图层",
+      addZone: "新增区块",
       moveUp: "上移",
       moveDown: "下移",
       removeLayer: "删除图层",
@@ -259,12 +410,17 @@ export const dictionaries: Record<Lang, Translations> = {
       errSetVisible: "切换可见性",
       errSetOpacity: "设置 opacity",
       errLoad: "加载图层",
+      removeZone: "删除区块",
+      zonesEmpty: "无区块（用魔法笔画一下试试）",
     },
     toolPanel: {
       brush: "画笔",
       eraser: "橡皮",
       pan: "拖动",
       gradient: "渐变",
+      zoneBrush: "区块画笔",
+      eraserModePart: "清部件",
+      eraserModeZone: "清区块",
       history: "历史",
       historyEmpty: "暂无历史记录",
       historyTool_brush: "画笔",
@@ -278,6 +434,12 @@ export const dictionaries: Record<Lang, Translations> = {
       resetLayout: "重置布局",
       export: "导出",
       importPack: "导入",
+      exportLayoutPrompt: "选择导出格式：",
+      exportLayoutFlat: "旧式（皮肤名/Body 下平铺所有部件）",
+      exportLayoutCategorized: "新式（皮肤名/Body、Head、Wings、Accessories 分类）",
+      exportIncludeBloodPrompt: "一并导出血液配置（blood.json + Blood/*.png）",
+      exportConfirmBtn: "导出",
+      exportCancelBtn: "取消",
       exportSuccess: "成功导出 {n} 个文件",
       importSuccess: "成功导入 {n} 个文件，跳过 {m} 个",
       exportPrompt: "请输入导出 zip 的绝对路径",
@@ -299,6 +461,13 @@ export const dictionaries: Record<Lang, Translations> = {
       swatchGroup_nature: "自然",
       swatchGroup_blood: "血色",
       swatchGroup_vintage: "做旧",
+      swatchGroup_custom: "自定义（长按或右键编辑）",
+      customSlotEmpty: "空槽（长按或右键编辑）",
+      customSlotEditTitle: "编辑自定义色卡",
+      customSlotUseCurrent: "使用当前颜色",
+      customSlotClear: "清空",
+      customSlotCancel: "取消",
+      customSlotSave: "保存",
     },
     editorCanvas: {
       title: "编辑画布",
@@ -322,6 +491,58 @@ export const dictionaries: Record<Lang, Translations> = {
       resizeInvalid: "目标尺寸超出 1~4096 范围",
       createSideFBtn: "创建前侧版本",
       createSideBBtn: "创建后侧版本",
+      accessoryEnabledLabel: "已启用",
+      accessoryDisabledLabel: "未启用",
+      accessoryAdvancedShow: "高级 ▶",
+      accessoryAdvancedHide: "高级 ▼",
+      accessoryAdvancedSaving: "保存中…",
+      accessoryAdvancedSaved: "已保存",
+      accessoryOffsetX: "X 偏移",
+      accessoryOffsetY: "Y 偏移",
+      accessoryRotation: "旋转",
+      accessoryZOrder: "Z 序",
+      accessoryLight: "发光",
+      accessoryLightIntensity: "强度",
+      accessoryLightOuter: "外径",
+      accessoryLightInner: "内径",
+      accessoryParticle: "粒子",
+      accessoryParticleRate: "每秒",
+      accessoryParticleLifetime: "寿命",
+      accessoryParticleSize: "大小",
+      accessoryAnimation: "动画",
+      accessoryAnimationFrames: "帧序列",
+      accessoryAnimationFps: "FPS",
+      accessoryAnimationLoop: "循环",
+      zoneLightColor2: "渐变末端色",
+      zoneLightMode: "光模式",
+      zoneLightModeRadial: "径向",
+      zoneLightModeDirectional: "定向",
+      zoneLightModeScatter: "散射",
+      zoneLightDirection: "方向°",
+      zoneLightSpread: "扩散°",
+      zoneLightFalloff: "衰减幂",
+      zoneLightBreathing: "呼吸",
+      zoneLightBreathSpeed: "频率",
+      zoneLightBreathAmp: "幅度",
+      zoneParticleEndColor: "末色",
+      zoneParticleMode: "粒子模式",
+      zoneParticleModeGravity: "重力",
+      zoneParticleModeStar: "星空",
+      zoneParticleModeFire: "火焰",
+      zoneParticleModeWater: "水流",
+      zoneParticleModeOrbit: "环绕",
+      zoneParticleSpeed: "速度",
+      zoneParticleDirection: "方向°",
+      zoneParticleSpread: "扩散°",
+      zoneParticleEndScale: "末缩",
+      zoneParticleFadeCurve: "曲线",
+      zoneParticleFadeLinear: "线性",
+      zoneParticleFadeEaseOut: "缓退",
+      zoneParticleFadeBlink: "闪烁",
+      zoneParticleFadeConstant: "恒定",
+      zoneNamePlaceholder: "区块名（可选）",
+      zoneDelete: "删除",
+      zoneDisplayColor: "显示色",
     },
     imageWindow: {
       title: "图片预览",
@@ -387,6 +608,7 @@ export const dictionaries: Record<Lang, Translations> = {
       debugTitle: "调试",
       showMotionDebugPanel: "显示当前帧部件调试面板",
       showWingDebugPanel: "显示翅膀调试面板",
+      showBloodPanel: "显示血液粒子面板",
       shortcutsTitle: "快捷键",
       clickToRecord: "点击录制",
       recordingHint: "按下任意键…（Esc 取消）",
@@ -428,6 +650,8 @@ export const dictionaries: Record<Lang, Translations> = {
       headGroup: "Head",
       wingsGroup: "Wings",
       expressionGroup: "Expression Parts",
+      accessoriesGroup: "Accessories",
+      bloodGroup: "Blood textures",
       loadFailed: "Load failed",
       corruptedTag: "[corrupted]",
     },
@@ -444,9 +668,47 @@ export const dictionaries: Record<Lang, Translations> = {
       wingDL: "Lower Left",
       wingDR: "Lower Right",
     },
+    bloodPanel: {
+      title: "Blood particles",
+      hint: "Customize bleed particles and limb wound color for the current skin; saved to <skin>/blood.json with 300ms debounce, picked up by the mod per-skin.",
+      sectionParticle: "Particles",
+      sectionLimbShader: "Limb wound color",
+      sectionVisual: "Glow / Animation",
+      sectionRandomColors: "Random palette",
+      particleStartColor: "Start color",
+      particleEndColor: "End color",
+      particleSize: "Particle size",
+      particleLifetime: "Particle lifetime (sec)",
+      fadeCurve: "Alpha curve",
+      fadeCurveLinear: "Linear",
+      fadeCurveEaseOut: "Ease-out",
+      fadeCurveBlink: "Blink",
+      fadeCurveConstant: "Constant",
+      bloodDark: "Dark wound color",
+      bloodLight: "Light wound color",
+      glow: "Additive glow",
+      glowIntensity: "Glow intensity multiplier",
+      animated: "Particle sheet animation",
+      animFrames: "Frames",
+      animFps: "FPS",
+      randomColorsHint: "When non-empty, each particle samples one color at emit; otherwise falls back to start/end gradient.",
+      randomColorAdd: "Add color",
+      randomColorRemove: "Remove",
+      reset: "Reset all (clear overrides)",
+      notSelected: "No skin selected",
+      saving: "Saving…",
+      saved: "Saved",
+      saveFailed: "Save failed",
+      overrideOn: "Override",
+      overrideOff: "Default",
+      overrideOnHint: "Field is written to blood.json; click to revert to game default.",
+      overrideOffHint: "Field falls back to game default; click to enable and use current control value.",
+      alpha: "Alpha",
+    },
     layerPanel: {
       title: "Layers",
       addLayer: "Add layer",
+      addZone: "Add zone",
       moveUp: "Move up",
       moveDown: "Move down",
       removeLayer: "Delete layer",
@@ -461,12 +723,17 @@ export const dictionaries: Record<Lang, Translations> = {
       errSetVisible: "Toggle visibility",
       errSetOpacity: "Set opacity",
       errLoad: "Load layers",
+      removeZone: "Delete zone",
+      zonesEmpty: "No zones (try the magic brush)",
     },
     toolPanel: {
       brush: "Brush",
       eraser: "Eraser",
       pan: "Pan",
       gradient: "Gradient",
+      zoneBrush: "Zone Brush",
+      eraserModePart: "Erase part",
+      eraserModeZone: "Erase zone",
       history: "History",
       historyEmpty: "No history yet",
       historyTool_brush: "Brush",
@@ -480,6 +747,12 @@ export const dictionaries: Record<Lang, Translations> = {
       resetLayout: "Reset layout",
       export: "Export",
       importPack: "Import",
+      exportLayoutPrompt: "Pick export layout:",
+      exportLayoutFlat: "Legacy (everything flat in <skin>/Body/)",
+      exportLayoutCategorized: "Categorized (<skin>/Body, Head, Wings, Accessories)",
+      exportIncludeBloodPrompt: "Include blood config (blood.json + Blood/*.png) in export",
+      exportConfirmBtn: "Export",
+      exportCancelBtn: "Cancel",
       exportSuccess: "Exported {n} files",
       importSuccess: "Imported {n} files, skipped {m}",
       exportPrompt: "Enter absolute path of zip to export",
@@ -501,6 +774,13 @@ export const dictionaries: Record<Lang, Translations> = {
       swatchGroup_nature: "Nature",
       swatchGroup_blood: "Blood",
       swatchGroup_vintage: "Vintage",
+      swatchGroup_custom: "Custom (long-press or right-click to edit)",
+      customSlotEmpty: "Empty slot (long-press or right-click to edit)",
+      customSlotEditTitle: "Edit custom swatch",
+      customSlotUseCurrent: "Use current color",
+      customSlotClear: "Clear",
+      customSlotCancel: "Cancel",
+      customSlotSave: "Save",
     },
     editorCanvas: {
       title: "Edit Canvas",
@@ -524,6 +804,58 @@ export const dictionaries: Record<Lang, Translations> = {
       resizeInvalid: "Target size out of range 1-4096",
       createSideFBtn: "Create front variant",
       createSideBBtn: "Create back variant",
+      accessoryEnabledLabel: "Enabled",
+      accessoryDisabledLabel: "Disabled",
+      accessoryAdvancedShow: "Advanced ▶",
+      accessoryAdvancedHide: "Advanced ▼",
+      accessoryAdvancedSaving: "Saving…",
+      accessoryAdvancedSaved: "Saved",
+      accessoryOffsetX: "X offset",
+      accessoryOffsetY: "Y offset",
+      accessoryRotation: "Rotation",
+      accessoryZOrder: "Z order",
+      accessoryLight: "Light",
+      accessoryLightIntensity: "Intensity",
+      accessoryLightOuter: "Outer",
+      accessoryLightInner: "Inner",
+      accessoryParticle: "Particle",
+      accessoryParticleRate: "Rate",
+      accessoryParticleLifetime: "Lifetime",
+      accessoryParticleSize: "Size",
+      accessoryAnimation: "Animation",
+      accessoryAnimationFrames: "Frames",
+      accessoryAnimationFps: "FPS",
+      accessoryAnimationLoop: "Loop",
+      zoneLightColor2: "End color",
+      zoneLightMode: "Mode",
+      zoneLightModeRadial: "Radial",
+      zoneLightModeDirectional: "Directional",
+      zoneLightModeScatter: "Scatter",
+      zoneLightDirection: "Dir°",
+      zoneLightSpread: "Spread°",
+      zoneLightFalloff: "Falloff",
+      zoneLightBreathing: "Breathe",
+      zoneLightBreathSpeed: "Speed",
+      zoneLightBreathAmp: "Amp",
+      zoneParticleEndColor: "End",
+      zoneParticleMode: "Mode",
+      zoneParticleModeGravity: "Gravity",
+      zoneParticleModeStar: "Star",
+      zoneParticleModeFire: "Fire",
+      zoneParticleModeWater: "Water",
+      zoneParticleModeOrbit: "Orbit",
+      zoneParticleSpeed: "Speed",
+      zoneParticleDirection: "Dir°",
+      zoneParticleSpread: "Spread°",
+      zoneParticleEndScale: "EndScale",
+      zoneParticleFadeCurve: "Curve",
+      zoneParticleFadeLinear: "Linear",
+      zoneParticleFadeEaseOut: "EaseOut",
+      zoneParticleFadeBlink: "Blink",
+      zoneParticleFadeConstant: "Constant",
+      zoneNamePlaceholder: "Zone name (optional)",
+      zoneDelete: "Delete",
+      zoneDisplayColor: "Display",
     },
     imageWindow: {
       title: "Image Viewer",
@@ -589,6 +921,7 @@ export const dictionaries: Record<Lang, Translations> = {
       debugTitle: "Debug",
       showMotionDebugPanel: "Show current frame debug panel",
       showWingDebugPanel: "Show wing debug panel",
+      showBloodPanel: "Show blood particles panel",
       shortcutsTitle: "Shortcuts",
       clickToRecord: "Click to record",
       recordingHint: "Press any key... (Esc to cancel)",

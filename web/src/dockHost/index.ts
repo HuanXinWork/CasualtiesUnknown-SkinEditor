@@ -46,6 +46,8 @@ export interface DockableHandle {
   expand(): void;
   toggle(): void;
   isCollapsed(): boolean;
+  /** 折叠状态变化（collapse/expand/toggle 均触发，初次状态不触发）；返回解订阅函数。 */
+  onCollapsedChange(cb: (collapsed: boolean) => void): () => void;
   getState(): "docked" | "floating";
   floatAt(x: number, y: number): void;
   dockTo(host: HTMLElement): void;
@@ -379,8 +381,21 @@ export function createDockable(options: DockableOptions): DockableHandle {
     root.style.alignSelf = "";
   }
 
+  // 记录折叠前 contentEl 的 inline display 值，展开时恢复——避免 main.ts 等外部
+  // 设的 display="flex"（flexContent=true 配合 editor/preview 子面板）被清成空字符串后
+  // 退回 CSS 默认 block，导致子元素 flex 布局失效。
+  let savedContentDisplay: string = contentEl.style.display;
+
   function applyCollapsedState(): void {
-    contentEl.style.display = collapsed ? "none" : "";
+    if (collapsed) {
+      // 折叠前记一次当前 display，避免覆盖 none 后丢失 flex 等外部设值。
+      if (contentEl.style.display !== "none") {
+        savedContentDisplay = contentEl.style.display;
+      }
+      contentEl.style.display = "none";
+    } else {
+      contentEl.style.display = savedContentDisplay;
+    }
     for (const h of handles) h.style.display = collapsed || !resizable ? "none" : "";
     collapseBtn.innerHTML = collapsed ? ICON_CHEVRON_RIGHT : ICON_CHEVRON_DOWN;
     applySize();
@@ -670,12 +685,14 @@ export function createDockable(options: DockableOptions): DockableHandle {
     if (collapsed || !collapsible) return;
     collapsed = true;
     applyCollapsedState();
+    notifyCollapseListeners();
   }
 
   function expand(): void {
     if (!collapsed) return;
     collapsed = false;
     applyCollapsedState();
+    notifyCollapseListeners();
   }
 
   function toggle(): void {
@@ -685,6 +702,17 @@ export function createDockable(options: DockableOptions): DockableHandle {
 
   function isCollapsed(): boolean {
     return collapsed;
+  }
+
+  const collapseListeners = new Set<(c: boolean) => void>();
+  function notifyCollapseListeners(): void {
+    for (const fn of collapseListeners) fn(collapsed);
+  }
+  function onCollapsedChange(cb: (collapsed: boolean) => void): () => void {
+    collapseListeners.add(cb);
+    return () => {
+      collapseListeners.delete(cb);
+    };
   }
 
   function getState(): "docked" | "floating" {
@@ -799,6 +827,7 @@ export function createDockable(options: DockableOptions): DockableHandle {
     expand,
     toggle,
     isCollapsed,
+    onCollapsedChange,
     getState,
     floatAt,
     dockTo,

@@ -123,7 +123,7 @@ fn integrationCompositeChangesWithVariants() {
     let api = CoreApi::new();
     let composite = |orientation: Orientation| api.getCompositeImage(CompositeParams {
         skinRoot: rootStr(&tmp), skinName: "st1".into(), orientation, expressionIndex: 0,
-        headVariant: None,
+        headVariant: None, timeSec: 0.0,
     }).expect("composite");
     let frontImg = composite(Orientation::Front);
     let backImg = composite(Orientation::Back);
@@ -235,6 +235,7 @@ fn integrationPerformanceBrushToCompositeWithin100Ms() {
     api.getCompositeImage(CompositeParams {
         skinRoot: rootStr(&tmp), skinName: "st1".into(),
         orientation: Orientation::Front, expressionIndex: 0, headVariant: None,
+        timeSec: 0.0,
     }).expect("composite");
     let elapsedMs = start.elapsed().as_millis();
 

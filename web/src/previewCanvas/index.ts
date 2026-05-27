@@ -172,6 +172,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
   let lastLayerSnapshotVersion: number = sessionStore.getState().layerSnapshotVersion ?? 0;
   let lastDiffRef: SessionState["lastAppliedDiff"] = sessionStore.getState().lastAppliedDiff;
   let lastAssemblyOverrideVersion: number = sessionStore.getState().assemblyOverrideVersion ?? 0;
+  let lastAccessoriesVersion: number = sessionStore.getState().accessoriesVersion ?? 0;
   let pendingAssemblyKey = 0;
   let pendingMotionKey = 0;
   let placeholderInfo: PlaceholderInfo = { kind: "notSelectedSkin" };
@@ -494,7 +495,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     const { expressionIndex, headVariant } = sessionStore.getState();
     metaEl.textContent = `${skinName} / ${viewFacing} / exp ${expressionIndex} / ${headVariant}`;
     const key = ++pendingAssemblyKey;
-    getCompositeImage({ skinRoot, skinName, orientation: "front", expressionIndex, headVariant })
+    getCompositeImage({ skinRoot, skinName, orientation: "front", expressionIndex, headVariant, timeSec: 0 })
       .then((result) => {
         if (key !== pendingAssemblyKey || previewMode !== "assembly") return;
         drawPixels(result.width, result.height, result.pixels);
@@ -538,6 +539,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
       frameIndex: motionFrameIndex,
       expressionIndex,
       headVariant,
+      timeSec: frame.t,
     })
       .then((result) => {
         if (key !== pendingMotionKey || previewMode !== "motion") return;
@@ -572,6 +574,8 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     const layerChanged = layerVer !== lastLayerSnapshotVersion;
     const overrideVer = state.assemblyOverrideVersion ?? 0;
     const overrideChanged = overrideVer !== lastAssemblyOverrideVersion;
+    const accVer = state.accessoriesVersion ?? 0;
+    const accChanged = accVer !== lastAccessoriesVersion;
 
     if (skinChanged || expressionChanged || headVariantChanged || selectedChanged || motionDebugChanged) {
       lastSkinName = state.currentSkinName;
@@ -586,6 +590,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     lastDiffRef = state.lastAppliedDiff;
     lastLayerSnapshotVersion = layerVer;
     lastAssemblyOverrideVersion = overrideVer;
+    lastAccessoriesVersion = accVer;
     if (previewMode === "motion") {
       if (skinChanged || expressionChanged || headVariantChanged) {
         stalePending = false;
@@ -593,7 +598,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
         updateRefreshBtn();
         return;
       }
-      if (!(diffChanged || layerChanged)) return;
+      if (!(diffChanged || layerChanged || accChanged)) return;
       if (!livePreviewEnabled) {
         stalePending = true;
         updateRefreshBtn();
@@ -604,7 +609,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
       updateRefreshBtn();
       return;
     }
-    if (!(skinChanged || expressionChanged || headVariantChanged || diffChanged || layerChanged || overrideChanged)) return;
+    if (!(skinChanged || expressionChanged || headVariantChanged || diffChanged || layerChanged || overrideChanged || accChanged)) return;
     if (!livePreviewEnabled && !skinChanged) {
       stalePending = true;
       updateRefreshBtn();

@@ -16,6 +16,9 @@ use crate::historyManager::{self, HistoryEntry, HistoryStack, PixelDiff};
 use crate::imageOps::{self, Layer, PartEditState};
 use crate::layerSidecar;
 use crate::baseSizes;
+use crate::accessories;
+use crate::zones;
+use crate::blood;
 use crate::skinLoader::{self, ImportResult, PartCategory, Stage};
 use crate::windowManager::{self, ThemeConfig, WorkspaceLayout, WorkspaceSource};
 
@@ -195,6 +198,9 @@ pub struct CompositeParams {
     pub orientation: Orientation,
     pub expressionIndex: u8,
     pub headVariant: Option<HeadVariant>,
+    /// 播放时刻（秒）。前端按 RAF 循环递增；用于驱动粒子 / 帧动画。缺省 0 表示静态首帧。
+    #[serde(default)]
+    pub timeSec: f32,
 }
 
 /// 合成预览出参。pixels 长度 = COMPOSITE_W * COMPOSITE_H * 4。
@@ -278,6 +284,9 @@ pub struct MotionCompositeParams {
     pub frameIndex: usize,
     pub expressionIndex: u8,
     pub headVariant: Option<HeadVariant>,
+    /// 播放时刻（秒），与 CompositeParams.timeSec 同义；驱动粒子 / 帧动画。
+    #[serde(default)]
+    pub timeSec: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -364,11 +373,15 @@ pub struct SaveWorkspaceParams {
     pub theme: ThemeConfig,
 }
 
-/// 导出皮肤包入参。zipPath 为目标 zip 完整路径。
+/// 导出皮肤包入参。zipPath 为目标 zip 完整路径；layout=flat/categorized；includeBlood 控制是否含血液配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportSkinPackParams {
     pub skinRoot: String,
     pub zipPath: String,
+    #[serde(default)]
+    pub layout: Option<String>,
+    #[serde(default)]
+    pub includeBlood: Option<bool>,
 }
 
 /// 导出皮肤包出参，返回打包文件总数。
@@ -383,6 +396,69 @@ pub struct ImportSkinPackParams {
     pub skinRoot: String,
     pub zipPath: String,
     pub overwrite: bool,
+}
+
+/// 切换某皮肤里指定 id 配件的 enabled。配件不存在时报 accessory_not_found。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetAccessoryEnabledParams {
+    pub skinRoot: String,
+    pub skinName: String,
+    pub id: String,
+    pub enabled: bool,
+}
+
+/// 写整条配件配置。entry.id 不存在则追加；存在则原位替换。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveAccessoryConfigParams {
+    pub skinRoot: String,
+    pub skinName: String,
+    pub entry: accessories::AccessoryEntry,
+}
+
+/// 读 per-skin blood.json。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BloodConfigPathParams {
+    pub skinRoot: String,
+    pub skinName: String,
+}
+
+/// 整体覆写 blood.json。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveBloodConfigParams {
+    pub skinRoot: String,
+    pub skinName: String,
+    pub config: blood::BloodConfig,
+}
+
+/// 加载部件区块（mask + config）。mask 缺失返回空 ids，config 缺失返回空 zones。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoadZonesParams {
+    pub skinRoot: String,
+    pub skinName: String,
+    pub category: PartCategory,
+    pub partName: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoadZonesResult {
+    pub width: u32,
+    pub height: u32,
+    /// length = width * height；0 表示无区块。
+    pub ids: Vec<u8>,
+    pub config: zones::ZonesConfig,
+}
+
+/// 写整张 mask + 整份 config。前端在内存里增量改完整张上传，简化后端无需差量。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveZonesParams {
+    pub skinRoot: String,
+    pub skinName: String,
+    pub category: PartCategory,
+    pub partName: String,
+    pub width: u32,
+    pub height: u32,
+    pub ids: Vec<u8>,
+    pub config: zones::ZonesConfig,
 }
 
 /// 单部件最大图层数。
@@ -431,6 +507,13 @@ pub trait ApiLayer: Send + Sync + 'static {
     fn setAssemblyOverride(&self, params: SetAssemblyOverrideParams) -> Result<(), ApiError>;
     fn loadWingsConfig(&self, params: WingsConfigPathParams) -> Result<WingsConfig, ApiError>;
     fn saveWingsConfig(&self, params: SaveWingsConfigParams) -> Result<(), ApiError>;
+    fn setAccessoryEnabled(&self, params: SetAccessoryEnabledParams) -> Result<(), ApiError>;
+    fn saveAccessoryConfig(&self, params: SaveAccessoryConfigParams) -> Result<(), ApiError>;
+
+    fn loadBloodConfig(&self, params: BloodConfigPathParams) -> Result<blood::BloodConfig, ApiError>;
+    fn saveBloodConfig(&self, params: SaveBloodConfigParams) -> Result<(), ApiError>;
+    fn loadZones(&self, params: LoadZonesParams) -> Result<LoadZonesResult, ApiError>;
+    fn saveZones(&self, params: SaveZonesParams) -> Result<(), ApiError>;
 }
 
 struct PartSession {
@@ -534,9 +617,89 @@ impl ApiLayer for CoreApi {
         let skinDir = PathBuf::from(&params.skinRoot).join(&params.skinName);
         let baseSizesMap = baseSizes::load(&skinDir);
         let mut entries = buildMotionCompositeEntries(&frame, params.expressionIndex, &params.headVariant);
+        // 启用中的配件作为虚拟 entries 并入主排序：
+        // 父锚 = frame.limbs 里同名 limb（动画驱动的实时位姿），sortingOrder 与 base 同轴比较，避免"配件总在最前"。
+        let accList = accessories::loadAccessories(&accessories::accessoriesPath(
+            &PathBuf::from(&params.skinRoot),
+            &params.skinName,
+        ));
+        let mut accVirtuals: Vec<(AssemblyEntry, Option<char>)> = Vec::new();
+        for a in accList.iter().filter(|a| a.enabled) {
+            let parent = match frame.limbs.iter().find(|l| l.visible && l.name == a.limb) {
+                Some(p) => p,
+                None => continue,
+            };
+            accVirtuals.push((AssemblyEntry {
+                partName: format!("__acc:{}", a.id),
+                category: PartCategory::Accessories,
+                position: motionCompositePosition(parent),
+                zOrder: parent.sortingOrder + a.z,
+                flipX: false,
+                rotation: parent.rotZ + a.rot,
+                variants: None,
+            }, None));
+            if let Some(secs) = &a.secondaryLimbs {
+                for (idx, sec) in secs.iter().enumerate() {
+                    let secParent = match frame.limbs.iter().find(|l| l.visible && l.name == sec.limb) {
+                        Some(p) => p,
+                        None => continue,
+                    };
+                    accVirtuals.push((AssemblyEntry {
+                        partName: format!("__acc:{}#{}", a.id, idx),
+                        category: PartCategory::Accessories,
+                        position: motionCompositePosition(secParent),
+                        zOrder: secParent.sortingOrder + sec.z,
+                        flipX: false,
+                        rotation: secParent.rotZ + sec.rot,
+                        variants: None,
+                    }, None));
+                }
+            }
+        }
+        for v in accVirtuals { entries.push(v); }
+        let accById: std::collections::HashMap<&str, &accessories::AccessoryEntry> =
+            accList.iter().filter(|a| a.enabled).map(|a| (a.id.as_str(), a)).collect();
         entries.sort_by_key(|(e, _)| e.zOrder);
         let sessions = lockSessions(&self.sessions)?;
         for (entry, sideHint) in entries {
+            // 配件分支：sprite 名解码自 partName 前缀，再用 acc.offX/offY 微调。
+            if entry.category == PartCategory::Accessories {
+                let raw = entry.partName.strip_prefix("__acc:").unwrap_or("");
+                let (id, secIdx) = match raw.split_once('#') {
+                    Some((id, idx)) => (id, idx.parse::<usize>().ok()),
+                    None => (raw, None),
+                };
+                let acc = match accById.get(id) { Some(a) => *a, None => continue };
+                let (spriteName, offX, offY) = if let Some(idx) = secIdx {
+                    let sec = match acc.secondaryLimbs.as_ref().and_then(|v| v.get(idx)) {
+                        Some(s) => s, None => continue,
+                    };
+                    (sec.sprite.as_str(), sec.offX, sec.offY)
+                } else {
+                    (acc.sprite.as_str(), acc.offX, acc.offY)
+                };
+                let picked = pickPartPixels(
+                    &sessions,
+                    &skinDir,
+                    &params.skinName,
+                    PartCategory::Accessories,
+                    spriteName,
+                    None,
+                );
+                let (partW, partH, pixels) = match picked { Some(t) => t, None => continue };
+                let parentRad = -(entry.rotation - acc.rot).to_radians();
+                let c = parentRad.cos();
+                let s = parentRad.sin();
+                let dx = (offX as f32) * c - (offY as f32) * s;
+                let dy = (offX as f32) * s + (offY as f32) * c;
+                let centerX = (COMPOSITE_W as i32) / 2 + entry.position.x + dx.round() as i32;
+                let centerY = (COMPOSITE_H as i32) / 2 + entry.position.y + dy.round() as i32;
+                imageOps::blitWithRotation(
+                    &mut canvas, COMPOSITE_W, COMPOSITE_H, &pixels, partW, partH,
+                    centerX, centerY, entry.rotation, false,
+                );
+                continue;
+            }
             // entry.partName 是 base 名；sideHint 来自 frame.limbs[*].name 末尾 F/B（HandF/HandB/Tail/wing 不参与）。
             // 用户为前后共享部件单独画 sided PNG 时，sided 优先；缺失退回共享 base。
             let basePart: &str = &entry.partName;
@@ -553,8 +716,7 @@ impl ApiLayer for CoreApi {
                 Some(t) => t,
                 None => continue,
             };
-            // baseSizes.json 记录过该 part 在 resize 之前的"原始尺寸"时，按原始尺寸缩回再 blit。
-            // 没记录就保持磁盘实尺。effectiveName（sided 命中时为 sided 名）用作查表 key 优先；缺失退回 base。
+            // 按 baseSizes 标准尺寸缩回；sidedName 优先查表，缺失退回 basePart。
             let renderedName: &str = sidedName.as_deref().unwrap_or(basePart);
             let (partW, partH, pixels) = applyBaseSizeFit(&baseSizesMap, entry.category, renderedName, basePart, partW, partH, pixels);
             let centerX = (COMPOSITE_W as i32) / 2 + entry.position.x;
@@ -571,7 +733,22 @@ impl ApiLayer for CoreApi {
                 entry.rotation,
                 false,
             );
+            renderZoneLightsForPart(
+                &mut canvas, COMPOSITE_W, COMPOSITE_H,
+                &PathBuf::from(&params.skinRoot), &params.skinName,
+                categoryDir(entry.category), renderedName, basePart,
+                partW, partH, centerX, centerY, entry.rotation, false,
+                params.timeSec,
+            );
+            renderZoneEffectsForPart(
+                &mut canvas, COMPOSITE_W, COMPOSITE_H,
+                &PathBuf::from(&params.skinRoot), &params.skinName,
+                categoryDir(entry.category), renderedName, basePart,
+                partW, partH, centerX, centerY, entry.rotation, false,
+                params.timeSec, &sessions,
+            );
         }
+
         Ok(MotionCompositeResult {
             width: COMPOSITE_W,
             height: COMPOSITE_H,
@@ -919,18 +1096,7 @@ impl ApiLayer for CoreApi {
                 eprintln!("[resizePart] sidecar 写盘失败：{}", e.message);
             }
         }
-        // 首次 resize 该 part 时记下 resize 之前的 (oldW,oldH) 作为"原始尺寸"；
-        // 后续再 resize 不更新该字段——让合成预览始终缩回最早的原始尺寸。
-        if let (Some(skinDir), Some(catDir), Some(partName)) = (skinDirOpt, categoryOpt, partNameOpt) {
-            let mut sizes = baseSizes::load(&skinDir);
-            let key = baseSizes::keyFor(&catDir, &partName);
-            if sizes.get(&key).is_none() {
-                sizes.put(key, oldW, oldH);
-                if let Err(e) = baseSizes::save(&skinDir, &sizes) {
-                    eprintln!("[resizePart] baseSizes 写盘失败：{}", e.message);
-                }
-            }
-        }
+        let _ = (skinDirOpt, categoryOpt, partNameOpt);
         Ok(ResizePartResult { partId: params.partId, width: params.width, height: params.height })
     }
 
@@ -1177,16 +1343,7 @@ impl ApiLayer for CoreApi {
             entry.zOrder
         };
 
-        // sort 走"翼分类 → resolveWingZ；其它分类 → override.zOrder.fallback(entry)"
-        entries.sort_by_key(|e| {
-            let ovr = overrides.get(&(e.partName.clone(), e.category));
-            if e.category == PartCategory::Wings {
-                resolveWingZ(e, ovr)
-            } else {
-                ovr.and_then(|o| o.zOrder).unwrap_or(e.zOrder)
-            }
-        });
-
+        // 翼上翼姿态在 entries 排序前查找——只需要 wing entry 存在性，不依赖排序。
         // 先扫一遍上翼，记下它们的 (根 pos, rotation, halfH)，让下翼绕上翼根旋转。
         // 父子关节模型：下翼世界位置 = 上翼根 + rotateVec((pos.x, halfH + pos.y), upperRot)；
         // 下翼世界旋转 = 上翼旋转 + 下翼自身相对偏移。
@@ -1211,7 +1368,103 @@ impl ApiLayer for CoreApi {
         let lowerLAnchor = upperWingPose("wingUL");
         let lowerRAnchor = upperWingPose("wingUR");
 
+        // 把启用中的配件作为虚拟 entries 并入主排序列表：partName 用 `__acc:<id>` 前缀作为运行时标记，
+        // category=Accessories 让主循环走 sided=None 取磁盘 / session 的 PNG；
+        // position 直接复制父 entry（与游戏 Body.WearWearable 把 item 设为 limb 子节点 + localPosition=Vector3.zero 等价）；
+        // zOrder = 父 entry zOrder + acc.z（与 mod 端 limbSr.sortingOrder + entry.zOrder 一致）。
+        // offX/offY/acc.rot 仅作运行时微调，渲染时再叠。
+        let accList = accessories::loadAccessories(&accessories::accessoriesPath(
+            &PathBuf::from(&params.skinRoot),
+            &params.skinName,
+        ));
+        // 拷贝出虚拟 entries 暂存，避免在主 entries（&AssemblyEntry 借用）上做生命周期复杂处理。
+        let mut accVirtuals: Vec<AssemblyEntry> = Vec::new();
+        for a in accList.iter().filter(|a| a.enabled) {
+            let parent = match accessoryParentEntry(&table, &a.limb) { Some(p) => p, None => continue };
+            accVirtuals.push(AssemblyEntry {
+                partName: format!("__acc:{}", a.id),
+                category: PartCategory::Accessories,
+                position: parent.position,
+                zOrder: parent.zOrder + a.z,
+                flipX: parent.flipX,
+                rotation: parent.rotation + a.rot,
+                variants: None,
+            });
+            // 副件：每个 secondaryLimb 独立查父 entry，与主件并列加入排序列表。
+            // partName 用 `__acc:<id>#<limb>` 区分主副，渲染时按 # 解析回 sec 配置。
+            if let Some(secs) = &a.secondaryLimbs {
+                for (idx, sec) in secs.iter().enumerate() {
+                    let secParent = match accessoryParentEntry(&table, &sec.limb) { Some(p) => p, None => continue };
+                    accVirtuals.push(AssemblyEntry {
+                        partName: format!("__acc:{}#{}", a.id, idx),
+                        category: PartCategory::Accessories,
+                        position: secParent.position,
+                        zOrder: secParent.zOrder + sec.z,
+                        flipX: secParent.flipX,
+                        rotation: secParent.rotation + sec.rot,
+                        variants: None,
+                    });
+                }
+            }
+        }
+        // 将虚拟 entries 与原 entries 合并；entries 此时是 Vec<&AssemblyEntry>，把 accVirtuals 也按引用接入。
+        for v in &accVirtuals { entries.push(v); }
+
+        // 重新排序：base 走原有逻辑；配件用 entry.zOrder（已含父 zOrder 偏移），与 base 同轴比较。
+        entries.sort_by_key(|e| {
+            let ovr = overrides.get(&(e.partName.clone(), e.category));
+            if e.category == PartCategory::Wings {
+                resolveWingZ(e, ovr)
+            } else {
+                ovr.and_then(|o| o.zOrder).unwrap_or(e.zOrder)
+            }
+        });
+
+        // 用 partName 前缀回查 acc 配置，得到 offX/offY 微调（acc.rot 已并入 entry.rotation）。
+        let accById: std::collections::HashMap<&str, &accessories::AccessoryEntry> =
+            accList.iter().filter(|a| a.enabled).map(|a| (a.id.as_str(), a)).collect();
+
         for entry in entries {
+            // 配件分支：按 entry.position（已是父 limb 像素位置）+ acc.offX/offY 偏移渲染。
+            if entry.category == PartCategory::Accessories {
+                let raw = entry.partName.strip_prefix("__acc:").unwrap_or("");
+                // 支持主件 `id` 与副件 `id#index` 两种命名。
+                let (id, secIdx) = match raw.split_once('#') {
+                    Some((id, idx)) => (id, idx.parse::<usize>().ok()),
+                    None => (raw, None),
+                };
+                let acc = match accById.get(id) { Some(a) => *a, None => continue };
+                let (spriteName, offX, offY) = if let Some(idx) = secIdx {
+                    let sec = match acc.secondaryLimbs.as_ref().and_then(|v| v.get(idx)) {
+                        Some(s) => s, None => continue,
+                    };
+                    (sec.sprite.as_str(), sec.offX, sec.offY)
+                } else {
+                    (acc.sprite.as_str(), acc.offX, acc.offY)
+                };
+                let picked = pickPartPixels(
+                    &sessions,
+                    &PathBuf::from(&params.skinRoot).join(&params.skinName),
+                    &params.skinName,
+                    PartCategory::Accessories,
+                    spriteName,
+                    None,
+                );
+                let (partW, partH, pixels) = match picked { Some(t) => t, None => continue };
+                // offX/offY 在父 limb 局部像素轴上；用父 rotation 把它旋到世界，与 mod 端 transform.localPosition 跟着父级旋转一致。
+                let parentRad = -(entry.rotation - 0.0).to_radians();
+                let c = parentRad.cos();
+                let s = parentRad.sin();
+                let dx = (offX as f32) * c - (offY as f32) * s;
+                let dy = (offX as f32) * s + (offY as f32) * c;
+                let centerX = (COMPOSITE_W as i32) / 2 + entry.position.x + dx.round() as i32;
+                let centerY = (COMPOSITE_H as i32) / 2 + entry.position.y + dy.round() as i32;
+                imageOps::blitWithRotation(
+                    &mut canvas, COMPOSITE_W, COMPOSITE_H, &pixels, partW, partH,
+                    centerX, centerY, entry.rotation, entry.flipX,
+                );
+                continue;
+            }
             // assembly entry.partName 是 base 名；同 base 在 entries 里出现两次（前后两 limb），
             // 按 entry.zOrder 符号决定取 F / B sided 候选：F 大 / B 小（与 defaultAssembly 注释一致）。
             let basePart: &str = &entry.partName;
@@ -1228,7 +1481,7 @@ impl ApiLayer for CoreApi {
                 Some(t) => t,
                 None => continue,
             };
-            // baseSizes.json 记录过该 part 在 resize 之前的"原始尺寸"时按其缩回。
+            // 按 baseSizes 标准尺寸缩回；F/B sided 副本走 fallback 命中 base。
             let renderedName: &str = sidedName.as_deref().unwrap_or(basePart);
             let (partW, partH, pixels) = applyBaseSizeFit(&baseSizesMap, entry.category, renderedName, basePart, partW, partH, pixels);
             // override 优先；否则用装配表 entry 自身字段；翼分类还要叠 wings.json。
@@ -1280,7 +1533,23 @@ impl ApiLayer for CoreApi {
                 &mut canvas, COMPOSITE_W, COMPOSITE_H, &pixels, partW, partH,
                 centerX, centerY, rotation, flipX,
             );
+            // 区块发光：按 part 的 zones.png/json 在合成画布上叠径向光。
+            renderZoneLightsForPart(
+                &mut canvas, COMPOSITE_W, COMPOSITE_H,
+                &PathBuf::from(&params.skinRoot), &params.skinName,
+                categoryDir(entry.category), renderedName, basePart,
+                partW, partH, centerX, centerY, rotation, flipX,
+                params.timeSec,
+            );
+            renderZoneEffectsForPart(
+                &mut canvas, COMPOSITE_W, COMPOSITE_H,
+                &PathBuf::from(&params.skinRoot), &params.skinName,
+                categoryDir(entry.category), renderedName, basePart,
+                partW, partH, centerX, centerY, rotation, flipX,
+                params.timeSec, &sessions,
+            );
         }
+
         Ok(CompositeResult { width: COMPOSITE_W, height: COMPOSITE_H, pixels: canvas })
     }
 
@@ -1305,9 +1574,13 @@ impl ApiLayer for CoreApi {
         &self,
         params: ExportSkinPackParams,
     ) -> Result<ExportSkinPackResult, ApiError> {
+        let layout = skinLoader::ExportLayout::fromStr(params.layout.as_deref().unwrap_or("topLevel"));
+        let includeBlood = params.includeBlood.unwrap_or(false);
         let n = skinLoader::exportSkinPack(
             &PathBuf::from(params.skinRoot),
             &PathBuf::from(params.zipPath),
+            layout,
+            includeBlood,
         )?;
         Ok(ExportSkinPackResult { fileCount: n })
     }
@@ -1369,10 +1642,544 @@ impl ApiLayer for CoreApi {
             message: format!("write {}: {}", path.display(), e),
         })
     }
+
+    fn setAccessoryEnabled(&self, params: SetAccessoryEnabledParams) -> Result<(), ApiError> {
+        let path = accessories::accessoriesPath(
+            &PathBuf::from(&params.skinRoot),
+            &params.skinName,
+        );
+        let mut list = accessories::loadAccessories(&path);
+        if !accessories::setEnabledById(&mut list, &params.id, params.enabled) {
+            return Err(ApiError {
+                code: "accessory_not_found".into(),
+                message: format!("accessory id '{}' not in {}", params.id, path.display()),
+            });
+        }
+        accessories::saveAccessories(&path, &list)
+    }
+
+    fn saveAccessoryConfig(&self, params: SaveAccessoryConfigParams) -> Result<(), ApiError> {
+        let path = accessories::accessoriesPath(
+            &PathBuf::from(&params.skinRoot),
+            &params.skinName,
+        );
+        let mut list = accessories::loadAccessories(&path);
+        if let Some(idx) = list.iter().position(|e| e.id == params.entry.id) {
+            list[idx] = params.entry;
+        } else {
+            list.push(params.entry);
+        }
+        accessories::saveAccessories(&path, &list)
+    }
+
+    fn loadBloodConfig(&self, params: BloodConfigPathParams) -> Result<blood::BloodConfig, ApiError> {
+        let path = blood::bloodConfigPath(&PathBuf::from(&params.skinRoot), &params.skinName);
+        Ok(blood::loadBloodConfig(&path))
+    }
+
+    fn saveBloodConfig(&self, params: SaveBloodConfigParams) -> Result<(), ApiError> {
+        let path = blood::bloodConfigPath(&PathBuf::from(&params.skinRoot), &params.skinName);
+        blood::saveBloodConfig(&path, &params.config)
+    }
+
+    fn loadZones(&self, params: LoadZonesParams) -> Result<LoadZonesResult, ApiError> {
+        let root = PathBuf::from(&params.skinRoot);
+        let catDir = categoryDir(params.category);
+        let maskFile = zones::maskPath(&root, &params.skinName, catDir, &params.partName);
+        let configFile = zones::configPath(&root, &params.skinName, catDir, &params.partName);
+        let (width, height, ids) = match zones::loadMask(&maskFile) {
+            Some(t) => t,
+            None => {
+                // mask 不存在：返回 part 实际尺寸的全 0 ids，便于前端"开新区块"无负担。
+                let partPng = root
+                    .join(&params.skinName)
+                    .join(catDir)
+                    .join(format!("{}.png", &params.partName));
+                let dims = skinLoader::decodePart(&partPng)
+                    .map(|d| (d.width, d.height))
+                    .unwrap_or((0, 0));
+                (dims.0, dims.1, vec![0u8; (dims.0 * dims.1) as usize])
+            }
+        };
+        let config = zones::loadConfig(&configFile);
+        Ok(LoadZonesResult { width, height, ids, config })
+    }
+
+    fn saveZones(&self, params: SaveZonesParams) -> Result<(), ApiError> {
+        let root = PathBuf::from(&params.skinRoot);
+        let catDir = categoryDir(params.category);
+        let maskFile = zones::maskPath(&root, &params.skinName, catDir, &params.partName);
+        let configFile = zones::configPath(&root, &params.skinName, catDir, &params.partName);
+        zones::saveMask(&maskFile, params.width, params.height, &params.ids)?;
+        zones::saveConfig(&configFile, &params.config)
+    }
+}
+
+/// 把指定 part 的所有 zone light 叠到 canvas 上：mask 中心转世界像素位置 +
+/// outerRadius 配置（Unity 单位）× PIXELS_PER_UNIT(=8) 作衰减半径。
+/// part 没有 zones 文件时静默 no-op；sided 名找不到时回退到 base 名（用户可能在 base part 上画的 mask）。
+fn renderZoneLightsForPart(
+    canvas: &mut [u8],
+    canvasW: u32,
+    canvasH: u32,
+    skinRoot: &Path,
+    skinName: &str,
+    categoryDir: &str,
+    renderedName: &str,
+    basePart: &str,
+    partW: u32,
+    partH: u32,
+    centerX: i32,
+    centerY: i32,
+    rotationDeg: f32,
+    flipX: bool,
+    timeSec: f32,
+) {
+    let (maskFile, configFile) = {
+        let m = zones::maskPath(skinRoot, skinName, categoryDir, renderedName);
+        let c = zones::configPath(skinRoot, skinName, categoryDir, renderedName);
+        if m.exists() {
+            (m, c)
+        } else if renderedName != basePart {
+            (
+                zones::maskPath(skinRoot, skinName, categoryDir, basePart),
+                zones::configPath(skinRoot, skinName, categoryDir, basePart),
+            )
+        } else {
+            return;
+        }
+    };
+    let (mw, mh, ids) = match zones::loadMask(&maskFile) {
+        Some(t) => t,
+        None => return,
+    };
+    let cfg = zones::loadConfig(&configFile);
+    if cfg.zones.is_empty() { return; }
+    if mw == 0 || mh == 0 { return; }
+    let geom = zones::computeGeometry(mw, mh, &ids);
+    if geom.is_empty() { return; }
+    // mask 像素坐标 → part 局部坐标（pivot 中心）→ 旋转 → 加 part 世界中心。
+    // 当 mask 与渲染尺寸不一致（例如 baseSizes 常量表缩回），按比例换算 mask→part 像素。
+    let scaleX = partW as f32 / mw as f32;
+    let scaleY = partH as f32 / mh as f32;
+    let rad = -rotationDeg.to_radians();
+    let cosT = rad.cos();
+    let sinT = rad.sin();
+    let halfW = partW as f32 * 0.5;
+    let halfH = partH as f32 * 0.5;
+    for z in &cfg.zones {
+        let light = match &z.light { Some(l) => l, None => continue };
+        let entry = match geom.iter().find(|g| g.0 == z.id) { Some(g) => g, None => continue };
+        let lx = entry.1 * scaleX - halfW;
+        // mask 像素 y 轴向下；与画布 y 一致，无需翻转。
+        let ly = entry.2 * scaleY - halfH;
+        let fx = if flipX { -lx } else { lx };
+        let wx = centerX as f32 + fx * cosT - ly * sinT;
+        let wy = centerY as f32 + fx * sinT + ly * cosT;
+        // Light2D outerRadius / innerRadius 单位是 Unity（1 unit = 8 像素）。
+        let outerPx = light.outerRadius * 8.0;
+        let innerPx = light.innerRadius * 8.0;
+        // 呼吸：强度按时间正弦在 [intensity*(1-amp), intensity*(1+amp)] 摆动。
+        let intensity = if light.breathing {
+            let phase = (timeSec * light.breathSpeed * std::f32::consts::TAU).sin();
+            (light.intensity * (1.0 + phase * light.breathAmplitude)).max(0.0)
+        } else {
+            light.intensity
+        };
+        // 方向角：light.direction 度，按 part 旋转 + flip 同步。
+        let dirRad = -light.direction.to_radians();
+        let baseDx = dirRad.cos();
+        let baseDy = -dirRad.sin();
+        let dxFlipped = if flipX { -baseDx } else { baseDx };
+        let dirX = dxFlipped * cosT - baseDy * sinT;
+        let dirY = dxFlipped * sinT + baseDy * cosT;
+        blendZoneLight(
+            canvas, canvasW, canvasH,
+            wx, wy, outerPx, innerPx, light.color, light.color2, intensity,
+            &light.mode, dirX, dirY, light.spread, light.falloffPower,
+        );
+    }
+}
+/// 计算径向光：dist∈[inner,outer] 用 smoothstep 反向 + 衰减幂；颜色按 t 在 color1↔color2 之间渐变。
+/// directional / scatter 在径向衰减基础上额外加角度 cone 限制。
+fn blendZoneLight(
+    canvas: &mut [u8],
+    canvasW: u32,
+    canvasH: u32,
+    centerX: f32,
+    centerY: f32,
+    outer: f32,
+    inner: f32,
+    color: [u8; 4],
+    color2: Option<[u8; 4]>,
+    intensity: f32,
+    mode: &str,
+    dirX: f32,
+    dirY: f32,
+    spreadDeg: f32,
+    falloffPower: f32,
+) {
+    if outer <= 0.0 || intensity <= 0.0 { return; }
+    let lo = inner.clamp(0.0, outer);
+    let outerSq = outer * outer;
+    let x0 = (centerX - outer).floor().max(0.0) as i32;
+    let y0 = (centerY - outer).floor().max(0.0) as i32;
+    let x1 = (centerX + outer).ceil().min((canvasW - 1) as f32) as i32;
+    let y1 = (centerY + outer).ceil().min((canvasH - 1) as f32) as i32;
+    let r1 = color[0] as f32;
+    let g1 = color[1] as f32;
+    let b1 = color[2] as f32;
+    let (r2, g2, b2) = match color2 {
+        Some(c) => (c[0] as f32, c[1] as f32, c[2] as f32),
+        None => (r1, g1, b1),
+    };
+    let alphaScale = color[3] as f32 / 255.0;
+    let halfCos = ((spreadDeg.clamp(0.0, 360.0) * 0.5).to_radians()).cos();
+    let isDirectional = mode == "directional" || mode == "scatter";
+    let pow = falloffPower.max(0.1);
+    for y in y0..=y1 {
+        let dy = y as f32 - centerY;
+        for x in x0..=x1 {
+            let dx = x as f32 - centerX;
+            let d2 = dx * dx + dy * dy;
+            if d2 > outerSq { continue; }
+            let d = d2.sqrt();
+            let baseT = if d <= lo { 1.0 } else { 1.0 - (d - lo) / (outer - lo).max(0.001) };
+            let mut t = baseT.powf(pow);
+            // 渐变插值因子：dist=lo → 0（用 color1）；dist=outer → 1（用 color2）。
+            let mix = if d <= lo { 0.0 } else { ((d - lo) / (outer - lo).max(0.001)).clamp(0.0, 1.0) };
+            if isDirectional {
+                if d > 0.001 {
+                    let nx = dx / d;
+                    let ny = dy / d;
+                    let dot = nx * dirX + ny * dirY;
+                    if dot < halfCos { continue; }
+                    if mode == "directional" {
+                        // cone 内部按 cos 平滑过渡，越靠中线越亮。
+                        let cone = ((dot - halfCos) / (1.0 - halfCos).max(0.001)).clamp(0.0, 1.0);
+                        t *= cone;
+                    } else {
+                        // scatter：cone 边沿等亮，模拟散射光束。
+                        t *= 0.7 + 0.3 * ((dot - halfCos) / (1.0 - halfCos).max(0.001)).clamp(0.0, 1.0);
+                    }
+                }
+            }
+            let a = (intensity * t * alphaScale).clamp(0.0, 1.0);
+            if a <= 0.0 { continue; }
+            let cr = r1 * (1.0 - mix) + r2 * mix;
+            let cg = g1 * (1.0 - mix) + g2 * mix;
+            let cb = b1 * (1.0 - mix) + b2 * mix;
+            let idx = ((y as u32) * canvasW + (x as u32)) as usize * 4;
+            // 加光：在画布原色基础上叠加 a*color，clamp 到 255。
+            let dstR = canvas[idx] as f32 + cr * a;
+            let dstG = canvas[idx + 1] as f32 + cg * a;
+            let dstB = canvas[idx + 2] as f32 + cb * a;
+            let dstA = canvas[idx + 3] as f32 + 255.0 * a;
+            canvas[idx] = dstR.min(255.0) as u8;
+            canvas[idx + 1] = dstG.min(255.0) as u8;
+            canvas[idx + 2] = dstB.min(255.0) as u8;
+            canvas[idx + 3] = dstA.min(255.0) as u8;
+        }
+    }
+}
+
+/// 多模式粒子渲染：
+/// - gravity：默认重力（startColor → 透明，沿初始角度漂移 + 重力下坠）
+/// - star：星空闪烁（位置不变，alpha 按 sin(2π·age/life·blink) 闪烁）
+/// - fire：火焰（向上飘 + age 末段收缩 + 起始热色 → 末段冷色）
+/// - water：水流（向下流 + 横向小幅摆动）
+/// - orbit：环绕中心（粒子绕中心旋转，半径按 age 略增）
+/// 所有模式都支持 startColor/endColor 渐变 + endSizeScale 大小渐变 + fadeCurve alpha 曲线。
+fn renderZoneParticles(
+    canvas: &mut [u8],
+    canvasW: u32,
+    canvasH: u32,
+    centerX: f32,
+    centerY: f32,
+    cfg: &accessories::ParticleConfig,
+    timeSec: f32,
+    seed: u32,
+) {
+    if cfg.rate <= 0.0 || cfg.lifetime <= 0.0 { return; }
+    let active = ((cfg.rate * cfg.lifetime).ceil() as i32).clamp(1, 512);
+    let sizePx = (cfg.startSize * 8.0).max(0.5);
+    let shapeRadiusPx = if cfg.shapeRadius > 0.0 { cfg.shapeRadius * 8.0 } else { 4.0 };
+    let mode = cfg.mode.as_str();
+    let speedPxPerSec = if cfg.speed > 0.0 {
+        cfg.speed * 8.0
+    } else {
+        match mode {
+            "fire" => 28.0,
+            "water" => 36.0,
+            "orbit" => 18.0,
+            "star" => 0.0,
+            _ => 12.0,
+        }
+    };
+    let gravityPxPerSec2 = cfg.gravity * 80.0;
+    let dirCenterRad = -cfg.direction.to_radians();
+    let halfSpread = (cfg.spread.clamp(0.0, 360.0) * 0.5).to_radians();
+    let endColor = cfg.endColor.unwrap_or([
+        cfg.startColor[0],
+        cfg.startColor[1],
+        cfg.startColor[2],
+        0,
+    ]);
+    let endScale = cfg.endSizeScale.max(0.01);
+
+    for i in 0..active {
+        let h = hashU32(seed.wrapping_add(i as u32));
+        let phase = ((h & 0xFFFF) as f32) / 65536.0;
+        let birth = phase * cfg.lifetime + (i as f32) / cfg.rate.max(0.0001);
+        let age = (timeSec - birth).rem_euclid(cfg.lifetime);
+        if age < 0.0 || age > cfg.lifetime { continue; }
+        let lifeT = (age / cfg.lifetime).clamp(0.0, 1.0);
+        let baseAlpha = match cfg.fadeCurve.as_str() {
+            "constant" => 1.0,
+            "easeOut" => (1.0 - lifeT).powf(0.5),
+            "blink" => (1.0 - lifeT) * (((lifeT * 6.0 * std::f32::consts::PI).sin() + 1.0) * 0.5),
+            _ => 1.0 - lifeT,
+        };
+        let alpha = baseAlpha.clamp(0.0, 1.0) * (cfg.startColor[3] as f32 / 255.0);
+        if alpha <= 0.005 { continue; }
+        // 角度：以 direction 为中心，按 spread 散开。
+        let spreadFrac = ((h >> 16) as f32) / 65536.0 * 2.0 - 1.0;
+        let angle = dirCenterRad + spreadFrac * halfSpread;
+        let r0 = ((h ^ 0xA5A5_A5A5) & 0xFFFF) as f32 / 65536.0 * shapeRadiusPx;
+        let (px, py) = match mode {
+            "star" => {
+                let twinkle = ((age * 6.28 * 2.0 + (h & 0xFF) as f32 * 0.1).sin() * 0.5 + 0.5) * 1.5;
+                (
+                    centerX + angle.cos() * r0,
+                    centerY + angle.sin() * r0 - twinkle * 0.0,
+                )
+            }
+            "fire" => {
+                // 向上飘（angle 已经按 direction，默认 90°=向上）+ 横向小幅摇摆。
+                let sway = (age * 4.0 + (h & 0xFF) as f32 * 0.3).sin() * 2.0;
+                let dy = -speedPxPerSec * age - 0.5 * gravityPxPerSec2 * age * age;
+                (centerX + angle.cos() * r0 + sway, centerY + angle.sin() * r0 + dy)
+            }
+            "water" => {
+                // 向下流（默认 direction 270°=向下）+ 重力加速。
+                let sway = (age * 3.0 + (h & 0xFF) as f32 * 0.2).sin() * 1.5;
+                let dx = angle.cos() * speedPxPerSec * age;
+                let dy = angle.sin() * speedPxPerSec * age + 0.5 * gravityPxPerSec2 * age * age;
+                (centerX + r0 + dx + sway, centerY + dy)
+            }
+            "orbit" => {
+                let omega = if cfg.speed > 0.0 { cfg.speed } else { 2.0 };
+                let theta = angle + omega * age;
+                let r = r0 + speedPxPerSec * age * 0.05;
+                (centerX + theta.cos() * r, centerY + theta.sin() * r)
+            }
+            _ => {
+                // gravity 默认。
+                let vx = angle.cos() * speedPxPerSec;
+                let vy = -angle.sin() * speedPxPerSec;
+                (
+                    centerX + r0 * angle.cos() + vx * age,
+                    centerY + r0 * (-angle.sin()) + vy * age + 0.5 * gravityPxPerSec2 * age * age,
+                )
+            }
+        };
+        // 颜色 / 大小渐变。
+        let r = cfg.startColor[0] as f32 * (1.0 - lifeT) + endColor[0] as f32 * lifeT;
+        let g = cfg.startColor[1] as f32 * (1.0 - lifeT) + endColor[1] as f32 * lifeT;
+        let b = cfg.startColor[2] as f32 * (1.0 - lifeT) + endColor[2] as f32 * lifeT;
+        let curSize = sizePx * (1.0 + (endScale - 1.0) * lifeT);
+        let halfSize = curSize * 0.5;
+        let x0 = (px - halfSize).floor().max(0.0) as i32;
+        let y0 = (py - halfSize).floor().max(0.0) as i32;
+        let x1 = (px + halfSize).ceil().min((canvasW - 1) as f32) as i32;
+        let y1 = (py + halfSize).ceil().min((canvasH - 1) as f32) as i32;
+        if x1 < x0 || y1 < y0 { continue; }
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let idx = ((y as u32) * canvasW + (x as u32)) as usize * 4;
+                let inv = 1.0 - alpha;
+                canvas[idx] = (canvas[idx] as f32 * inv + r * alpha) as u8;
+                canvas[idx + 1] = (canvas[idx + 1] as f32 * inv + g * alpha) as u8;
+                canvas[idx + 2] = (canvas[idx + 2] as f32 * inv + b * alpha) as u8;
+                canvas[idx + 3] = (canvas[idx + 3] as f32).max(alpha * 255.0) as u8;
+            }
+        }
+    }
+}
+
+/// xorshift32 哈希——稳定输出，不依赖 std::hash。
+fn hashU32(mut x: u32) -> u32 {
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    x.wrapping_add(0x9e37_79b9)
+}
+
+/// 把指定 part 的所有 zone particle / animation 叠到 canvas 上。
+fn renderZoneEffectsForPart(
+    canvas: &mut [u8],
+    canvasW: u32,
+    canvasH: u32,
+    skinRoot: &Path,
+    skinName: &str,
+    categoryDir: &str,
+    renderedName: &str,
+    basePart: &str,
+    partW: u32,
+    partH: u32,
+    centerX: i32,
+    centerY: i32,
+    rotationDeg: f32,
+    flipX: bool,
+    timeSec: f32,
+    sessions: &std::sync::MutexGuard<'_, std::collections::HashMap<String, PartSession>>,
+) {
+    let (maskFile, configFile) = {
+        let m = zones::maskPath(skinRoot, skinName, categoryDir, renderedName);
+        let c = zones::configPath(skinRoot, skinName, categoryDir, renderedName);
+        if m.exists() {
+            (m, c)
+        } else if renderedName != basePart {
+            (
+                zones::maskPath(skinRoot, skinName, categoryDir, basePart),
+                zones::configPath(skinRoot, skinName, categoryDir, basePart),
+            )
+        } else {
+            return;
+        }
+    };
+    let (mw, mh, ids) = match zones::loadMask(&maskFile) {
+        Some(t) => t,
+        None => return,
+    };
+    let cfg = zones::loadConfig(&configFile);
+    if cfg.zones.is_empty() { return; }
+    if mw == 0 || mh == 0 { return; }
+    let geom = zones::computeGeometry(mw, mh, &ids);
+    if geom.is_empty() { return; }
+    let scaleX = partW as f32 / mw as f32;
+    let scaleY = partH as f32 / mh as f32;
+    let rad = -rotationDeg.to_radians();
+    let cosT = rad.cos();
+    let sinT = rad.sin();
+    let halfW = partW as f32 * 0.5;
+    let halfH = partH as f32 * 0.5;
+    for z in &cfg.zones {
+        let entry = match geom.iter().find(|g| g.0 == z.id) { Some(g) => g, None => continue };
+        let lx = entry.1 * scaleX - halfW;
+        let ly = entry.2 * scaleY - halfH;
+        let fx = if flipX { -lx } else { lx };
+        let wx = centerX as f32 + fx * cosT - ly * sinT;
+        let wy = centerY as f32 + fx * sinT + ly * cosT;
+        if let Some(p) = &z.particle {
+            // seed 含 partName + zoneId，让不同区块粒子分布独立。
+            let mut seed = z.id as u32;
+            for b in renderedName.as_bytes() { seed = seed.wrapping_mul(31).wrapping_add(*b as u32); }
+            renderZoneParticles(canvas, canvasW, canvasH, wx, wy, p, timeSec, seed);
+        }
+        if let Some(a) = &z.animation {
+            renderZoneAnimation(canvas, canvasW, canvasH, wx, wy, a, timeSec, skinRoot, skinName, sessions);
+        }
+    }
+}
+
+/// 帧动画：按 timeSec 与 fps 选当前帧，用 sprite 名查找对应 PNG（Body / Head / Wings / Accessories 任一目录），
+/// 缩到与 startSize 相关的尺寸贴到 (cx, cy)。
+fn renderZoneAnimation(
+    canvas: &mut [u8],
+    canvasW: u32,
+    canvasH: u32,
+    centerX: f32,
+    centerY: f32,
+    cfg: &accessories::AnimationConfig,
+    timeSec: f32,
+    skinRoot: &Path,
+    skinName: &str,
+    sessions: &std::sync::MutexGuard<'_, std::collections::HashMap<String, PartSession>>,
+) {
+    if cfg.frames.is_empty() || cfg.fps <= 0.0 { return; }
+    let total = cfg.frames.len() as f32;
+    let phase = if cfg.loop_ {
+        (timeSec * cfg.fps).rem_euclid(total)
+    } else {
+        (timeSec * cfg.fps).min(total - 1.0).max(0.0)
+    };
+    let idx = phase.floor() as usize;
+    let frameName = match cfg.frames.get(idx) { Some(s) => s.as_str(), None => return };
+    // 在四类目录下找文件。
+    let categories = ["Body", "Head", "Wings", "Accessories"];
+    let mut pixels: Option<(u32, u32, Vec<u8>)> = None;
+    for cat in &categories {
+        let key = partIdKey(skinName, categoryFromDir(cat), frameName);
+        if let Some(s) = sessions.get(&key) {
+            pixels = Some((s.state.width, s.state.height, imageOps::flatten(&s.state)));
+            break;
+        }
+        let png = skinRoot.join(skinName).join(cat).join(format!("{}.png", frameName));
+        if png.exists() {
+            if let Ok(d) = skinLoader::decodePart(&png) {
+                pixels = Some((d.width, d.height, d.pixels));
+                break;
+            }
+        }
+    }
+    let (w, h, buf) = match pixels { Some(t) => t, None => return };
+    imageOps::blitWithRotation(
+        canvas, canvasW, canvasH, &buf, w, h,
+        centerX as i32, centerY as i32, 0.0, false,
+    );
+}
+
+fn categoryFromDir(d: &str) -> PartCategory {
+    match d {
+        "Body" => PartCategory::Body,
+        "Head" => PartCategory::Head,
+        "Wings" => PartCategory::Wings,
+        _ => PartCategory::Accessories,
+    }
 }
 
 fn wingsConfigPath(skinRoot: &str, skinName: &str) -> PathBuf {
     PathBuf::from(skinRoot).join(skinName).join("wings.json")
+}
+
+/// 把配件的 limb 名映射到装配表中的"父 entry"——配件在合成层按父 entry 的位置 / 旋转 / zOrder 叠加。
+/// F/B 共享 base 的肢体（UpArm/DownArm/Thigh/Crus/Foot/HandF）按 side 选 zOrder 符号正确的那条；
+/// HandF 独立、ThighB/CrusF/FootF 等带显式后缀；Head 走 Default headVariant 那条。
+fn accessoryParentEntry<'a>(
+    table: &'a assemblyTable::AssemblyTable,
+    limb: &str,
+) -> Option<&'a AssemblyEntry> {
+    let (base, sideSign): (&str, Option<i32>) = match limb {
+        "Head" => return table.parts.iter().find(|e| {
+            e.partName == "experimentHeadBack"
+                && matches!(e.variants.as_ref().and_then(|v| v.headVariant.as_ref()), Some(HeadVariant::Default))
+        }),
+        "UpTorso" => ("experimentUpTorso", None),
+        "DownTorso" => ("experimentDownTorso", None),
+        "HandF" => ("experimentHandF", None),
+        "HandB" => ("experimentHandB", None),
+        "UpArmF" => ("experimentUpArm", Some(1)),
+        "UpArmB" => ("experimentUpArm", Some(-1)),
+        "DownArmF" => ("experimentDownArm", Some(1)),
+        "DownArmB" => ("experimentDownArm", Some(-1)),
+        "ThighF" => ("experimentThigh", Some(1)),
+        "ThighB" => ("experimentThigh", Some(-1)),
+        "CrusF" => ("experimentCrus", Some(1)),
+        "CrusB" => ("experimentCrus", Some(-1)),
+        "FootF" => ("experimentFoot", Some(1)),
+        "FootB" => ("experimentFoot", Some(-1)),
+        _ => (limb, None),
+    };
+    table.parts.iter().find(|e| {
+        if e.partName != base { return false; }
+        match sideSign {
+            None => true,
+            Some(1) => e.zOrder >= 0,
+            Some(-1) => e.zOrder < 0,
+            _ => true,
+        }
+    })
 }
 
 fn defaultWingsConfig() -> WingsConfig {
@@ -1465,8 +2272,7 @@ fn pickPartPixels(
     skinLoader::decodePart(&png).ok().map(|d| (d.width, d.height, d.pixels))
 }
 
-/// baseSizes.json 记录过该 part（按 sided 名优先，否则 base）原始尺寸时按其 nearest-neighbor 缩回。
-/// 没记录或尺寸已一致直接返回原 buffer，对未 resize 过的 skin 零影响。
+/// 按 baseSizes 标准尺寸 nearest-neighbor 缩回；未登记或尺寸已一致直接返回原 buffer。
 fn applyBaseSizeFit(
     map: &baseSizes::BaseSizes,
     category: PartCategory,
@@ -1540,6 +2346,8 @@ fn categoryDir(category: PartCategory) -> &'static str {
         PartCategory::Body => "Body",
         PartCategory::Head => "Head",
         PartCategory::Wings => "Wings",
+        PartCategory::Accessories => "Accessories",
+        PartCategory::Blood => "Blood",
     }
 }
 
@@ -2053,6 +2861,7 @@ mod tests {
                 frameIndex: 0,
                 expressionIndex: 0,
                 headVariant: None,
+                timeSec: 0.0,
             })
             .expect("motion composite");
 
@@ -2206,6 +3015,7 @@ mod tests {
             orientation,
             expressionIndex: 0,
             headVariant: None,
+            timeSec: 0.0,
         })
         .expect("composite")
     }

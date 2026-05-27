@@ -10,6 +10,7 @@ export const DEFAULT_LAYOUT: Readonly<Record<string, number>> = Object.freeze({
   "mainPane.preview": 320,
   "mainPane.right": 280,
   "mainPane.bottom": 200,
+  "editorCanvas.footerPct": 25,
 });
 
 // 旧 splitRatios 4 个 key 与新 sizes 字段的语义映射，仅用于反序列化兜底。

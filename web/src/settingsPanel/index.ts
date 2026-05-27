@@ -16,7 +16,7 @@ import {
 const APP_META = {
   // 与 src-tauri/Cargo.toml `version` 保持一致；版权字符串与 tauri.conf.json bundle.copyright 同步。
   name: "CasualtiesUnknown-SkinEditor",
-  version: "1.0.1",
+  version: "1.0.2",
   authorName: "huanxin996",
   authorUrl: "https://github.com/huanxin996",
   repo: "https://github.com/huanxin996/CasualtiesUnknown-SkinEditor",
@@ -203,7 +203,7 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
         .then((ws) => saveWorkspace(workspacePath, {
           ...ws.layout,
           settings: {
-            ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false }),
+            ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false, showBloodPanel: false }),
             showMotionDebugPanel: checked,
           },
         }, ws.theme))
@@ -231,7 +231,7 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
         .then((ws) => saveWorkspace(workspacePath, {
           ...ws.layout,
           settings: {
-            ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false }),
+            ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false, showBloodPanel: false }),
             showWingDebugPanel: checked,
           },
         }, ws.theme))
@@ -242,6 +242,34 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
     wingRow.appendChild(wingCb);
     wingRow.appendChild(wingLabel);
     popover.appendChild(wingRow);
+
+    // 血液粒子面板开关：默认关闭，勾选后右栏显示 BloodPanel。
+    const bloodRow = document.createElement("label");
+    bloodRow.style.cssText = "padding:8px 12px;display:flex;gap:8px;align-items:center;cursor:pointer;";
+    const bloodCb = document.createElement("input");
+    bloodCb.type = "checkbox";
+    bloodCb.checked = sessionStore.getState().showBloodPanel;
+    const bloodLabel = document.createElement("span");
+    bloodLabel.style.cssText = "flex:1;";
+    bloodLabel.textContent = t("settings.showBloodPanel");
+    bloodCb.addEventListener("change", () => {
+      const checked = bloodCb.checked;
+      sessionStore.setState({ showBloodPanel: checked });
+      void getWorkspace(workspacePath)
+        .then((ws) => saveWorkspace(workspacePath, {
+          ...ws.layout,
+          settings: {
+            ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false, showBloodPanel: false }),
+            showBloodPanel: checked,
+          },
+        }, ws.theme))
+        .catch((e) => {
+          console.warn(`[settingsPanel] persist showBloodPanel failed: ${String(e)}`);
+        });
+    });
+    bloodRow.appendChild(bloodCb);
+    bloodRow.appendChild(bloodLabel);
+    popover.appendChild(bloodRow);
 
     const header = document.createElement("div");
     header.style.cssText = "padding:6px 12px;font-weight:600;border-top:1px solid rgba(0,0,0,var(--border-opacity));border-bottom:1px solid rgba(0,0,0,var(--border-opacity));margin:4px 0;";

@@ -19,7 +19,8 @@ use crate::apiLayer::{
     MotionCaptureResult, MotionCompositeParams, MotionCompositeResult, PartIdParams, PartsParams,
     RemoveLayerParams, ReorderLayersParams, ResizePartParams, ResizePartResult, SavePartParams, SaveWorkspaceParams,
     CreateSidePartParams, CreateSidePartResult,
-    SetActiveLayerParams, SetAssemblyOverrideParams, SkinsParams, SaveWingsConfigParams,
+    SetActiveLayerParams, SetAssemblyOverrideParams, SetAccessoryEnabledParams, SaveAccessoryConfigParams, LoadZonesParams, LoadZonesResult, SaveZonesParams, SkinsParams, SaveWingsConfigParams,
+    BloodConfigPathParams, SaveBloodConfigParams,
     WingsConfig, WingsConfigPathParams, WorkspacePathParams,
     WorkspaceResult,
 };
@@ -68,6 +69,12 @@ pub async fn serve(config: HttpConfig, api: SharedApi) {
         .route("/api/assembly/override", post(handleSetAssemblyOverride))
         .route("/api/wings", post(handleLoadWingsConfig))
         .route("/api/wings/save", post(handleSaveWingsConfig))
+        .route("/api/accessories/setEnabled", post(handleSetAccessoryEnabled))
+        .route("/api/accessories/save", post(handleSaveAccessoryConfig))
+        .route("/api/blood/load", post(handleLoadBloodConfig))
+        .route("/api/blood/save", post(handleSaveBloodConfig))
+        .route("/api/zones/load", post(handleLoadZones))
+        .route("/api/zones/save", post(handleSaveZones))
         .with_state(api)
         .fallback(handleStatic);
 
@@ -402,5 +409,51 @@ async fn handleSaveWingsConfig(
     Json(params): Json<SaveWingsConfigParams>,
 ) -> axum::response::Response {
     let result: Result<(), ApiError> = api.saveWingsConfig(params);
+    intoResponse(result)
+}
+
+async fn handleSetAccessoryEnabled(
+    State(api): State<SharedApi>,
+    Json(params): Json<SetAccessoryEnabledParams>,
+) -> axum::response::Response {
+    let result: Result<(), ApiError> = api.setAccessoryEnabled(params);
+    intoResponse(result)
+}
+
+async fn handleSaveAccessoryConfig(
+    State(api): State<SharedApi>,
+    Json(params): Json<SaveAccessoryConfigParams>,
+) -> axum::response::Response {
+    let result: Result<(), ApiError> = api.saveAccessoryConfig(params);
+    intoResponse(result)
+}
+
+async fn handleLoadBloodConfig(
+    State(api): State<SharedApi>,
+    Json(params): Json<BloodConfigPathParams>,
+) -> axum::response::Response {
+    intoResponse(api.loadBloodConfig(params))
+}
+
+async fn handleSaveBloodConfig(
+    State(api): State<SharedApi>,
+    Json(params): Json<SaveBloodConfigParams>,
+) -> axum::response::Response {
+    intoResponse(api.saveBloodConfig(params))
+}
+
+async fn handleLoadZones(
+    State(api): State<SharedApi>,
+    Json(params): Json<LoadZonesParams>,
+) -> axum::response::Response {
+    let result: Result<LoadZonesResult, ApiError> = api.loadZones(params);
+    intoResponse(result)
+}
+
+async fn handleSaveZones(
+    State(api): State<SharedApi>,
+    Json(params): Json<SaveZonesParams>,
+) -> axum::response::Response {
+    let result: Result<(), ApiError> = api.saveZones(params);
     intoResponse(result)
 }
