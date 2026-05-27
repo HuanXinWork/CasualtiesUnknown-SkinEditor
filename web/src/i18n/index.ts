@@ -25,6 +25,7 @@ export interface Translations {
     bloodGroup: string;
     loadFailed: string;
     corruptedTag: string;
+    noSkin: string;
   };
   wingDebugPanel: {
     title: string;
@@ -341,6 +342,7 @@ export const dictionaries: Record<Lang, Translations> = {
       bloodGroup: "血液贴图",
       loadFailed: "加载失败",
       corruptedTag: "[损坏]",
+      noSkin: "未检测到角色",
     },
     wingDebugPanel: {
       title: "翅膀调试",
@@ -654,6 +656,7 @@ export const dictionaries: Record<Lang, Translations> = {
       bloodGroup: "Blood textures",
       loadFailed: "Load failed",
       corruptedTag: "[corrupted]",
+      noSkin: "No character detected",
     },
     wingDebugPanel: {
       title: "Wing debug",

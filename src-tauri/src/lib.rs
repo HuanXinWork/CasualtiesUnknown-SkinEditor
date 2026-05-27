@@ -57,14 +57,22 @@ pub fn ensureInitialized() {
             eprintln!("[init] 写默认 workspace.json 失败: {}", e.message);
         }
     }
-    // 没有任何皮肤目录时建一个空 default 骨架，partPanel 启动至少有一项可选。
-    let hasAny = std::fs::read_dir(&skinRoot)
-        .map(|it| it.flatten().any(|e| e.path().is_dir()))
-        .unwrap_or(false);
-    if !hasAny {
-        let default = skinRoot.join("default");
-        let _ = std::fs::create_dir_all(default.join("Body"));
-        let _ = std::fs::create_dir_all(default.join("Head"));
+    backfillBaseSizes(&skinRoot);
+}
+
+/// 启动时为缺 `baseSizes.json` 的旧皮肤目录补齐分辨率配置。失败仅打印不阻塞启动。
+fn backfillBaseSizes(skinRoot: &std::path::Path) {
+    let entries = match std::fs::read_dir(skinRoot) {
+        Ok(it) => it,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() { continue; }
+        if dir.join(baseSizes::BASE_SIZES_FILE).exists() { continue; }
+        if let Err(e) = skinLoader::writeBaseSizesForSkin(&dir) {
+            eprintln!("[init] 生成 {}/baseSizes.json 失败: {}", dir.display(), e.message);
+        }
     }
 }
 
@@ -238,9 +246,7 @@ mod ensureInitializedTests {
         assert!(dataPaths::dataDir().is_dir());
         assert!(dataPaths::dataDir().join("skin").is_dir());
         assert!(dataPaths::workspaceFile().is_file());
-        assert!(dataPaths::skinDir("default").is_dir());
-        assert!(dataPaths::skinDir("default").join("Body").is_dir());
-        assert!(dataPaths::skinDir("default").join("Head").is_dir());
+        assert!(!dataPaths::skinDir("default").exists());
     }
 
     #[test]
@@ -266,5 +272,36 @@ mod ensureInitializedTests {
         ensureInitialized();
         assert!(!dataPaths::skinDir("default").exists());
         assert!(dataPaths::skinDir("st1").join("Body").is_dir());
+    }
+
+    #[test]
+    fn backfillsBaseSizesForExistingSkin() {
+        let _lock = dataPaths::appRootEnvLock();
+        let tmp = TempDir::new();
+        let _guard = EnvGuard::set(tmp.path());
+        let skin = dataPaths::skinDir("oldSkin");
+        let bodyDir = skin.join("Body");
+        fs::create_dir_all(&bodyDir).unwrap();
+        let pngPath = bodyDir.join("experimentUpTorso.png");
+        image::RgbaImage::from_pixel(12, 18, image::Rgba([0, 0, 0, 255]))
+            .save(&pngPath)
+            .unwrap();
+        ensureInitialized();
+        let json = fs::read_to_string(skin.join("baseSizes.json")).expect("baseSizes.json should be created");
+        assert!(json.contains("\"Body/experimentUpTorso\": [12, 18]"));
+    }
+
+    #[test]
+    fn backfillSkipsWhenBaseSizesAlreadyExists() {
+        let _lock = dataPaths::appRootEnvLock();
+        let tmp = TempDir::new();
+        let _guard = EnvGuard::set(tmp.path());
+        let skin = dataPaths::skinDir("oldSkin2");
+        fs::create_dir_all(skin.join("Body")).unwrap();
+        let existing = "{ \"manualOverride\": [99, 99] }";
+        fs::write(skin.join("baseSizes.json"), existing).unwrap();
+        ensureInitialized();
+        let json = fs::read_to_string(skin.join("baseSizes.json")).unwrap();
+        assert_eq!(json, existing);
     }
 }

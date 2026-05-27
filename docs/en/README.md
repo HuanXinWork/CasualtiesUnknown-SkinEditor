@@ -4,7 +4,7 @@
 
 This document focuses on how to use the editor. For build and development details, see the repository [README.md](../../README.md). The repository overview is also available in English at [README.en.md](../../README.en.md).
 
-Current version: **1.0.2** (changes listed in [Changelog](../../changes.en.md)).
+Current version: **1.0.3** (changes listed in [Changelog](../../changes.en.md)).
 
 ---
 

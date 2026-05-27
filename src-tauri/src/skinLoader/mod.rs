@@ -547,7 +547,46 @@ pub fn importSkinPack(
             }
         }
     }
+    let _ = writeBaseSizesForSkin(skinRoot);
     Ok(ImportResult { imported, skipped })
+}
+
+/// 扫 `<skinRoot>/{Body,Head,Wings,Accessories}/*.png`，把命中标准部件清单的部件实际像素尺寸
+/// 写到 `<skinRoot>/baseSizes.json`。已存在该文件则跳过；自定义部件不入表。
+pub fn writeBaseSizesForSkin(skinRoot: &Path) -> Result<(), ApiError> {
+    let target = skinRoot.join(crate::baseSizes::BASE_SIZES_FILE);
+    if target.exists() {
+        return Ok(());
+    }
+    let mut map: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();
+    for cat in ["Body", "Head", "Wings", "Accessories"] {
+        let dir = skinRoot.join(cat);
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() { continue; }
+            let stem = match path.file_stem().and_then(|s| s.to_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+            if !ext.eq_ignore_ascii_case("png") { continue; }
+            let baseStem = crate::baseSizes::stripSideSuffixForLookup(&stem);
+            let isStandard = crate::baseSizes::standardParts(cat)
+                .map(|list| list.iter().any(|s| *s == stem || *s == baseStem))
+                .unwrap_or(false);
+            if !isStandard { continue; }
+            let (w, h) = match readPngDimensions(&path) {
+                Some(d) => d,
+                None => continue,
+            };
+            map.insert(crate::baseSizes::keyFor(cat, &stem), (w, h));
+        }
+    }
+    crate::baseSizes::write(skinRoot, &map)
 }
 
 enum EntryKind {

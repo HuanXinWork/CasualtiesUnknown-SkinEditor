@@ -6,6 +6,20 @@
 
 ---
 
+## 1.0.3 (2026-05-27)
+
+### Added
+
+- **Per-skin resolution config**: removed the 60-entry hardcoded size table; the editor now generates `<skin>/baseSizes.json` per skin from each PNG's actual pixel size. Created automatically on import, and back-filled at startup for older skins missing the file. Custom parts stay out of the table and render at disk resolution, so any resolution skin works out of the box.
+
+### Improved
+
+- **Import routing**: even when a flat zip dumps everything into a single `Body/` folder, parts like `HeadDefault` / `wingUL` / `eyeOpen` / `disfiguredHead0` now land in their real category. `classifyEntry` priority is flipped to "filename first"; the directory segment is only a fallback for unknown parts.
+- **Legacy export blood**: in Legacy (Flat) format, `Blood/*.png` now flows into `<skinName>/Body/` along with everything else, matching the "all parts under Body" semantics. Categorized format still keeps a separate `Blood/` folder.
+- **Empty character state**: `data/skin/` no longer auto-creates a `default/{Body,Head}/` skeleton; when no skin folder is present, the character pane shows "No character detected".
+
+---
+
 ## 1.0.2 (2026-05-27)
 
 ### Added

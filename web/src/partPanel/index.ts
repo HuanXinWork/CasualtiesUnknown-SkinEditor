@@ -130,6 +130,14 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
   function renderSkins(): void {
     const currentName = sessionStore.getState().currentSkinName;
     skinsEl.innerHTML = "";
+    if (cachedSkinNames.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "muted";
+      empty.style.padding = "8px";
+      empty.textContent = t("partPanel.noSkin");
+      skinsEl.appendChild(empty);
+      return;
+    }
     for (const name of cachedSkinNames) {
       const btn = document.createElement("button");
       btn.textContent = name;
@@ -288,6 +296,7 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
 
   const unsubLang = subscribeLang(() => {
     applyTexts();
+    renderSkins();
     renderParts();
   });
 

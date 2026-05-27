@@ -22,7 +22,7 @@ import { storeImage, releaseImage } from "./apiClient";
 import { startUpdateChecker } from "./updateChecker";
 
 // 与 src-tauri/Cargo.toml `version` / settingsPanel APP_META.version 保持一致。
-const APP_VERSION = "1.0.2";
+const APP_VERSION = "1.0.3";
 import {
   ICON_PIN,
   ICON_PIN_OFF,
