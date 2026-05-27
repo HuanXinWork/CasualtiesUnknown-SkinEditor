@@ -240,6 +240,27 @@ export function resizePart(
   return httpPost<ResizePartResult>("/api/resizePart", { partId, width, height, targetPath });
 }
 
+export interface BaseSizeResult {
+  found: boolean;
+  width: number;
+  height: number;
+}
+
+/// 查询 `<skin>/baseSizes.json` 中该部件登记的标准尺寸；自定义部件 / 无该文件返回 found=false。
+export function getBaseSize(
+  skinRoot: string,
+  skinName: string,
+  category: PartCategory,
+  partName: string,
+): Promise<BaseSizeResult> {
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<BaseSizeResult>("api_getBaseSize", {
+      params: { skinRoot, skinName, category, partName },
+    });
+  }
+  return httpPost<BaseSizeResult>("/api/baseSize", { skinRoot, skinName, category, partName });
+}
+
 export interface CreateSidePartResult {
   sidePartName: string;
 }

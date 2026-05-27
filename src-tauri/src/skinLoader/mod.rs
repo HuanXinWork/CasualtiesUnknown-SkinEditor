@@ -463,8 +463,8 @@ pub fn exportSkinPack(
             count += 1;
         }
     }
-    // wings.json / accessories.json：与皮肤同级的元数据文件，永远跟随导出。
-    for meta in ["wings.json", "accessories.json"] {
+    // wings.json / accessories.json / baseSizes.json：与皮肤同级的元数据文件，永远跟随导出。
+    for meta in ["wings.json", "accessories.json", "baseSizes.json"] {
         let metaPath = skinDir.join(meta);
         if metaPath.is_file() {
             let bytes = fs::read(&metaPath).map_err(|e| ioErr("read", &metaPath, e))?;

@@ -137,6 +137,7 @@ pub fn runDesktop() {
             tauriCommands::api_getAssemblyTable,
             tauriCommands::api_savePart,
             tauriCommands::api_resizePart,
+            tauriCommands::api_getBaseSize,
             tauriCommands::api_createSidePart,
             tauriCommands::api_addLayer,
             tauriCommands::api_removeLayer,

@@ -18,6 +18,7 @@ use crate::apiLayer::{
     LayersSnapshot, LoadPartParams, LoadPartResult, MotionCaptureListParams, MotionCaptureMeta,
     MotionCaptureResult, MotionCompositeParams, MotionCompositeResult, PartIdParams, PartsParams,
     RemoveLayerParams, ReorderLayersParams, ResizePartParams, ResizePartResult, SavePartParams, SaveWorkspaceParams,
+    GetBaseSizeParams, GetBaseSizeResult,
     CreateSidePartParams, CreateSidePartResult,
     SetActiveLayerParams, SetAssemblyOverrideParams, SetAccessoryEnabledParams, SaveAccessoryConfigParams, LoadZonesParams, LoadZonesResult, SaveZonesParams, SkinsParams, SaveWingsConfigParams,
     BloodConfigPathParams, SaveBloodConfigParams,
@@ -53,6 +54,7 @@ pub async fn serve(config: HttpConfig, api: SharedApi) {
         .route("/api/assembly", get(handleAssembly))
         .route("/api/savePart", post(handleSavePart))
         .route("/api/resizePart", post(handleResizePart))
+        .route("/api/baseSize", post(handleGetBaseSize))
         .route("/api/createSidePart", post(handleCreateSidePart))
         .route("/api/layer/add", post(handleAddLayer))
         .route("/api/layer/remove", post(handleRemoveLayer))
@@ -276,6 +278,14 @@ async fn handleResizePart(
     Json(params): Json<ResizePartParams>,
 ) -> axum::response::Response {
     let result: Result<ResizePartResult, ApiError> = api.resizePart(params);
+    intoResponse(result)
+}
+
+async fn handleGetBaseSize(
+    State(api): State<SharedApi>,
+    Json(params): Json<GetBaseSizeParams>,
+) -> axum::response::Response {
+    let result: Result<GetBaseSizeResult, ApiError> = api.getBaseSize(params);
     intoResponse(result)
 }
 

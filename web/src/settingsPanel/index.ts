@@ -16,7 +16,7 @@ import {
 const APP_META = {
   // 与 src-tauri/Cargo.toml `version` 保持一致；版权字符串与 tauri.conf.json bundle.copyright 同步。
   name: "CasualtiesUnknown-SkinEditor",
-  version: "1.0.3",
+  version: "1.0.4",
   authorName: "huanxin996",
   authorUrl: "https://github.com/huanxin996",
   repo: "https://github.com/huanxin996/CasualtiesUnknown-SkinEditor",

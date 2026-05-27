@@ -14,6 +14,7 @@ use crate::apiLayer::{
     LayersSnapshot, LoadPartParams, LoadPartResult, MotionCaptureListParams, MotionCaptureMeta,
     MotionCaptureResult, MotionCompositeParams, MotionCompositeResult, PartIdParams, PartsParams,
     RemoveLayerParams, ReorderLayersParams, ResizePartParams, ResizePartResult, SavePartParams, SaveWorkspaceParams,
+    GetBaseSizeParams, GetBaseSizeResult,
     CreateSidePartParams, CreateSidePartResult,
     SetActiveLayerParams, SetAssemblyOverrideParams, SetAccessoryEnabledParams, SaveAccessoryConfigParams, LoadZonesParams, LoadZonesResult, SaveZonesParams, SkinsParams, SaveWingsConfigParams,
     BloodConfigPathParams, SaveBloodConfigParams,
@@ -142,6 +143,14 @@ pub fn api_resizePart(
     params: ResizePartParams,
 ) -> Result<ResizePartResult, String> {
     api.resizePart(params).map_err(toErrString)
+}
+
+#[tauri::command]
+pub fn api_getBaseSize(
+    api: State<'_, SharedApi>,
+    params: GetBaseSizeParams,
+) -> Result<GetBaseSizeResult, String> {
+    api.getBaseSize(params).map_err(toErrString)
 }
 
 #[tauri::command]

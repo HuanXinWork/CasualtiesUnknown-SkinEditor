@@ -172,8 +172,17 @@ export interface Translations {
     resizeBtn: string;
     resizeTitle: string;
     resizeHint: string;
+    resizeShrinkLabel: string;
+    resizeEnlargeLabel: string;
+    resizeCustomLabel: string;
+    resizeApply: string;
     resizeCancel: string;
     resizeInvalid: string;
+    resizeFactorInvalid: string;
+    resizeBelowBaseTitle: string;
+    resizeBelowBaseHint: string;
+    resizeBelowBaseYes: string;
+    resizeBelowBaseNo: string;
     createSideFBtn: string;
     createSideBBtn: string;
     accessoryEnabledLabel: string;
@@ -488,9 +497,18 @@ export const dictionaries: Record<Lang, Translations> = {
       infoPartEmpty: "未选中部件",
       resizeBtn: "修改分辨率",
       resizeTitle: "修改部件分辨率",
-      resizeHint: "选择放大倍数（当前 {w}×{h}）",
+      resizeHint: "选择缩放倍率（当前 {w}×{h}）",
+      resizeShrinkLabel: "缩小",
+      resizeEnlargeLabel: "放大",
+      resizeCustomLabel: "自定义倍率",
+      resizeApply: "应用",
       resizeCancel: "取消",
       resizeInvalid: "目标尺寸超出 1~4096 范围",
+      resizeFactorInvalid: "倍率必须在 0.01 ~ 1000 之间",
+      resizeBelowBaseTitle: "继续缩小可能损坏原图",
+      resizeBelowBaseHint: "目标分辨率 {w}×{h} 小于该部件登记的标准尺寸 {baseW}×{baseH}，继续缩小会丢失像素细节并可能导致游戏内显示异常。是否继续？",
+      resizeBelowBaseYes: "是，继续缩小",
+      resizeBelowBaseNo: "否",
       createSideFBtn: "创建前侧版本",
       createSideBBtn: "创建后侧版本",
       accessoryEnabledLabel: "已启用",
@@ -803,8 +821,17 @@ export const dictionaries: Record<Lang, Translations> = {
       resizeBtn: "Resize",
       resizeTitle: "Resize part",
       resizeHint: "Pick a scale factor (current {w}×{h})",
+      resizeShrinkLabel: "Shrink",
+      resizeEnlargeLabel: "Enlarge",
+      resizeCustomLabel: "Custom factor",
+      resizeApply: "Apply",
       resizeCancel: "Cancel",
       resizeInvalid: "Target size out of range 1-4096",
+      resizeFactorInvalid: "Factor must be between 0.01 and 1000",
+      resizeBelowBaseTitle: "Shrinking below base size may corrupt the image",
+      resizeBelowBaseHint: "Target {w}×{h} is smaller than this part's registered base size {baseW}×{baseH}. Shrinking further will drop pixel detail and may cause in-game rendering issues. Continue?",
+      resizeBelowBaseYes: "Yes, shrink anyway",
+      resizeBelowBaseNo: "No",
       createSideFBtn: "Create front variant",
       createSideBBtn: "Create back variant",
       accessoryEnabledLabel: "Enabled",

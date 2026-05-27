@@ -122,6 +122,22 @@ pub struct ResizePartResult {
     pub height: u32,
 }
 
+/// 查询单个部件在当前皮肤 baseSizes.json 中登记的标准尺寸；自定义部件 / 缺该文件返回 found = false。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetBaseSizeParams {
+    pub skinRoot: String,
+    pub skinName: String,
+    pub category: PartCategory,
+    pub partName: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetBaseSizeResult {
+    pub found: bool,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// 创建当前部件的前侧 / 后侧独立副本：把 `<skin>/<Cat>/<name>.png` 复制为 `<skin>/<Cat>/<name>{F|B}.png`。
 /// 仅"前后共享 sprite"白名单部件允许（HandF/HandB 已是独立 PNG，跳过）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -490,6 +506,7 @@ pub trait ApiLayer: Send + Sync + 'static {
     fn getAssemblyTable(&self, params: AssemblyParams) -> Result<AssemblyResult, ApiError>;
     fn savePart(&self, params: SavePartParams) -> Result<(), ApiError>;
     fn resizePart(&self, params: ResizePartParams) -> Result<ResizePartResult, ApiError>;
+    fn getBaseSize(&self, params: GetBaseSizeParams) -> Result<GetBaseSizeResult, ApiError>;
     fn createSidePart(&self, params: CreateSidePartParams) -> Result<CreateSidePartResult, ApiError>;
     fn addLayer(&self, params: AddLayerParams) -> Result<LayersSnapshot, ApiError>;
     fn removeLayer(&self, params: RemoveLayerParams) -> Result<LayersSnapshot, ApiError>;
@@ -1098,6 +1115,22 @@ impl ApiLayer for CoreApi {
         }
         let _ = (skinDirOpt, categoryOpt, partNameOpt);
         Ok(ResizePartResult { partId: params.partId, width: params.width, height: params.height })
+    }
+
+    fn getBaseSize(&self, params: GetBaseSizeParams) -> Result<GetBaseSizeResult, ApiError> {
+        let skinDir = PathBuf::from(&params.skinRoot).join(&params.skinName);
+        let map = baseSizes::load(&skinDir);
+        let catDir = categoryDir(params.category);
+        let primary = baseSizes::keyFor(catDir, &params.partName);
+        let hit = map.get(&primary).or_else(|| {
+            let stripped = baseSizes::stripSideSuffixForLookup(&params.partName);
+            if stripped == params.partName { return None; }
+            map.get(&baseSizes::keyFor(catDir, stripped))
+        });
+        match hit {
+            Some((w, h)) => Ok(GetBaseSizeResult { found: true, width: w, height: h }),
+            None => Ok(GetBaseSizeResult { found: false, width: 0, height: 0 }),
+        }
     }
 
     fn createSidePart(&self, params: CreateSidePartParams) -> Result<CreateSidePartResult, ApiError> {

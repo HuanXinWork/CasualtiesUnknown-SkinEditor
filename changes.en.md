@@ -6,6 +6,16 @@
 
 ---
 
+## 1.0.4 (2026-05-28)
+
+### Added
+
+- **Resize supports shrink + custom factor**: the dialog now splits into a "Shrink" row (0.25× / 0.5× / 0.75×) and an "Enlarge" row (1× / 2× / 3× / 4×), plus a number input that accepts any custom factor (Enter or click *Apply* to submit). Factor is clamped to 0.01–1000; the resulting size is still bound by the backend's 1–4096 limit.
+- **Shrink confirmation**: on submit the editor queries `<skin>/baseSizes.json`; if either dimension drops below the registered base size for that part, a danger dialog ("shrinking further may corrupt the image") is shown and the user must click *Yes* again before the resize is applied. Custom parts or skins without `baseSizes.json` skip the check.
+- **Workflow now supports multi-platform automated builds**: covers `windows-latest` / `ubuntu-latest` / `macos-latest`, packages each platform's bundle into its own zip, and uploads them as separate Actions Artifacts so the three platforms never overwrite each other.
+
+---
+
 ## 1.0.3 (2026-05-27)
 
 ### Added

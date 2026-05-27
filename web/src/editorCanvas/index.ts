@@ -19,6 +19,7 @@ import {
   loadPartImage,
   loadZones,
   resizePart,
+  getBaseSize,
   saveZones,
   setAccessoryEnabled,
   saveAccessoryConfig,
@@ -998,7 +999,7 @@ export function mountEditorCanvas(
   attachSideBtn(sideFBtn, "F", () => sideFBtnAvailable);
   attachSideBtn(sideBBtn, "B", () => sideBBtnAvailable);
 
-  /// 弹窗：让用户选放大倍数（1×回原大小 / 2× / 3× / 4×）。
+  /// 弹窗：让用户选缩放倍率（缩小 0.25/0.5/0.75 / 放大 1/2/3/4 / 自定义 0.01~1000）。
   /// 提交时按 partId 反推目标 PNG 路径并调 resizePart；成功后回写本地状态并写盘。
   function promptResize(): Promise<void> {
     return new Promise<void>((resolve) => {
@@ -1015,26 +1016,42 @@ export function mountEditorCanvas(
       const targetPath = `${skinRoot}/${skinName}/${categoryDir}/${partName}.png`;
 
       const overlay = document.createElement("div");
-      overlay.className = "panel";
       overlay.style.cssText =
-        "position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;";
-      const factors: number[] = [1, 2, 3, 4];
-      const factorBtns = factors
-        .map((f) => `<button class="btn" data-role="factor" data-f="${f}" style="flex:1;">${f}×</button>`)
-        .join("");
+        "position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;";
+      const shrinkFactors: number[] = [0.25, 0.5, 0.75];
+      const enlargeFactors: number[] = [1, 2, 3, 4];
+      const renderFactorBtn = (f: number): string => {
+        const label = f < 1 ? `${f}×` : `${f}×`;
+        return `<button class="btn" data-role="factor" data-f="${f}" style="flex:1;">${label}</button>`;
+      };
+      const shrinkBtns = shrinkFactors.map(renderFactorBtn).join("");
+      const enlargeBtns = enlargeFactors.map(renderFactorBtn).join("");
       overlay.innerHTML =
-        `<div class="panel" style="background:var(--bg);padding:16px;min-width:300px;display:flex;flex-direction:column;gap:10px;">` +
+        `<div style="min-width:340px;max-width:480px;background:var(--surface,#fff);color:var(--on-background,#222);` +
+        `padding:16px 20px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);font-size:13px;` +
+        `display:flex;flex-direction:column;gap:10px;">` +
         `<div style="font-weight:600;">${t("editorCanvas.resizeTitle")}</div>` +
-        `<div style="font-size:12px;opacity:0.7;">${t("editorCanvas.resizeHint")
+        `<div style="font-size:12px;opacity:0.75;">${t("editorCanvas.resizeHint")
           .replace("{w}", String(currentWidth))
           .replace("{h}", String(currentHeight))}</div>` +
-        `<div style="display:flex;gap:8px;">${factorBtns}</div>` +
+        `<div style="font-size:12px;opacity:0.85;">${t("editorCanvas.resizeShrinkLabel")}</div>` +
+        `<div style="display:flex;gap:8px;">${shrinkBtns}</div>` +
+        `<div style="font-size:12px;opacity:0.85;">${t("editorCanvas.resizeEnlargeLabel")}</div>` +
+        `<div style="display:flex;gap:8px;">${enlargeBtns}</div>` +
+        `<div style="display:flex;align-items:center;gap:8px;">` +
+        `<span style="font-size:12px;opacity:0.85;flex:none;">${t("editorCanvas.resizeCustomLabel")}</span>` +
+        `<input data-role="custom" type="number" min="0.01" max="1000" step="0.01" placeholder="0.01 ~ 1000" style="flex:1;padding:4px 6px;" />` +
+        `<button class="btn btn-primary" data-role="apply" style="flex:none;"></button>` +
+        `</div>` +
         `<div style="display:flex;justify-content:flex-end;gap:8px;">` +
         `<button class="btn" data-role="cancel"></button>` +
         `</div></div>`;
       document.body.appendChild(overlay);
       const cancelBtn = overlay.querySelector<HTMLButtonElement>('[data-role="cancel"]')!;
+      const applyBtn = overlay.querySelector<HTMLButtonElement>('[data-role="apply"]')!;
+      const customInput = overlay.querySelector<HTMLInputElement>('[data-role="custom"]')!;
       cancelBtn.textContent = t("editorCanvas.resizeCancel");
+      applyBtn.textContent = t("editorCanvas.resizeApply");
 
       const close = (): void => {
         overlay.remove();
@@ -1045,15 +1062,10 @@ export function mountEditorCanvas(
         if (e.target === overlay) close();
       });
 
-      const submit = (factor: number): void => {
-        const w = Math.round(currentWidth * factor);
-        const h = Math.round(currentHeight * factor);
-        if (w < 1 || h < 1 || w > 4096 || h > 4096) {
-          showToast(t("editorCanvas.resizeInvalid"), "error");
-          return;
-        }
+      const doApply = (w: number, h: number): void => {
         const partId = currentPartId!;
         overlay.querySelectorAll<HTMLButtonElement>("button").forEach((b) => { b.disabled = true; });
+        customInput.disabled = true;
         resizePart(partId, w, h, targetPath)
           .then((r) => {
             currentWidth = r.width;
@@ -1067,14 +1079,84 @@ export function mountEditorCanvas(
           .catch((e: ApiError) => {
             showToast(e?.message ?? String(e), "error");
             overlay.querySelectorAll<HTMLButtonElement>("button").forEach((b) => { b.disabled = false; });
+            customInput.disabled = false;
+          });
+      };
+
+      const confirmBelowBase = (w: number, h: number, baseW: number, baseH: number): void => {
+        const dialog = document.createElement("div");
+        dialog.style.cssText =
+          "position:fixed;inset:0;z-index:10002;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;";
+        const hint = t("editorCanvas.resizeBelowBaseHint")
+          .replace("{w}", String(w))
+          .replace("{h}", String(h))
+          .replace("{baseW}", String(baseW))
+          .replace("{baseH}", String(baseH));
+        dialog.innerHTML =
+          `<div style="min-width:340px;max-width:480px;background:var(--surface,#fff);color:var(--on-background,#222);` +
+          `padding:16px 20px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);font-size:13px;` +
+          `display:flex;flex-direction:column;gap:10px;">` +
+          `<div style="font-weight:600;color:#c0392b;">${t("editorCanvas.resizeBelowBaseTitle")}</div>` +
+          `<div style="font-size:13px;line-height:1.5;">${hint}</div>` +
+          `<div style="display:flex;justify-content:flex-end;gap:8px;">` +
+          `<button class="btn" data-role="confirm-no"></button>` +
+          `<button class="btn btn-primary" data-role="confirm-yes"></button>` +
+          `</div></div>`;
+        document.body.appendChild(dialog);
+        const yesBtn = dialog.querySelector<HTMLButtonElement>('[data-role="confirm-yes"]')!;
+        const noBtn = dialog.querySelector<HTMLButtonElement>('[data-role="confirm-no"]')!;
+        yesBtn.textContent = t("editorCanvas.resizeBelowBaseYes");
+        noBtn.textContent = t("editorCanvas.resizeBelowBaseNo");
+        const closeDialog = (): void => { dialog.remove(); };
+        noBtn.addEventListener("click", closeDialog);
+        dialog.addEventListener("click", (e) => { if (e.target === dialog) closeDialog(); });
+        yesBtn.addEventListener("click", () => {
+          closeDialog();
+          doApply(w, h);
+        });
+      };
+
+      const submit = (factor: number): void => {
+        if (!Number.isFinite(factor) || factor <= 0 || factor > 1000) {
+          showToast(t("editorCanvas.resizeFactorInvalid"), "error");
+          return;
+        }
+        const w = Math.max(1, Math.round(currentWidth * factor));
+        const h = Math.max(1, Math.round(currentHeight * factor));
+        if (w > 4096 || h > 4096) {
+          showToast(t("editorCanvas.resizeInvalid"), "error");
+          return;
+        }
+        const [skinNameVal, categoryDirVal, partNameVal] = currentPartId!.split("::");
+        getBaseSize(skinRoot, skinNameVal, categoryDirVal as PartCategory, partNameVal)
+          .then((base) => {
+            if (base.found && (w < base.width || h < base.height)) {
+              confirmBelowBase(w, h, base.width, base.height);
+              return;
+            }
+            doApply(w, h);
+          })
+          .catch(() => {
+            doApply(w, h);
           });
       };
 
       overlay.querySelectorAll<HTMLButtonElement>('[data-role="factor"]').forEach((btn) => {
         btn.addEventListener("click", () => {
           const f = parseFloat(btn.dataset.f ?? "1");
-          if (Number.isFinite(f) && f > 0) submit(f);
+          submit(f);
         });
+      });
+      const submitCustom = (): void => {
+        const f = parseFloat(customInput.value);
+        submit(f);
+      };
+      applyBtn.addEventListener("click", submitCustom);
+      customInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          submitCustom();
+        }
       });
     });
   }
