@@ -472,8 +472,7 @@ pub fn exportSkinPack(
             count += 1;
         }
     }
-    // blood.json 由 includeBlood 单独控制——血液配置往往与皮肤无关（个人偏好），
-    // 用户可能希望分发不带血液偏好的皮肤包，故拆成独立开关。
+    // blood.json + Blood/*.png 由 includeBlood 控制；Flat 模式贴图跟随平铺去 Body/。
     if includeBlood {
         let bloodPath = skinDir.join("blood.json");
         if bloodPath.is_file() {
@@ -481,7 +480,7 @@ pub fn exportSkinPack(
             writeFile(&mut zip, "blood.json", &bytes)?;
             count += 1;
         }
-        // Blood/*.png（自定义粒子贴图）也跟随血液配置一起导出。
+        // Blood/*.png：Flat 跟随 Body/，Categorized 保持 Blood/。
         let bloodDir = skinDir.join("Blood");
         if let Ok(entries) = fs::read_dir(&bloodDir) {
             for entry in entries.flatten() {
@@ -493,7 +492,7 @@ pub fn exportSkinPack(
                     Some(s) => s.to_string(),
                     None => continue,
                 };
-                let rel = format!("Blood/{}", fname);
+                let rel = format!("{}/{}", categoryDir("Blood"), fname);
                 let bytes = fs::read(&path).map_err(|e| ioErr("read", &path, e))?;
                 writeFile(&mut zip, &rel, &bytes)?;
                 count += 1;
@@ -616,14 +615,7 @@ fn classifyEntry(name: &str) -> EntryKind {
         return EntryKind::Drop;
     }
 
-    // 优先信任路径段：任意一级目录命中 Body/Head/Wings 即按其归类。
-    for seg in comps.iter().rev().skip(1) {
-        if *seg == "Body" || *seg == "Head" || *seg == "Wings" {
-            return EntryKind::Accept(std::path::PathBuf::from(format!("{}/{}", seg, fname)));
-        }
-    }
-
-    // 按 baseSizes 部件表归类（含 F/B 后缀识别），不依赖 zip 内目录结构。
+    // 文件名优先归类：baseSizes 命中 → 按 baseSizes；含 head/wing/blood 等关键字 → 按 keyword。
     if fname.to_lowercase().ends_with(".png") {
         let stem = std::path::Path::new(fname)
             .file_stem()
@@ -632,9 +624,28 @@ fn classifyEntry(name: &str) -> EntryKind {
         if let Some(cat) = crate::baseSizes::categoryFor(stem) {
             return EntryKind::Accept(std::path::PathBuf::from(format!("{}/{}", cat, fname)));
         }
+        let lower = fname.to_lowercase();
+        if lower.contains("blood") || lower.contains("wing") {
+            let cat = classifyByName(fname);
+            return EntryKind::Accept(std::path::PathBuf::from(format!("{}/{}", cat, fname)));
+        }
+        const HEAD_HINTS: &[&str] = &[
+            "head", "face", "eye", "mouth", "hair", "ear", "horn", "disfigured",
+        ];
+        for hint in HEAD_HINTS {
+            if lower.contains(hint) {
+                return EntryKind::Accept(std::path::PathBuf::from(format!("Head/{}", fname)));
+            }
+        }
     }
 
-    // 最后按文件名关键字归类。
+    // 路径段 fallback：未知部件名沿用 zip 的目录归类。
+    for seg in comps.iter().rev().skip(1) {
+        if *seg == "Body" || *seg == "Head" || *seg == "Wings" {
+            return EntryKind::Accept(std::path::PathBuf::from(format!("{}/{}", seg, fname)));
+        }
+    }
+
     let cat = classifyByName(fname);
     EntryKind::Accept(std::path::PathBuf::from(format!("{}/{}", cat, fname)))
 }
@@ -923,9 +934,14 @@ mod skinPackTests {
         );
         let r = importSkinPack(&zipPath, &out, true).expect("import");
         assert_eq!(r.imported, 6);
-        // 路径段含 Body 的优先按路径归类，所以 Body/HeadDefault.png 进 Body。
+        // 文件名优先：HeadDefault / wingUL / eyeOpen / disfiguredHead0 即使被塞进 Body/ 也按真实分类落地。
         assert_eq!(fs::read(out.join("Body/UpTorso.png")).unwrap(), b"BODY");
-        assert_eq!(fs::read(out.join("Body/HeadDefault.png")).unwrap(), b"HEAD");
+        assert_eq!(fs::read(out.join("Head/HeadDefault.png")).unwrap(), b"HEAD");
+        assert_eq!(fs::read(out.join("Wings/wingUL.png")).unwrap(), b"WING");
+        assert_eq!(fs::read(out.join("Head/eyeOpen.png")).unwrap(), b"EYE");
+        assert_eq!(fs::read(out.join("Head/disfiguredHead0.png")).unwrap(), b"DISF");
+        // topPlate 不在 baseSizes 表里且无 keyword，路径段 fallback → Body。
+        assert_eq!(fs::read(out.join("Body/topPlate.png")).unwrap(), b"BODY2");
 
         // 完全平铺：路径无 Body/Head/Wings 段，走 keyword 归类。
         let zipPath2 = tmp.path().join("plain.zip");
