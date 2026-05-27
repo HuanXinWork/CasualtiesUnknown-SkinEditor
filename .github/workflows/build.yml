@@ -2,10 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [main, master]
     tags: ['v*']
-  pull_request:
-  workflow_dispatch:
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
@@ -43,12 +40,6 @@ jobs:
             arch: arm64
             artifact: linux-arm64
             target: aarch64-unknown-linux-gnu
-            ext: ''
-          - runner: macos-13
-            platform: macos
-            arch: x64
-            artifact: macos-x64
-            target: x86_64-apple-darwin
             ext: ''
           - runner: macos-14
             platform: macos
