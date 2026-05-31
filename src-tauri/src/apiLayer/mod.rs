@@ -73,6 +73,17 @@ pub struct EraserParams {
     pub brushSize: u8,
 }
 
+/// 柔和笔刷入参。羽化圆，hardness 0~255 控制硬度；笔画内同点取最大覆盖率不叠浓。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SoftBrushParams {
+    pub partId: String,
+    pub cx: i32,
+    pub cy: i32,
+    pub brushSize: u8,
+    pub hardness: u8,
+    pub color: [u8; 4],
+}
+
 /// 线性渐变入参。在当前 active 图层上沿 (x0,y0)→(x1,y1) 画主色到透明的渐变。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GradientParams {
@@ -82,6 +93,16 @@ pub struct GradientParams {
     pub x1: i32,
     pub y1: i32,
     pub color: [u8; 4],
+}
+
+/// 油漆桶入参。从 (cx,cy) 起在当前 active 图层填充容差内的 4 连通区域。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FillParams {
+    pub partId: String,
+    pub cx: i32,
+    pub cy: i32,
+    pub color: [u8; 4],
+    pub tolerance: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +175,75 @@ pub struct CreateSidePartResult {
     pub sidePartName: String,
 }
 
+/// 朝右专用 PNG 创建入参：把 `<partName>.png` 复制为 `R_<partName>.png`，朝右朝向时优先采用。
+/// 白名单 = 所有翻转得来的部件（除 Wings 外）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateOrientationPartParams {
+    pub skinRoot: String,
+    pub skinName: String,
+    pub category: PartCategory,
+    pub partName: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateOrientationPartResult {
+    pub orientationPartName: String,
+}
+
+/// 新建标准部件入参：在分类目录写一张纯黑占位 PNG 并登记 baseSizes。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePartParams {
+    pub skinRoot: String,
+    pub skinName: String,
+    pub category: PartCategory,
+    pub fileName: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePartResult {
+    pub partName: String,
+}
+
+/// 复制部件入参：把源部件（含图层）复制为同皮肤同类别下的新部件名。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyPartParams {
+    pub skinRoot: String,
+    pub skinName: String,
+    pub category: PartCategory,
+    pub sourcePartName: String,
+    pub targetPartName: String,
+    /// 目标已存在时是否覆盖；false 时目标存在报 part_exists。
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// 删除部件入参：移除 PNG + sidecar + baseSizes 项 + 卸载内存 session。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletePartParams {
+    pub skinRoot: String,
+    pub skinName: String,
+    pub category: PartCategory,
+    pub partName: String,
+}
+
+/// 跨部件复制图层入参：把源部件某图层像素作为新图层加入目标部件（两者均需已加载）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyLayerToPartParams {
+    pub sourcePartId: String,
+    pub sourceLayerId: String,
+    pub targetPartId: String,
+}
+
+/// 设置图层预览变换入参；transform 为 null 时清除预览。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetLayerTransformParams {
+    pub partId: String,
+    pub layerId: String,
+    pub transform: Option<imageOps::LayerTransform>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddLayerParams {
     pub partId: String,
@@ -217,6 +307,9 @@ pub struct CompositeParams {
     /// 播放时刻（秒）。前端按 RAF 循环递增；用于驱动粒子 / 帧动画。缺省 0 表示静态首帧。
     #[serde(default)]
     pub timeSec: f32,
+    /// 角色朝向：true=朝右，渲染时 sprite 优先选 R_ 前缀版本；false=朝左走无前缀。
+    #[serde(default)]
+    pub isRight: bool,
 }
 
 /// 合成预览出参。pixels 长度 = COMPOSITE_W * COMPOSITE_H * 4。
@@ -494,6 +587,8 @@ pub trait ApiLayer: Send + Sync + 'static {
     fn applyBrush(&self, params: BrushParams) -> Result<PixelDiff, ApiError>;
     fn applyEraser(&self, params: EraserParams) -> Result<PixelDiff, ApiError>;
     fn applyGradient(&self, params: GradientParams) -> Result<PixelDiff, ApiError>;
+    fn applyFill(&self, params: FillParams) -> Result<PixelDiff, ApiError>;
+    fn applySoftBrush(&self, params: SoftBrushParams) -> Result<PixelDiff, ApiError>;
     /// 一次 mousedown..mouseup 之间的 brush/eraser 调用合并为一条历史。
     /// endStroke 返回该笔画的整体 PixelDiff，空笔画 width=0/height=0。
     fn beginStroke(&self, params: PartIdParams) -> Result<(), ApiError>;
@@ -508,6 +603,13 @@ pub trait ApiLayer: Send + Sync + 'static {
     fn resizePart(&self, params: ResizePartParams) -> Result<ResizePartResult, ApiError>;
     fn getBaseSize(&self, params: GetBaseSizeParams) -> Result<GetBaseSizeResult, ApiError>;
     fn createSidePart(&self, params: CreateSidePartParams) -> Result<CreateSidePartResult, ApiError>;
+    fn createOrientationPart(&self, params: CreateOrientationPartParams) -> Result<CreateOrientationPartResult, ApiError>;
+    fn createPart(&self, params: CreatePartParams) -> Result<CreatePartResult, ApiError>;
+    fn copyPart(&self, params: CopyPartParams) -> Result<CreatePartResult, ApiError>;
+    fn deletePart(&self, params: DeletePartParams) -> Result<(), ApiError>;
+    fn copyLayerToPart(&self, params: CopyLayerToPartParams) -> Result<LayersSnapshot, ApiError>;
+    fn setLayerTransform(&self, params: SetLayerTransformParams) -> Result<(), ApiError>;
+    fn bakeLayerTransform(&self, params: RemoveLayerParams) -> Result<PixelDiff, ApiError>;
     fn addLayer(&self, params: AddLayerParams) -> Result<LayersSnapshot, ApiError>;
     fn removeLayer(&self, params: RemoveLayerParams) -> Result<LayersSnapshot, ApiError>;
     fn setLayerVisibility(&self, params: LayerVisibilityParams) -> Result<LayersSnapshot, ApiError>;
@@ -551,6 +653,8 @@ struct ActiveStroke {
     baseline: Vec<u8>,
     /// 累计影响矩形 [x0, y0, x1, y1)；首次写入时初始化。
     accRect: Option<(u32, u32, u32, u32)>,
+    /// 软笔刷笔画覆盖率缓冲（整图，0~255）；仅软笔刷使用，懒初始化。
+    softCoverage: Option<Vec<u8>>,
 }
 
 pub struct CoreApi {
@@ -702,6 +806,7 @@ impl ApiLayer for CoreApi {
                     PartCategory::Accessories,
                     spriteName,
                     None,
+                    frame.isRight,
                 );
                 let (partW, partH, pixels) = match picked { Some(t) => t, None => continue };
                 let parentRad = -(entry.rotation - acc.rot).to_radians();
@@ -728,6 +833,7 @@ impl ApiLayer for CoreApi {
                 entry.category,
                 basePart,
                 sidedName.as_deref(),
+                frame.isRight,
             );
             let (partW, partH, pixels) = match picked {
                 Some(t) => t,
@@ -807,6 +913,7 @@ impl ApiLayer for CoreApi {
                 visible: true,
                 opacity: 255,
                 pixels: decoded.pixels.clone(),
+                transform: None,
             };
             let st = PartEditState {
                 partName: params.partName.clone(),
@@ -930,6 +1037,100 @@ impl ApiLayer for CoreApi {
         Ok(diff)
     }
 
+    fn applyFill(&self, params: FillParams) -> Result<PixelDiff, ApiError> {
+        let mut sessions = lockSessions(&self.sessions)?;
+        let session = sessions
+            .get_mut(&params.partId)
+            .ok_or_else(|| notLoaded(&params.partId))?;
+        let (width, height) = (session.state.width, session.state.height);
+        let activeIdx = session.activeLayerIndex;
+        let layer = session.state.layers.get_mut(activeIdx).ok_or_else(|| ApiError {
+            code: "no_layer".into(),
+            message: "session has no active layer".into(),
+        })?;
+        let layerId = layer.id.clone();
+        let diff = imageOps::applyFill(
+            &mut layer.pixels,
+            width,
+            height,
+            params.cx,
+            params.cy,
+            params.color,
+            params.tolerance,
+        );
+        if diff.width != 0 && diff.height != 0 {
+            session.history.push(HistoryEntry {
+                layerId,
+                diff: diff.clone(),
+                timestamp: nowMillis(),
+            });
+        }
+        Ok(diff)
+    }
+
+    fn applySoftBrush(&self, params: SoftBrushParams) -> Result<PixelDiff, ApiError> {
+        let mut sessions = lockSessions(&self.sessions)?;
+        let session = sessions
+            .get_mut(&params.partId)
+            .ok_or_else(|| notLoaded(&params.partId))?;
+        let (width, height) = (session.state.width, session.state.height);
+        let activeIdx = session.activeLayerIndex;
+        let layer = session.state.layers.get(activeIdx).ok_or_else(|| ApiError {
+            code: "no_layer".into(),
+            message: "session has no active layer".into(),
+        })?;
+        let layerId = layer.id.clone();
+        let pixelLen = layer.pixels.len();
+        // 无进行中的笔画时退化为单次合成（baseline = 当前图层），不做笔画内防叠浓。
+        let baseline: Vec<u8> = match session.activeStroke.as_ref() {
+            Some(s) if s.layerId == layerId => s.baseline.clone(),
+            _ => session.state.layers[activeIdx].pixels.clone(),
+        };
+        let mut coverage: Vec<u8> = match session.activeStroke.as_mut() {
+            Some(s) if s.layerId == layerId => {
+                s.softCoverage.take().unwrap_or_else(|| vec![0u8; pixelLen / 4])
+            }
+            _ => vec![0u8; pixelLen / 4],
+        };
+        let rect = match imageOps::stampSoftCoverage(
+            &mut coverage, width, height, params.cx, params.cy, params.brushSize, params.hardness,
+        ) {
+            Some(r) => r,
+            None => {
+                if let Some(s) = session.activeStroke.as_mut() {
+                    if s.layerId == layerId { s.softCoverage = Some(coverage); }
+                }
+                return Ok(emptyPixelDiff());
+            }
+        };
+        let layerMut = &mut session.state.layers[activeIdx];
+        let before = copyRectFromBuffer(&layerMut.pixels, width, rect.0, rect.1, rect.2, rect.3);
+        imageOps::compositeSoftStroke(&mut layerMut.pixels, &baseline, &coverage, width, rect, params.color);
+        let after = copyRectFromBuffer(&layerMut.pixels, width, rect.0, rect.1, rect.2, rect.3);
+        let diff = PixelDiff {
+            x: rect.0,
+            y: rect.1,
+            width: rect.2 - rect.0,
+            height: rect.3 - rect.1,
+            before,
+            after,
+        };
+        match session.activeStroke.as_mut() {
+            Some(s) if s.layerId == layerId => {
+                s.softCoverage = Some(coverage);
+                mergeStrokeRect(s, &diff);
+            }
+            _ => {
+                session.history.push(HistoryEntry {
+                    layerId,
+                    diff: diff.clone(),
+                    timestamp: nowMillis(),
+                });
+            }
+        }
+        Ok(diff)
+    }
+
     fn beginStroke(&self, params: PartIdParams) -> Result<(), ApiError> {
         let mut sessions = lockSessions(&self.sessions)?;
         let session = sessions
@@ -948,6 +1149,7 @@ impl ApiLayer for CoreApi {
             layerId: layer.id.clone(),
             baseline: layer.pixels.clone(),
             accRect: None,
+            softCoverage: None,
         });
         Ok(())
     }
@@ -1176,6 +1378,219 @@ impl ApiLayer for CoreApi {
         Ok(CreateSidePartResult { sidePartName: sideName })
     }
 
+    fn createOrientationPart(&self, params: CreateOrientationPartParams) -> Result<CreateOrientationPartResult, ApiError> {
+        if params.partName.starts_with("R_") {
+            return Err(ApiError {
+                code: "already_oriented".into(),
+                message: format!("part {} already has R_ prefix", params.partName),
+            });
+        }
+        if !isOrientationSplittablePart(&params.partName, params.category) {
+            return Err(ApiError {
+                code: "not_orientation_splittable".into(),
+                message: format!("part {} is not orientation-splittable", params.partName),
+            });
+        }
+        let skinDir = PathBuf::from(&params.skinRoot).join(&params.skinName);
+        let catDir = skinDir.join(categoryDir(params.category));
+        let src = catDir.join(format!("{}.png", params.partName));
+        if !src.exists() {
+            return Err(ApiError {
+                code: "source_missing".into(),
+                message: format!("source PNG not found: {}", src.display()),
+            });
+        }
+        let orientName = format!("R_{}", params.partName);
+        let dst = catDir.join(format!("{}.png", orientName));
+        if dst.exists() {
+            return Err(ApiError {
+                code: "orientation_part_exists".into(),
+                message: format!("R_ PNG already exists: {}", dst.display()),
+            });
+        }
+        std::fs::copy(&src, &dst).map_err(|e| ApiError {
+            code: "io_failed".into(),
+            message: format!("copy {} -> {} failed: {}", src.display(), dst.display(), e),
+        })?;
+        Ok(CreateOrientationPartResult { orientationPartName: orientName })
+    }
+
+    fn createPart(&self, params: CreatePartParams) -> Result<CreatePartResult, ApiError> {
+        let name = params.fileName.trim();
+        if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err(ApiError {
+                code: "invalid_name".into(),
+                message: format!("invalid part fileName: {}", params.fileName),
+            });
+        }
+        if params.width == 0 || params.height == 0 || params.width > 1024 || params.height > 1024 {
+            return Err(ApiError {
+                code: "invalid_size".into(),
+                message: format!("invalid size {}x{}", params.width, params.height),
+            });
+        }
+        let catDirName = categoryDir(params.category);
+        let catDir = PathBuf::from(&params.skinRoot).join(&params.skinName).join(catDirName);
+        let dst = catDir.join(format!("{}.png", name));
+        if dst.exists() {
+            return Err(ApiError {
+                code: "part_exists".into(),
+                message: format!("part PNG already exists: {}", dst.display()),
+            });
+        }
+        let pixelCount = (params.width * params.height) as usize;
+        let mut pixels = vec![0u8; pixelCount * 4];
+        for i in 0..pixelCount {
+            pixels[i * 4 + 3] = 255;
+        }
+        imageOps::savePng(&dst, params.width, params.height, &pixels)?;
+        let skinDir = PathBuf::from(&params.skinRoot).join(&params.skinName);
+        let _ = baseSizes::upsert(&skinDir, &baseSizes::keyFor(catDirName, name), params.width, params.height);
+        Ok(CreatePartResult { partName: name.to_string() })
+    }
+
+    fn copyPart(&self, params: CopyPartParams) -> Result<CreatePartResult, ApiError> {
+        let target = params.targetPartName.trim();
+        if target.is_empty() || target.contains('/') || target.contains('\\') || target.contains("..") {
+            return Err(ApiError {
+                code: "invalid_name".into(),
+                message: format!("invalid target part name: {}", params.targetPartName),
+            });
+        }
+        let catDirName = categoryDir(params.category);
+        let skinDir = PathBuf::from(&params.skinRoot).join(&params.skinName);
+        let catDir = skinDir.join(catDirName);
+        let dstPng = catDir.join(format!("{}.png", target));
+        if dstPng.exists() && !params.overwrite {
+            return Err(ApiError {
+                code: "part_exists".into(),
+                message: format!("target part already exists: {}", dstPng.display()),
+            });
+        }
+        // 源优先取内存 session（含未保存改动），否则从磁盘读；覆盖时卸载目标已加载 session。
+        let srcPartId = partIdKey(&params.skinName, params.category, &params.sourcePartName);
+        let dstPartId = partIdKey(&params.skinName, params.category, target);
+        let state = {
+            let mut sessions = lockSessions(&self.sessions)?;
+            let st = if let Some(s) = sessions.get(&srcPartId) {
+                s.state.clone()
+            } else {
+                loadStateFromDisk(&skinDir, catDirName, &params.sourcePartName)?
+            };
+            sessions.remove(&dstPartId);
+            st
+        };
+        let flat = imageOps::flatten(&state);
+        imageOps::savePng(&dstPng, state.width, state.height, &flat)?;
+        layerSidecar::save(&skinDir, catDirName, target, &state, 0)?;
+        let _ = baseSizes::upsert(&skinDir, &baseSizes::keyFor(catDirName, target), state.width, state.height);
+        Ok(CreatePartResult { partName: target.to_string() })
+    }
+
+    fn deletePart(&self, params: DeletePartParams) -> Result<(), ApiError> {
+        let catDirName = categoryDir(params.category);
+        let skinDir = PathBuf::from(&params.skinRoot).join(&params.skinName);
+        let png = skinDir.join(catDirName).join(format!("{}.png", params.partName));
+        if png.exists() {
+            std::fs::remove_file(&png).map_err(|e| ApiError {
+                code: "io_failed".into(),
+                message: format!("remove {} failed: {}", png.display(), e),
+            })?;
+        }
+        let sideDir = layerSidecar::sidecarDir(&skinDir, catDirName, &params.partName);
+        if sideDir.exists() {
+            let _ = std::fs::remove_dir_all(&sideDir);
+        }
+        let _ = baseSizes::remove(&skinDir, &baseSizes::keyFor(catDirName, &params.partName));
+        let partId = partIdKey(&params.skinName, params.category, &params.partName);
+        let mut sessions = lockSessions(&self.sessions)?;
+        sessions.remove(&partId);
+        Ok(())
+    }
+
+    fn copyLayerToPart(&self, params: CopyLayerToPartParams) -> Result<LayersSnapshot, ApiError> {
+        let mut sessions = lockSessions(&self.sessions)?;
+        let src = sessions.get(&params.sourcePartId).ok_or_else(|| notLoaded(&params.sourcePartId))?;
+        let srcLayer = src.state.layers.iter().find(|l| l.id == params.sourceLayerId).ok_or_else(|| ApiError {
+            code: "no_layer".into(),
+            message: format!("source layer {} not found", params.sourceLayerId),
+        })?;
+        let srcName = srcLayer.name.clone();
+        let (srcW, srcH) = (src.state.width, src.state.height);
+        let srcPixels = srcLayer.pixels.clone();
+        let target = sessions.get_mut(&params.targetPartId).ok_or_else(|| notLoaded(&params.targetPartId))?;
+        if target.state.layers.len() >= 8 {
+            return Err(ApiError {
+                code: "layer_limit".into(),
+                message: "target part already has 8 layers".into(),
+            });
+        }
+        let (dstW, dstH) = (target.state.width, target.state.height);
+        // 尺寸不一致时按左上对齐裁剪/留空，避免缓冲长度不匹配。
+        let pixels = if srcW == dstW && srcH == dstH {
+            srcPixels
+        } else {
+            let mut buf = vec![0u8; (dstW as usize) * (dstH as usize) * 4];
+            let copyW = srcW.min(dstW);
+            let copyH = srcH.min(dstH);
+            for y in 0..copyH {
+                let srcRow = (y * srcW) as usize * 4;
+                let dstRow = (y * dstW) as usize * 4;
+                let len = (copyW as usize) * 4;
+                buf[dstRow..dstRow + len].copy_from_slice(&srcPixels[srcRow..srcRow + len]);
+            }
+            buf
+        };
+        let newId = format!("layer{}", nowMillis());
+        target.state.layers.push(Layer {
+            id: newId,
+            name: srcName,
+            visible: true,
+            opacity: 255,
+            pixels,
+            transform: None,
+        });
+        target.activeLayerIndex = target.state.layers.len() - 1;
+        Ok(snapshot(target))
+    }
+
+    fn setLayerTransform(&self, params: SetLayerTransformParams) -> Result<(), ApiError> {
+        let mut sessions = lockSessions(&self.sessions)?;
+        let session = sessions.get_mut(&params.partId).ok_or_else(|| notLoaded(&params.partId))?;
+        let layer = session.state.layers.iter_mut().find(|l| l.id == params.layerId).ok_or_else(|| ApiError {
+            code: "no_layer".into(),
+            message: format!("layer {} not found", params.layerId),
+        })?;
+        layer.transform = params.transform.filter(|t| !t.isIdentity());
+        Ok(())
+    }
+
+    fn bakeLayerTransform(&self, params: RemoveLayerParams) -> Result<PixelDiff, ApiError> {
+        let mut sessions = lockSessions(&self.sessions)?;
+        let session = sessions.get_mut(&params.partId).ok_or_else(|| notLoaded(&params.partId))?;
+        let width = session.state.width;
+        let height = session.state.height;
+        let layer = session.state.layers.iter_mut().find(|l| l.id == params.layerId).ok_or_else(|| ApiError {
+            code: "no_layer".into(),
+            message: format!("layer {} not found", params.layerId),
+        })?;
+        let transform = match layer.transform.take() {
+            Some(t) if !t.isIdentity() => t,
+            _ => return Ok(emptyPixelDiff()),
+        };
+        let before = layer.pixels.clone();
+        let after = imageOps::transformLayerPixels(&before, width, height, &transform);
+        layer.pixels = after.clone();
+        let layerId = layer.id.clone();
+        let diff = PixelDiff { x: 0, y: 0, width, height, before, after };
+        session.history.push(HistoryEntry {
+            layerId,
+            diff: diff.clone(),
+            timestamp: nowMillis(),
+        });
+        Ok(diff)
+    }
+
     fn addLayer(&self, params: AddLayerParams) -> Result<LayersSnapshot, ApiError> {
         let mut sessions = lockSessions(&self.sessions)?;
         let session = sessions
@@ -1195,6 +1610,7 @@ impl ApiLayer for CoreApi {
             visible: true,
             opacity: 255,
             pixels: vec![0u8; pixelLen],
+            transform: None,
         });
         Ok(snapshot(session))
     }
@@ -1482,6 +1898,7 @@ impl ApiLayer for CoreApi {
                     PartCategory::Accessories,
                     spriteName,
                     None,
+                    params.isRight,
                 );
                 let (partW, partH, pixels) = match picked { Some(t) => t, None => continue };
                 // offX/offY 在父 limb 局部像素轴上；用父 rotation 把它旋到世界，与 mod 端 transform.localPosition 跟着父级旋转一致。
@@ -1509,6 +1926,7 @@ impl ApiLayer for CoreApi {
                 entry.category,
                 basePart,
                 sidedName.as_deref(),
+                params.isRight,
             );
             let (partW, partH, pixels) = match picked {
                 Some(t) => t,
@@ -2262,6 +2680,28 @@ fn partIdKey(skinName: &str, category: PartCategory, partName: &str) -> String {
     format!("{}::{}::{}", skinName, categoryDir(category), partName)
 }
 
+/// 从磁盘读部件为 PartEditState：sidecar 优先，否则把合成 PNG 当单层。
+fn loadStateFromDisk(skinDir: &Path, catDirName: &str, partName: &str) -> Result<PartEditState, ApiError> {
+    if let Some((state, _)) = layerSidecar::loadIfPresent(skinDir, catDirName, partName) {
+        return Ok(state);
+    }
+    let png = skinDir.join(catDirName).join(format!("{}.png", partName));
+    let decoded = skinLoader::decodePart(&png)?;
+    Ok(PartEditState {
+        partName: partName.to_string(),
+        width: decoded.width,
+        height: decoded.height,
+        layers: vec![Layer {
+            id: "layer0".into(),
+            name: "layer0".into(),
+            visible: true,
+            opacity: 255,
+            pixels: decoded.pixels,
+            transform: None,
+        }],
+    })
+}
+
 /// 用户为前后共享部件单独画 sided PNG 时，合成层据此查 `<base><side>` 候选名。
 /// 仅"前后共享 sprite"5 类支持：UpArm / DownArm / Thigh / Crus / Foot；其它部件返回 None 直接用 base。
 fn sidedCandidateName(basePart: &str, side: char) -> Option<String> {
@@ -2275,7 +2715,7 @@ fn sidedCandidateName(basePart: &str, side: char) -> Option<String> {
     }
 }
 
-/// 合成层取部件像素：sided 优先（session → 磁盘），缺失退回 base（session → 磁盘）。
+/// 合成层取部件像素：朝右时优先 R_ 前缀；sided 优先（session → 磁盘），缺失退回 base（session → 磁盘）。
 /// 同时是 motion 与 assembly 两条路径共享的 sprite 加载逻辑，保持渲染前的取值一致。
 fn pickPartPixels(
     sessions: &std::sync::MutexGuard<'_, std::collections::HashMap<String, PartSession>>,
@@ -2284,25 +2724,29 @@ fn pickPartPixels(
     category: PartCategory,
     basePart: &str,
     sided: Option<&str>,
+    isRight: bool,
 ) -> Option<(u32, u32, Vec<u8>)> {
-    if let Some(s) = sided {
-        let key = partIdKey(skinName, category, s);
+    let mut candidates: Vec<String> = Vec::with_capacity(4);
+    if isRight {
+        if let Some(s) = sided { candidates.push(format!("R_{}", s)); }
+        candidates.push(format!("R_{}", basePart));
+    }
+    if let Some(s) = sided { candidates.push(s.to_string()); }
+    candidates.push(basePart.to_string());
+
+    for name in &candidates {
+        let key = partIdKey(skinName, category, name);
         if let Some(session) = sessions.get(&key) {
             return Some((session.state.width, session.state.height, imageOps::flatten(&session.state)));
         }
-        let png = skinDir.join(categoryDir(category)).join(format!("{}.png", s));
+        let png = skinDir.join(categoryDir(category)).join(format!("{}.png", name));
         if png.exists() {
             if let Ok(d) = skinLoader::decodePart(&png) {
                 return Some((d.width, d.height, d.pixels));
             }
         }
     }
-    let key = partIdKey(skinName, category, basePart);
-    if let Some(session) = sessions.get(&key) {
-        return Some((session.state.width, session.state.height, imageOps::flatten(&session.state)));
-    }
-    let png = skinDir.join(categoryDir(category)).join(format!("{}.png", basePart));
-    skinLoader::decodePart(&png).ok().map(|d| (d.width, d.height, d.pixels))
+    None
 }
 
 /// 按 baseSizes 标准尺寸 nearest-neighbor 缩回；未登记或尺寸已一致直接返回原 buffer。
@@ -2397,6 +2841,13 @@ fn isSideSplittablePartName(partName: &str) -> bool {
 /// 判断 part 名末尾是否已有 F / B 后缀，用于拒绝在 sided 名字上再拆分。
 fn endsWithSideSuffix(partName: &str) -> bool {
     partName.ends_with('F') || partName.ends_with('B')
+}
+
+/// 判断 part 是否允许创建 R_ 朝右版：所有 Body / Head 部件都允许；Wings 除外（已展开身体两侧）；Blood 不参与渲染合成。
+fn isOrientationSplittablePart(partName: &str, category: PartCategory) -> bool {
+    if partName.is_empty() { return false; }
+    if partName.starts_with("R_") { return false; }
+    matches!(category, PartCategory::Body | PartCategory::Head)
 }
 
 fn notLoaded(partId: &str) -> ApiError {
@@ -2937,6 +3388,90 @@ mod tests {
     }
 
     #[test]
+    fn copyPartCreatesPngAndSidecar() {
+        let (tmp, api, partId) = loadedApi();
+        api.applyBrush(BrushParams {
+            partId: partId.clone(),
+            cx: 0,
+            cy: 0,
+            brushSize: 1,
+            color: [9, 8, 7, 255],
+        }).expect("brush");
+        let res = api.copyPart(CopyPartParams {
+            skinRoot: tmp.path().to_string_lossy().into_owned(),
+            skinName: "st1".into(),
+            category: PartCategory::Body,
+            sourcePartName: "p".into(),
+            targetPartName: "pCopy".into(),
+            overwrite: false,
+        }).expect("copyPart");
+        assert_eq!(res.partName, "pCopy");
+        let png = tmp.path().join("st1").join("Body").join("pCopy.png");
+        assert!(png.is_file());
+        let (_, _, pixels) = imageOps::loadPng(&png).expect("reload");
+        assert_eq!(pixels, vec![9, 8, 7, 255]);
+        let err = api.copyPart(CopyPartParams {
+            skinRoot: tmp.path().to_string_lossy().into_owned(),
+            skinName: "st1".into(),
+            category: PartCategory::Body,
+            sourcePartName: "p".into(),
+            targetPartName: "pCopy".into(),
+            overwrite: false,
+        }).expect_err("dup should fail");
+        assert_eq!(err.code, "part_exists");
+        api.copyPart(CopyPartParams {
+            skinRoot: tmp.path().to_string_lossy().into_owned(),
+            skinName: "st1".into(),
+            category: PartCategory::Body,
+            sourcePartName: "p".into(),
+            targetPartName: "pCopy".into(),
+            overwrite: true,
+        }).expect("overwrite should succeed");
+    }
+
+    #[test]
+    fn deletePartRemovesPng() {
+        let (tmp, api, _partId) = loadedApi();
+        let png = tmp.path().join("st1").join("Body").join("p.png");
+        assert!(png.is_file());
+        api.deletePart(DeletePartParams {
+            skinRoot: tmp.path().to_string_lossy().into_owned(),
+            skinName: "st1".into(),
+            category: PartCategory::Body,
+            partName: "p".into(),
+        }).expect("deletePart");
+        assert!(!png.exists());
+    }
+
+    #[test]
+    fn copyLayerToPartAppendsLayer() {
+        let tmp = TempDir::new();
+        let bodyDir = tmp.path().join("st1").join("Body");
+        fs::create_dir_all(&bodyDir).unwrap();
+        writeTinyPng(&bodyDir.join("a.png"), [1, 2, 3, 255]);
+        writeTinyPng(&bodyDir.join("b.png"), [0, 0, 0, 0]);
+        let api = CoreApi::new();
+        let srcRoot = tmp.path().to_string_lossy().into_owned();
+        let src = api.loadPartImage(LoadPartParams {
+            skinRoot: srcRoot.clone(), skinName: "st1".into(),
+            category: PartCategory::Body, partName: "a".into(),
+        }).expect("load a");
+        let dst = api.loadPartImage(LoadPartParams {
+            skinRoot: srcRoot, skinName: "st1".into(),
+            category: PartCategory::Body, partName: "b".into(),
+        }).expect("load b");
+        let snap = api.copyLayerToPart(CopyLayerToPartParams {
+            sourcePartId: src.partId,
+            sourceLayerId: "layer0".into(),
+            targetPartId: dst.partId.clone(),
+        }).expect("copyLayer");
+        assert_eq!(snap.layers.len(), 2);
+        let sessions = api.sessions.lock().unwrap();
+        let session = sessions.get(&dst.partId).expect("session");
+        assert_eq!(session.state.layers[1].pixels, vec![1, 2, 3, 255]);
+    }
+
+    #[test]
     fn reorderLayersValidatesOrder() {
         let (_tmp, api, partId) = loadedApi();
         api.addLayer(AddLayerParams { partId: partId.clone() }).expect("add");
@@ -3049,6 +3584,7 @@ mod tests {
             expressionIndex: 0,
             headVariant: None,
             timeSec: 0.0,
+            isRight: false,
         })
         .expect("composite")
     }

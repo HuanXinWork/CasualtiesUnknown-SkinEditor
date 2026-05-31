@@ -20,9 +20,10 @@ import { attachCloseGuard } from "./closeGuard";
 import { mountImageWindow } from "./imageWindow";
 import { storeImage, releaseImage } from "./apiClient";
 import { startUpdateChecker } from "./updateChecker";
+import { mountAutoSave } from "./autoSave";
 
 // 与 src-tauri/Cargo.toml `version` / settingsPanel APP_META.version 保持一致。
-const APP_VERSION = "1.0.4";
+const APP_VERSION = "1.0.5";
 import {
   ICON_PIN,
   ICON_PIN_OFF,
@@ -105,6 +106,10 @@ async function mountMainWindow(): Promise<void> {
       showMotionDebugPanel: ws.layout.settings?.showMotionDebugPanel ?? true,
       showWingDebugPanel: ws.layout.settings?.showWingDebugPanel ?? false,
       showBloodPanel: ws.layout.settings?.showBloodPanel ?? false,
+      autoSaveEnabled: ws.layout.settings?.autoSaveEnabled ?? false,
+      autoSaveIntervalSec: ws.layout.settings?.autoSaveIntervalSec ?? 60,
+      switchSaveBehavior: ws.layout.settings?.switchSaveBehavior ?? "",
+      softBrushHardness: ws.layout.settings?.softBrushHardness ?? 128,
     });
     if (ws.source === "file") {
       lastLoadedPanels = ws.layout.panels as PanelLayout[];
@@ -441,6 +446,9 @@ function mountApp(): void {
 
   // 主窗口启动后挂关闭守卫：未保存退出确认。
   attachCloseGuard({ skinRoot: DEFAULT_SKIN_ROOT });
+
+  // 定时自动保存：按设置间隔把未保存部件写回。
+  mountAutoSave(DEFAULT_SKIN_ROOT);
 
   // 图片拖入：HTML5 dragover/drop 监听，常见格式 → dataURL → localStorage → 子窗口。
   attachImageDropHandler();

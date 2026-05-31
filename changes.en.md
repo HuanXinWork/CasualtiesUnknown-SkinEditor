@@ -6,13 +6,31 @@
 
 ---
 
+## 1.0.5 (2026-05-31)
+
+### Added
+
+- **Eyedropper**: hold Alt while using the brush / eraser / soft brush and click the canvas to pick the composited color there into the palette; the cursor turns into a dropper and reverts to the original tool when Alt is released.
+- **Fill bucket**: new bucket tool that fills the region connected to the clicked pixel (4-connected) on the current layer.
+- **Soft brush**: new soft brush with a feathered circular edge; passing over the same spot within one stroke does not darken it further. Double-click the tool button to set hardness (0–100%).
+- **View transform**: a "Transform" section at the bottom of the editor canvas applies horizontal / vertical flip, X/Y scale, and rotation to the current layer. The assembly and motion previews follow live while adjusting; clicking *Apply* bakes it into pixels and pushes it onto the undo stack, *Cancel* reverts.
+- **Auto-save on a timer**: new toggle and interval in settings (off by default, minimum 10s, default 60s); when on, all unsaved parts are written back to their PNGs at that interval (layer project data is preserved too).
+- **Switch-part save confirmation**: when the current part has unsaved changes and you switch to another, a dialog offers "Save and switch / Switch without saving / Cancel" on first use, with a "remember my choice" checkbox; the settings panel can switch it back to always ask / auto-save / switch directly.
+- **Copy parts**: right-click a part in the character pane and choose "Copy part"; a dialog lists the parts in that category (tagged "exists" / "new"), and the selected target receives the source part (layers included). If the target already exists, a "copying will overwrite" hint is shown and the copy overwrites it on confirm. No manual filename entry. The menu also includes delete (with confirmation).
+- **Copy layers across parts**: each layer in the layer panel gets a copy button; after switching to a target part, use the toolbar paste button to add it as a new layer. Mismatched sizes are aligned to the top-left corner.
+
+### Improved
+
+- **Add-part dedup**: the new-part dialog only lists parts not yet fully created; existing front/back and left/right combinations are skipped automatically, and a category's "Add part" button is hidden once everything in it exists.
+- **Settings dropdown styling**: the switch-part behavior dropdown and the auto-save interval input now use the themed input style, consistent with the rest of the panel.
+- **New config cached in workspace**: auto-save toggle and interval, switch-part behavior, and soft brush hardness are all written to `workspace.json` and survive restarts.
+
 ## 1.0.4 (2026-05-28)
 
 ### Added
 
-- **Resize supports shrink + custom factor**: the dialog now splits into a "Shrink" row (0.25× / 0.5× / 0.75×) and an "Enlarge" row (1× / 2× / 3× / 4×), plus a number input that accepts any custom factor (Enter or click *Apply* to submit). Factor is clamped to 0.01–1000; the resulting size is still bound by the backend's 1–4096 limit.
+- **Resize supports shrink + custom factor**: the dialog now splits into a "Shrink" row (0.25× / 0.5× / 0.75×) and an "Enlarge" row (1× / 2× / 3× / 4×), plus a number input that accepts any custom factor (Enter or click *Apply* to submit). Factor is clamped to 0.01–1000.
 - **Shrink confirmation**: on submit the editor queries `<skin>/baseSizes.json`; if either dimension drops below the registered base size for that part, a danger dialog ("shrinking further may corrupt the image") is shown and the user must click *Yes* again before the resize is applied. Custom parts or skins without `baseSizes.json` skip the check.
-- **Workflow now supports multi-platform automated builds**: covers `windows-latest` / `ubuntu-latest` / `macos-latest`, packages each platform's bundle into its own zip, and uploads them as separate Actions Artifacts so the three platforms never overwrite each other.
 
 ---
 

@@ -32,6 +32,7 @@ import {
   ICON_SAVE,
 } from "./toolIcons";
 import { mountSettingsPopover } from "../settingsPanel";
+import { openSoftBrushDialog } from "./softBrushDialog";
 import {
   attachGlobalShortcuts,
   registerAction,
@@ -55,7 +56,9 @@ export function mountToolPanel(
     `<div data-role="tools" style="display:flex;gap:4px;">` +
     `<button class="btn cp-tool-btn" data-tool="pan">${TOOL_ICONS.pan}</button>` +
     `<button class="btn cp-tool-btn" data-tool="brush">${TOOL_ICONS.brush}</button>` +
+    `<button class="btn cp-tool-btn" data-tool="softBrush">${TOOL_ICONS.softBrush}</button>` +
     `<button class="btn cp-tool-btn" data-tool="gradient">${TOOL_ICONS.gradient}</button>` +
+    `<button class="btn cp-tool-btn" data-tool="fill">${TOOL_ICONS.fill}</button>` +
     `<button class="btn cp-tool-btn" data-tool="eraser">${TOOL_ICONS.eraser}</button>` +
     `<button class="btn cp-tool-btn" data-tool="zoneBrush">${TOOL_ICONS.zoneBrush}</button>` +
     `</div>` +
@@ -79,9 +82,11 @@ export function mountToolPanel(
     `<button class="btn cp-tool-btn" data-role="reset-layout">${ICON_RESET_LAYOUT}</button>`;
 
   const brushBtn = container.querySelector<HTMLButtonElement>('[data-tool="brush"]')!;
+  const softBrushBtn = container.querySelector<HTMLButtonElement>('[data-tool="softBrush"]')!;
   const eraserBtn = container.querySelector<HTMLButtonElement>('[data-tool="eraser"]')!;
   const panBtn = container.querySelector<HTMLButtonElement>('[data-tool="pan"]')!;
   const gradientBtn = container.querySelector<HTMLButtonElement>('[data-tool="gradient"]')!;
+  const fillBtn = container.querySelector<HTMLButtonElement>('[data-tool="fill"]')!;
   const zoneBrushBtn = container.querySelector<HTMLButtonElement>('[data-tool="zoneBrush"]')!;
   const sizeLabelEl = container.querySelector<HTMLSpanElement>('[data-role="size-label"]')!;
   const sizeDecBtn = container.querySelector<HTMLButtonElement>('[data-role="size-dec"]')!;
@@ -105,12 +110,14 @@ export function mountToolPanel(
   function applyTexts(): void {
     // 工具按钮内容是 SVG 图标，不能 textContent 覆盖；只设 title 提示。
     brushBtn.title = t("toolPanel.brush");
+    softBrushBtn.title = `${t("toolPanel.softBrush")} · ${t("softBrush.dblclickHint")}`;
     const eraserMode = sessionStore.getState().eraserMode ?? "part";
     eraserBtn.title = eraserMode === "zone"
       ? `${t("toolPanel.eraser")} · ${t("toolPanel.eraserModeZone")}`
       : `${t("toolPanel.eraser")} · ${t("toolPanel.eraserModePart")}`;
     panBtn.title = t("toolPanel.pan");
     gradientBtn.title = t("toolPanel.gradient");
+    fillBtn.title = t("toolPanel.fill");
     zoneBrushBtn.title = t("toolPanel.zoneBrush");
     sizeLabelEl.textContent = t("toolPanel.size");
     // undo/redo/history/import/export/resetLayout 全部改为图标按钮，仅设 title。
@@ -129,9 +136,11 @@ export function mountToolPanel(
   function renderFromState(): void {
     const { activeTool, brushSize, currentPartId } = sessionStore.getState();
     brushBtn.classList.toggle("btn-primary", activeTool === "brush");
+    softBrushBtn.classList.toggle("btn-primary", activeTool === "softBrush");
     eraserBtn.classList.toggle("btn-primary", activeTool === "eraser");
     panBtn.classList.toggle("btn-primary", activeTool === "pan");
     gradientBtn.classList.toggle("btn-primary", activeTool === "gradient");
+    fillBtn.classList.toggle("btn-primary", activeTool === "fill");
     zoneBrushBtn.classList.toggle("btn-primary", activeTool === "zoneBrush");
     sizeValEl.textContent = String(brushSize);
     sizeDecBtn.disabled = brushSize <= BRUSH_MIN;
@@ -142,6 +151,8 @@ export function mountToolPanel(
   }
 
   brushBtn.addEventListener("click", () => sessionStore.setState({ activeTool: "brush" }));
+  softBrushBtn.addEventListener("click", () => sessionStore.setState({ activeTool: "softBrush" }));
+  softBrushBtn.addEventListener("dblclick", () => openSoftBrushDialog(workspacePath));
   eraserBtn.addEventListener("click", () => {
     const state = sessionStore.getState();
     if (state.activeTool !== "eraser") {
@@ -155,6 +166,7 @@ export function mountToolPanel(
   });
   panBtn.addEventListener("click", () => sessionStore.setState({ activeTool: "pan" }));
   gradientBtn.addEventListener("click", () => sessionStore.setState({ activeTool: "gradient" }));
+  fillBtn.addEventListener("click", () => sessionStore.setState({ activeTool: "fill" }));
   zoneBrushBtn.addEventListener("click", () => sessionStore.setState({ activeTool: "zoneBrush" }));
 
   sizeDecBtn.addEventListener("click", () => {

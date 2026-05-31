@@ -20,6 +20,7 @@ import {
   type LayersSnapshot,
 } from "../apiClient";
 import { sessionStore } from "../stateStore";
+import { copyLayerToClipboard, pasteLayerToPart, hasLayerClipboard } from "./layerClipboard";
 import { zonesStore, nextFreeZoneId } from "../stateStore/zonesStore";
 import type { PartCategory, ZoneEntry } from "../stateStore/types";
 import { subscribeLang, t } from "../i18n";
@@ -36,6 +37,7 @@ export function mountLayerPanel(container: HTMLElement, skinRoot: string): () =>
   container.innerHTML =
     `<div class="layer-panel-toolbar" style="display:flex;align-items:center;gap:4px;padding:8px;border-bottom:1px solid rgba(0,0,0,var(--border-opacity));">` +
     `<button class="btn" data-role="add">+</button>` +
+    `<button class="btn" data-role="paste-layer" title="">⎘</button>` +
     `<button class="btn" data-role="up">↑</button>` +
     `<button class="btn" data-role="down">↓</button>` +
     `<span class="mono" data-role="meta" style="margin-left:auto;opacity:0.7;"></span>` +
@@ -44,6 +46,7 @@ export function mountLayerPanel(container: HTMLElement, skinRoot: string): () =>
     `<ul data-role="list" style="flex:1;min-height:0;overflow:auto;list-style:none;padding:0;margin:0;"></ul>`;
 
   const addBtn = container.querySelector<HTMLButtonElement>('[data-role="add"]')!;
+  const pasteLayerBtn = container.querySelector<HTMLButtonElement>('[data-role="paste-layer"]')!;
   const upBtn = container.querySelector<HTMLButtonElement>('[data-role="up"]')!;
   const downBtn = container.querySelector<HTMLButtonElement>('[data-role="down"]')!;
   const metaEl = container.querySelector<HTMLSpanElement>('[data-role="meta"]')!;
@@ -54,8 +57,22 @@ export function mountLayerPanel(container: HTMLElement, skinRoot: string): () =>
     addBtn.title = t("layerPanel.addLayer");
     upBtn.title = t("layerPanel.moveUp");
     downBtn.title = t("layerPanel.moveDown");
+    pasteLayerBtn.title = t("layerClipboard.pasteLayer");
   }
   applyToolbarTexts();
+
+  // 粘贴图层按钮：无剪贴板或区块模式下禁用。
+  function updatePasteBtn(): void {
+    const zoneMode = sessionStore.getState().activeTool === "zoneBrush";
+    const partId = sessionStore.getState().currentPartId;
+    pasteLayerBtn.disabled = zoneMode || !partId || !hasLayerClipboard();
+    pasteLayerBtn.style.display = zoneMode ? "none" : "";
+  }
+  pasteLayerBtn.addEventListener("click", () => {
+    const partId = sessionStore.getState().currentPartId;
+    if (!partId) return;
+    pasteLayerToPart(partId, (snap) => applySnapshot(snap));
+  });
 
   function clearError(): void {
     errorEl.style.display = "none";
@@ -84,6 +101,7 @@ export function mountLayerPanel(container: HTMLElement, skinRoot: string): () =>
   }
 
   function render(): void {
+    updatePasteBtn();
     if (sessionStore.getState().activeTool === "zoneBrush") {
       renderZonesMode();
       return;
@@ -525,6 +543,16 @@ export function mountLayerPanel(container: HTMLElement, skinRoot: string): () =>
         .catch((err: ApiError) => handleApiError(t("layerPanel.errSetOpacity"), err));
     });
 
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "btn";
+    copyBtn.textContent = "⎘";
+    copyBtn.title = t("layerClipboard.copyLayer");
+    copyBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      copyLayerToClipboard(partId, layer.id, layer.name);
+      updatePasteBtn();
+    });
+
     const delBtn = document.createElement("button");
     delBtn.className = "btn";
     delBtn.textContent = "×";
@@ -547,6 +575,7 @@ export function mountLayerPanel(container: HTMLElement, skinRoot: string): () =>
     li.appendChild(nameEl);
     li.appendChild(opacityRange);
     li.appendChild(opacityLabel);
+    li.appendChild(copyBtn);
     li.appendChild(delBtn);
     return li;
   }

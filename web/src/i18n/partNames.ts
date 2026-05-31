@@ -98,11 +98,16 @@ const ZH_MAP: Record<string, string> = {
 };
 
 /// 把 PNG 文件名（不含扩展名）转成当前语言下的显示名。
+/// - R_ 前缀代表朝右专用副本，剥前缀后递归本地化，再追加"（朝右）" / " (right)"。
 /// - 中文：去 KNOWN_PREFIXES 前缀 → 查 ZH_MAP；查不到回退到去前缀后的原文（驼峰）。
 /// - 英文：去 KNOWN_PREFIXES 前缀（与中文同步保持视觉对齐），其余原样返回。
 /// - F / B 后缀代表前侧 / 后侧独立副本，按 base 名翻译后追加（前）/（后）/ (front)/(back)。
 ///   HandF / HandB 在 ZH_MAP 已显式映射为"前手 / 后手"，此处只补 base 名 + F/B 的兜底。
 export function localizePartName(rawName: string): string {
+  if (rawName.startsWith("R_") && rawName.length > 2) {
+    const base = localizePartName(rawName.slice(2));
+    return currentLang() === "zh" ? `${base}（朝右）` : `${base} (right)`;
+  }
   const lemma = stripKnownPrefix(rawName);
   const zh = currentLang() === "zh";
   if (zh && ZH_MAP[lemma]) return ZH_MAP[lemma];

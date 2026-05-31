@@ -283,6 +283,123 @@ export function createSidePart(
   });
 }
 
+export interface CreateOrientationPartResult {
+  orientationPartName: string;
+}
+
+/// 复制当前部件 PNG 为 R_ 前缀的朝右专用副本，朝右朝向时优先采用。Body / Head 类别允许；Wings 不参与朝向维度。
+export function createOrientationPart(
+  skinRoot: string,
+  skinName: string,
+  category: PartCategory,
+  partName: string,
+): Promise<CreateOrientationPartResult> {
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<CreateOrientationPartResult>("api_createOrientationPart", {
+      params: { skinRoot, skinName, category, partName },
+    });
+  }
+  return httpPost<CreateOrientationPartResult>("/api/createOrientationPart", {
+    skinRoot, skinName, category, partName,
+  });
+}
+
+export interface CreatePartResult {
+  partName: string;
+}
+
+/// 新建标准部件：在分类目录写一张纯黑占位 PNG 并登记 baseSizes；文件已存在则报错。
+export function createPart(
+  skinRoot: string,
+  skinName: string,
+  category: PartCategory,
+  fileName: string,
+  width: number,
+  height: number,
+): Promise<CreatePartResult> {
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<CreatePartResult>("api_createPart", {
+      params: { skinRoot, skinName, category, fileName, width, height },
+    });
+  }
+  return httpPost<CreatePartResult>("/api/createPart", {
+    skinRoot, skinName, category, fileName, width, height,
+  });
+}
+
+/// 复制部件（含图层）为同皮肤同类别下的新部件名；overwrite=false 且目标存在时报错。
+export function copyPart(
+  skinRoot: string,
+  skinName: string,
+  category: PartCategory,
+  sourcePartName: string,
+  targetPartName: string,
+  overwrite: boolean,
+): Promise<CreatePartResult> {
+  const params = { skinRoot, skinName, category, sourcePartName, targetPartName, overwrite };
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<CreatePartResult>("api_copyPart", { params });
+  }
+  return httpPost<CreatePartResult>("/api/copyPart", params);
+}
+
+/// 删除部件：移除 PNG + sidecar + baseSizes 项 + 卸载内存 session。
+export function deletePart(
+  skinRoot: string,
+  skinName: string,
+  category: PartCategory,
+  partName: string,
+): Promise<void> {
+  const params = { skinRoot, skinName, category, partName };
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<void>("api_deletePart", { params });
+  }
+  return httpPost<void>("/api/deletePart", params);
+}
+
+/// 跨部件复制图层：把源部件某图层作为新图层加入目标部件（两者均需已加载）。
+export function copyLayerToPart(
+  sourcePartId: string,
+  sourceLayerId: string,
+  targetPartId: string,
+): Promise<LayersSnapshot> {
+  const params = { sourcePartId, sourceLayerId, targetPartId };
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<LayersSnapshot>("api_copyLayerToPart", { params });
+  }
+  return httpPost<LayersSnapshot>("/api/layer/copyToPart", params);
+}
+
+export interface LayerTransform {
+  flipX: boolean;
+  flipY: boolean;
+  scaleX: number;
+  scaleY: number;
+  rotationDeg: number;
+}
+
+/// 设置图层预览变换；transform 为 null 清除预览。不入历史。
+export function setLayerTransform(
+  partId: string,
+  layerId: string,
+  transform: LayerTransform | null,
+): Promise<void> {
+  const params = { partId, layerId, transform };
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<void>("api_setLayerTransform", { params });
+  }
+  return httpPost<void>("/api/layer/transform", params);
+}
+
+/// 把图层预览变换烘焙进像素并入历史；无变换返回空 diff。
+export function bakeLayerTransform(partId: string, layerId: string): Promise<PixelDiff> {
+  const params = { partId, layerId };
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<PixelDiff>("api_bakeLayerTransform", { params });
+  }
+  return httpPost<PixelDiff>("/api/layer/transform/bake", params);
+}
+
 // 线性渐变。在当前 active 图层上沿 (x0,y0)→(x1,y1) 画主色到透明的渐变。
 export interface GradientParams {
   partId: string;
@@ -298,6 +415,37 @@ export function applyGradient(params: GradientParams): Promise<PixelDiff> {
     return tauriInvoke<PixelDiff>("api_applyGradient", { params });
   }
   return httpPost<PixelDiff>("/api/gradient", params);
+}
+
+export interface FillParams {
+  partId: string;
+  cx: number;
+  cy: number;
+  color: [number, number, number, number];
+  tolerance: number;
+}
+
+export function applyFill(params: FillParams): Promise<PixelDiff> {
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<PixelDiff>("api_applyFill", { params });
+  }
+  return httpPost<PixelDiff>("/api/fill", params);
+}
+
+export interface SoftBrushParams {
+  partId: string;
+  cx: number;
+  cy: number;
+  brushSize: number;
+  hardness: number;
+  color: [number, number, number, number];
+}
+
+export function applySoftBrush(params: SoftBrushParams): Promise<PixelDiff> {
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<PixelDiff>("api_applySoftBrush", { params });
+  }
+  return httpPost<PixelDiff>("/api/softBrush", params);
 }
 
 // 笔画分组：一次 mousedown..mouseup 算一步撤销。
@@ -442,6 +590,8 @@ export interface CompositeParams {
   headVariant: HeadVariant | null;
   /// 播放时刻（秒）。前端 RAF 循环递增；缺省 0 渲染静态首帧。
   timeSec?: number;
+  /// 角色朝向：true=朝右，渲染时 sprite 优先选 R_ 前缀版本；false=朝左走无前缀。缺省 false。
+  isRight?: boolean;
 }
 
 // CompositeResult：100×100 RGBA flat buffer。pixels 因 JSON 序列化为 number[]。

@@ -138,6 +138,7 @@ proptest! {
                 visible: v,
                 opacity: op,
                 pixels: px,
+                transform: None,
             })
             .collect();
         let fst = imageOps::flatten(&mkState(multi));
@@ -147,6 +148,7 @@ proptest! {
             visible: true,
             opacity: 255,
             pixels: fst.clone(),
+            transform: None,
         }];
         let snd = imageOps::flatten(&mkState(single));
         prop_assert_eq!(fst, snd);

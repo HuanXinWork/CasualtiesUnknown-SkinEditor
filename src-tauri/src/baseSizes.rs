@@ -118,6 +118,30 @@ pub fn write(skinDir: &Path, map: &HashMap<String, (u32, u32)>) -> Result<(), Ap
     })
 }
 
+/// 读 `<skinDir>/baseSizes.json` 后插入 / 更新一条 key→(w,h) 并写回。
+pub fn upsert(skinDir: &Path, key: &str, w: u32, h: u32) -> Result<(), ApiError> {
+    let path = skinDir.join(BASE_SIZES_FILE);
+    let mut map = match std::fs::read_to_string(&path) {
+        Ok(s) => parse(&s).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    };
+    map.insert(key.to_string(), (w, h));
+    write(skinDir, &map)
+}
+
+/// 删除 baseSizes.json 中的一条 key 并写回；key 不存在或文件缺失时无操作。
+pub fn remove(skinDir: &Path, key: &str) -> Result<(), ApiError> {
+    let path = skinDir.join(BASE_SIZES_FILE);
+    let mut map = match std::fs::read_to_string(&path) {
+        Ok(s) => parse(&s).unwrap_or_default(),
+        Err(_) => return Ok(()),
+    };
+    if map.remove(key).is_none() {
+        return Ok(());
+    }
+    write(skinDir, &map)
+}
+
 fn parse(raw: &str) -> Option<HashMap<String, (u32, u32)>> {
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
     let obj = value.as_object()?;
@@ -147,6 +171,61 @@ fn serialize(map: &HashMap<String, (u32, u32)>) -> String {
     }
     out.push_str("\n}\n");
     out
+}
+
+/// 标准部件的默认黑块尺寸（取自标准皮肤实测值）。剥 R_ 前缀与 F/B 后缀后查表；未登记返回 None。
+pub fn defaultSize(partName: &str) -> Option<(u32, u32)> {
+    static TABLE: OnceLock<HashMap<&'static str, (u32, u32)>> = OnceLock::new();
+    let table = TABLE.get_or_init(buildSizeTable);
+    let base = partName.strip_prefix("R_").unwrap_or(partName);
+    if let Some(sz) = table.get(base) {
+        return Some(*sz);
+    }
+    let stripped = stripSideSuffix(base);
+    table.get(stripped).copied()
+}
+
+fn buildSizeTable() -> HashMap<&'static str, (u32, u32)> {
+    let mut m: HashMap<&'static str, (u32, u32)> = HashMap::new();
+    m.insert("experimentUpArm", (8, 12));
+    m.insert("experimentDownArm", (12, 14));
+    m.insert("experimentHandF", (6, 12));
+    m.insert("experimentHandB", (5, 12));
+    m.insert("experimentThigh", (10, 15));
+    m.insert("experimentCrus", (8, 10));
+    m.insert("experimentFoot", (11, 12));
+    m.insert("experimentUpTorso", (12, 18));
+    m.insert("experimentDownTorso", (12, 12));
+    m.insert("experimentTail", (68, 22));
+    m.insert("experimentHead", (26, 18));
+    m.insert("experimentHeadBack", (26, 18));
+    m.insert("experimentHeadBackMouth", (26, 18));
+    m.insert("experimentHeadBackMouthMini", (26, 18));
+    m.insert("experimentHeadDisfigured1", (26, 18));
+    m.insert("experimentHeadDisfigured1Healed", (26, 18));
+    m.insert("experimentHeadDisfigured2", (26, 18));
+    m.insert("experimentHeadDisfigured2Healed", (26, 18));
+    m.insert("experimentHeadDisfigured3", (26, 18));
+    m.insert("experimentHeadDisfigured3Healed", (26, 18));
+    m.insert("experimentNosebleed", (14, 12));
+    m.insert("experimentEyeClosed", (26, 12));
+    m.insert("experimentEyeGone", (26, 12));
+    m.insert("experimentEyeGoneHealed", (26, 12));
+    m.insert("experimentEyeHalfClosed", (26, 12));
+    m.insert("experimentEyeHalfClosedBack", (26, 12));
+    m.insert("experimentEyeHappy", (26, 12));
+    m.insert("experimentEyeLookBack", (26, 12));
+    m.insert("experimentEyeOpen", (26, 12));
+    m.insert("experimentEyePanic", (26, 12));
+    m.insert("experimentEyeSad", (26, 12));
+    m.insert("experimentEyeSadBack", (26, 12));
+    m.insert("experimentEyeScared", (26, 12));
+    m.insert("experimentEyeScaredBack", (26, 12));
+    m.insert("wingUL", (32, 32));
+    m.insert("wingUR", (32, 32));
+    m.insert("wingDL", (32, 32));
+    m.insert("wingDR", (32, 32));
+    m
 }
 
 fn buildPartsTable() -> HashMap<&'static str, Vec<&'static str>> {

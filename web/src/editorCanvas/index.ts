@@ -11,9 +11,12 @@ import {
   applyBrush,
   applyEraser,
   applyGradient,
+  applyFill,
+  applySoftBrush,
   beginStroke as apiBeginStroke,
   endStroke as apiEndStroke,
   createSidePart,
+  createOrientationPart,
   getFlatten,
   listParts,
   loadPartImage,
@@ -32,6 +35,9 @@ import { zonesStore } from "../stateStore/zonesStore";
 import type { AccessoryEntry, PartCategory, ZoneEntry, ZonesData } from "../stateStore/types";
 import { subscribeLang, t } from "../i18n";
 import { localizePartName } from "../i18n/partNames";
+import { mountSlotDropdown } from "./slotDropdown";
+import { attachAltCursor, sampleCanvasRgb } from "./eyedropper";
+import { mountTransformControls } from "./transformPanel";
 import { showToast } from "../toast";
 import { CANVAS_CURSORS } from "../toolPanel/toolIcons";
 import { getSize, setSize } from "../layoutEngine";
@@ -48,6 +54,13 @@ const SIDE_SPLIT_WHITELIST_SUFFIXES = [
 function isSideSplittablePartName(partName: string): boolean {
   if (partName.endsWith("F") || partName.endsWith("B")) return false;
   return SIDE_SPLIT_WHITELIST_SUFFIXES.some((s) => partName.endsWith(s));
+}
+
+/// 与后端 isOrientationSplittablePart 同步：朝右 R_ 副本白名单——Body / Head 类别全允许，已有 R_ 前缀除外。
+function isOrientationSplittablePartName(partName: string, category: PartCategory): boolean {
+  if (!partName) return false;
+  if (partName.startsWith("R_")) return false;
+  return category === "Body" || category === "Head";
 }
 
 export function mountEditorCanvas(
@@ -84,13 +97,17 @@ export function mountEditorCanvas(
     `<button class="btn" data-role="acc-advanced-btn" style="display:none;"></button>` +
     `<button class="btn" data-role="side-f-btn" style="display:none;"></button>` +
     `<button class="btn" data-role="side-b-btn" style="display:none;"></button>` +
+    `<button class="btn" data-role="orient-r-btn" style="display:none;"></button>` +
+    `<button class="btn" data-role="transform-toggle"></button>` +
     `</div>` +
+    `<div data-role="transform-panel" style="display:none;padding:6px 8px;background:rgba(0,0,0,0.04);border-radius:4px;"></div>` +
     `<div data-role="acc-advanced-panel" style="display:none;flex-direction:column;gap:6px;padding:6px 8px;background:rgba(0,0,0,0.04);border-radius:4px;">` +
       `<div style="display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:12px;">` +
         `<label style="display:flex;align-items:center;gap:4px;"><span data-role="acc-adv-offX-label"></span><input type="number" data-role="acc-adv-offX" style="width:56px;" /></label>` +
         `<label style="display:flex;align-items:center;gap:4px;"><span data-role="acc-adv-offY-label"></span><input type="number" data-role="acc-adv-offY" style="width:56px;" /></label>` +
         `<label style="display:flex;align-items:center;gap:4px;"><span data-role="acc-adv-rot-label"></span><input type="number" data-role="acc-adv-rot" step="1" style="width:60px;" /></label>` +
         `<label style="display:flex;align-items:center;gap:4px;"><span data-role="acc-adv-z-label"></span><input type="number" data-role="acc-adv-z" style="width:56px;" /></label>` +
+        `<label style="display:flex;align-items:center;gap:4px;"><span data-role="acc-adv-slot-label"></span><span data-role="acc-adv-slot-host"></span></label>` +
         `<span data-role="acc-adv-status" style="font-size:11px;opacity:0.65;"></span>` +
       `</div>` +
     `</div>` +
@@ -103,6 +120,7 @@ export function mountEditorCanvas(
   const resizeBtn = container.querySelector<HTMLButtonElement>('[data-role="resize-btn"]')!;
   const sideFBtn = container.querySelector<HTMLButtonElement>('[data-role="side-f-btn"]')!;
   const sideBBtn = container.querySelector<HTMLButtonElement>('[data-role="side-b-btn"]')!;
+  const orientRBtn = container.querySelector<HTMLButtonElement>('[data-role="orient-r-btn"]')!;
   const accToggleWrap = container.querySelector<HTMLLabelElement>('[data-role="acc-toggle-wrap"]')!;
   const accToggleText = container.querySelector<HTMLSpanElement>('[data-role="acc-toggle-text"]')!;
   const accToggleTrack = container.querySelector<HTMLSpanElement>('[data-role="acc-toggle-track"]')!;
@@ -118,6 +136,13 @@ export function mountEditorCanvas(
   const accAdvOffYLabel = container.querySelector<HTMLSpanElement>('[data-role="acc-adv-offY-label"]')!;
   const accAdvRotLabel = container.querySelector<HTMLSpanElement>('[data-role="acc-adv-rot-label"]')!;
   const accAdvZLabel = container.querySelector<HTMLSpanElement>('[data-role="acc-adv-z-label"]')!;
+  const accAdvSlotHost = container.querySelector<HTMLSpanElement>('[data-role="acc-adv-slot-host"]')!;
+  const accAdvSlotLabel = container.querySelector<HTMLSpanElement>('[data-role="acc-adv-slot-label"]')!;
+  let currentSlotValue = "";
+  const slotDropdown = mountSlotDropdown(accAdvSlotHost, "", (slot) => {
+    currentSlotValue = slot;
+    scheduleAccessoryAdvancedSave();
+  });
   const gridEl = container.querySelector<HTMLDivElement>('[data-role="grid"]')!;
   const placeholderEl = container.querySelector<HTMLDivElement>('[data-role="placeholder"]')!;
   const canvas = gridEl.querySelector("canvas")!;
@@ -131,6 +156,7 @@ export function mountEditorCanvas(
   let currentHeight = 0;
   let sideFBtnAvailable = false;
   let sideBBtnAvailable = false;
+  let orientRBtnAvailable = false;
 
   let zoom = 1;
   // 图片拖动平移（独立于 zoom）。中键 / 右键 / Shift+左键 / pan 工具任一即可拖。
@@ -144,7 +170,7 @@ export function mountEditorCanvas(
   // 当前笔画所在的 partId 与工具种类。mousedown 时锁定，mouseup 时
   // endStroke 用同一个值，避免中途 currentPartId 被替换导致历史 push 错位。
   let paintingPartId: string | null = null;
-  let paintingTool: "brush" | "eraser" = "brush";
+  let paintingTool: "brush" | "eraser" | "softBrush" = "brush";
   // 图片拖动平移状态。
   let isPanning = false;
   let panStartX = 0;
@@ -170,8 +196,10 @@ export function mountEditorCanvas(
     if (panning) return "grabbing";
     if (tool === "pan") return "grab";
     if (tool === "brush") return CANVAS_CURSORS.brush;
+    if (tool === "softBrush") return CANVAS_CURSORS.softBrush;
     if (tool === "eraser") return CANVAS_CURSORS.eraser;
     if (tool === "gradient") return CANVAS_CURSORS.gradient;
+    if (tool === "fill") return CANVAS_CURSORS.fill;
     if (tool === "zoneBrush") return CANVAS_CURSORS.zoneBrush;
     return "crosshair";
   }
@@ -190,8 +218,10 @@ export function mountEditorCanvas(
       resizeBtn.textContent = t("editorCanvas.resizeBtn");
       sideFBtn.style.display = "none";
       sideBBtn.style.display = "none";
+      orientRBtn.style.display = "none";
       sideFBtn.textContent = t("editorCanvas.createSideFBtn");
       sideBBtn.textContent = t("editorCanvas.createSideBBtn");
+      orientRBtn.textContent = t("editorCanvas.createOrientRBtn");
       accToggleWrap.style.display = "none";
       return;
     }
@@ -200,8 +230,10 @@ export function mountEditorCanvas(
     resizeBtn.textContent = t("editorCanvas.resizeBtn");
     sideFBtn.textContent = t("editorCanvas.createSideFBtn");
     sideBBtn.textContent = t("editorCanvas.createSideBBtn");
+    orientRBtn.textContent = t("editorCanvas.createOrientRBtn");
     sideFBtn.style.display = sideFBtnAvailable && currentPartId ? "" : "none";
     sideBBtn.style.display = sideBBtnAvailable && currentPartId ? "" : "none";
+    orientRBtn.style.display = orientRBtnAvailable && currentPartId ? "" : "none";
     refreshAccessoryToggle();
   }
 
@@ -226,6 +258,9 @@ export function mountEditorCanvas(
     accAdvOffYLabel.textContent = t("editorCanvas.accessoryOffsetY");
     accAdvRotLabel.textContent = t("editorCanvas.accessoryRotation");
     accAdvZLabel.textContent = t("editorCanvas.accessoryZOrder");
+    accAdvSlotLabel.textContent = t("editorCanvas.accessoryRequireSlot");
+    currentSlotValue = entry.requireWornSlot ?? "";
+    slotDropdown.setValue(currentSlotValue);
   }
 
   function refreshAccessoryToggle(): void {
@@ -308,13 +343,16 @@ export function mountEditorCanvas(
       accAdvSaveTimer = null;
       if (!currentAccessoryEntry || !currentPartId) return;
       const skinName = currentPartId.split("::")[0];
+      const slotVal = currentSlotValue;
       const entry: AccessoryEntry = {
         ...currentAccessoryEntry,
         offX: Number.parseInt(accAdvOffX.value, 10) || 0,
         offY: Number.parseInt(accAdvOffY.value, 10) || 0,
         rot: Number.parseFloat(accAdvRot.value) || 0,
         z: Number.parseInt(accAdvZ.value, 10) || 0,
+        requireWornSlot: slotVal === "" ? undefined : slotVal,
       };
+      delete (entry as unknown as Record<string, unknown>).slot;
       saveAccessoryConfig(skinRoot, skinName, entry)
         .then(() => {
           currentAccessoryEntry = entry;
@@ -333,15 +371,12 @@ export function mountEditorCanvas(
     el.addEventListener("input", scheduleAccessoryAdvancedSave);
   }
 
-  /// 刷新 side*Btn 的可见性：白名单内 + 当前 part 不带 F/B 后缀 + 同分类下不存在 <name>F.png / <name>B.png。
+  /// 刷新 side*Btn / orientRBtn 的可见性：F/B 按白名单 + 不存在 <name>F/B.png；R_ 按 Body/Head 类别 + 不存在 R_<name>.png。
   function refreshMirrorAvailability(): void {
     sideFBtnAvailable = false;
     sideBBtnAvailable = false;
+    orientRBtnAvailable = false;
     if (!currentPartId || !currentPartName) {
-      updateInfoPanel();
-      return;
-    }
-    if (!isSideSplittablePartName(currentPartName)) {
       updateInfoPanel();
       return;
     }
@@ -351,24 +386,37 @@ export function mountEditorCanvas(
       return;
     }
     const [skinName, categoryDir, _name] = parts;
+    const category = categoryDir as PartCategory;
+    const sideEligible = isSideSplittablePartName(currentPartName);
+    const orientEligible = isOrientationSplittablePartName(currentPartName, category);
+    if (!sideEligible && !orientEligible) {
+      updateInfoPanel();
+      return;
+    }
     listParts(skinRoot, skinName)
       .then((skin) => {
-        const category = categoryDir as PartCategory;
         const list =
           category === "Body" ? skin.body :
           category === "Head" ? skin.head :
           category === "Wings" ? skin.wings :
           category === "Blood" ? skin.blood :
           skin.accessories;
-        const fName = `${currentPartName}F`;
-        const bName = `${currentPartName}B`;
-        sideFBtnAvailable = !list.some((p) => p.name === fName);
-        sideBBtnAvailable = !list.some((p) => p.name === bName);
+        if (sideEligible) {
+          const fName = `${currentPartName}F`;
+          const bName = `${currentPartName}B`;
+          sideFBtnAvailable = !list.some((p) => p.name === fName);
+          sideBBtnAvailable = !list.some((p) => p.name === bName);
+        }
+        if (orientEligible) {
+          const rName = `R_${currentPartName}`;
+          orientRBtnAvailable = !list.some((p) => p.name === rName);
+        }
         updateInfoPanel();
       })
       .catch(() => {
         sideFBtnAvailable = false;
         sideBBtnAvailable = false;
+        orientRBtnAvailable = false;
         updateInfoPanel();
       });
   }
@@ -385,6 +433,7 @@ export function mountEditorCanvas(
     currentHeight = 0;
     sideFBtnAvailable = false;
     sideBBtnAvailable = false;
+    orientRBtnAvailable = false;
     currentZones = null;
     zonesDirty = false;
     zonesStore.set(null);
@@ -506,10 +555,19 @@ export function mountEditorCanvas(
     if (cx === lastCx && cy === lastCy) return;
     lastCx = cx;
     lastCy = cy;
-    const { activeTool, brushSize, color, alpha } = sessionStore.getState();
+    const { activeTool, brushSize, color, alpha, softBrushHardness } = sessionStore.getState();
     const promise =
       activeTool === "eraser"
         ? applyEraser({ partId, cx, cy, brushSize })
+        : activeTool === "softBrush"
+        ? applySoftBrush({
+            partId,
+            cx,
+            cy,
+            brushSize,
+            hardness: softBrushHardness,
+            color: [color[0], color[1], color[2], alpha],
+          })
         : applyBrush({
             partId,
             cx,
@@ -798,11 +856,22 @@ export function mountEditorCanvas(
     }
     if (event.button !== 0) return;
     if (!currentPartId) return;
+    // 画笔/橡皮/软笔 + Alt：临时吸色，取画布合成像素写入调色盘，不进入绘制。
+    if ((tool === "brush" || tool === "eraser" || tool === "softBrush") && event.altKey) {
+      const { cx, cy } = eventToPixel(event);
+      const rgb = sampleCanvasRgb(ctx, cx, cy, canvas.width, canvas.height);
+      if (rgb) sessionStore.setState({ color: rgb });
+      return;
+    }
     if (tool === "gradient") {
       const { cx, cy } = eventToPixel(event);
       isGradient = true;
       gradientStartCx = cx;
       gradientStartCy = cy;
+      return;
+    }
+    if (tool === "fill") {
+      doFill(event);
       return;
     }
     const eraserMode = sessionStore.getState().eraserMode ?? "part";
@@ -818,13 +887,31 @@ export function mountEditorCanvas(
     isPainting = true;
     lastCx = -1;
     lastCy = -1;
-    // 开始一笔：后端记录 baseline，后续 brush/eraser 累计 rect 不入栈。
+    // 开始一笔：后端记录 baseline，后续 brush/eraser/softBrush 累计 rect 不入栈。
     paintingPartId = currentPartId;
-    paintingTool = tool === "eraser" ? "eraser" : "brush";
+    paintingTool = tool === "eraser" ? "eraser" : tool === "softBrush" ? "softBrush" : "brush";
     void apiBeginStroke(currentPartId).catch((e: ApiError) => {
       console.warn(`[editorCanvas] beginStroke failed: ${e?.message ?? String(e)}`);
     });
     paint(event);
+  }
+
+  function doFill(event: MouseEvent): void {
+    const partId = currentPartId;
+    if (!partId) return;
+    const { cx, cy } = eventToPixel(event);
+    if (cx < 0 || cy < 0 || cx >= canvas.width || cy >= canvas.height) return;
+    const { color, alpha } = sessionStore.getState();
+    applyFill({ partId, cx, cy, color: [color[0], color[1], color[2], alpha], tolerance: 0 })
+      .then((diff) => {
+        if (diff.width === 0 || diff.height === 0) return;
+        sessionStore.setState({ lastAppliedDiff: { partId, diff, phase: "after" } });
+        markPartDirty(partId);
+        pushHistoryRecord({ partId, tool: "fill", rectW: diff.width, rectH: diff.height });
+      })
+      .catch((e: ApiError) => {
+        console.warn(`[editorCanvas] fill failed: ${e?.message ?? String(e)}`);
+      });
   }
 
   function finishGradient(event: MouseEvent): void {
@@ -998,6 +1085,29 @@ export function mountEditorCanvas(
   }
   attachSideBtn(sideFBtn, "F", () => sideFBtnAvailable);
   attachSideBtn(sideBBtn, "B", () => sideBBtnAvailable);
+
+  orientRBtn.addEventListener("click", () => {
+    if (!currentPartId || !currentPartName || !orientRBtnAvailable) return;
+    const parts = currentPartId.split("::");
+    if (parts.length !== 3) return;
+    const [skinName, categoryDir, _name] = parts;
+    const category = categoryDir as PartCategory;
+    const partName = currentPartName;
+    orientRBtn.disabled = true;
+    createOrientationPart(skinRoot, skinName, category, partName)
+      .then((r) => {
+        showToast(`✓ ${r.orientationPartName}`, "info");
+        orientRBtnAvailable = false;
+        updateInfoPanel();
+        bumpPartListVersion();
+      })
+      .catch((e: ApiError) => {
+        showToast(e?.message ?? String(e), "error");
+      })
+      .finally(() => {
+        orientRBtn.disabled = false;
+      });
+  });
 
   /// 弹窗：让用户选缩放倍率（缩小 0.25/0.5/0.75 / 放大 1/2/3/4 / 自定义 0.01~1000）。
   /// 提交时按 partId 反推目标 PNG 路径并调 resizePart；成功后回写本地状态并写盘。
@@ -1204,6 +1314,21 @@ export function mountEditorCanvas(
     redrawZonesOverlay();
   });
   const detachInvertedBorder = attachInvertedBorder(stageEl);
+  const detachAltCursor = attachAltCursor(stageEl);
+
+  // 变换控件：footer 内可折叠区，作用于当前 active 图层。
+  const transformPanelEl = container.querySelector<HTMLDivElement>('[data-role="transform-panel"]')!;
+  const transformToggleBtn = container.querySelector<HTMLButtonElement>('[data-role="transform-toggle"]')!;
+  const detachTransform = mountTransformControls(transformPanelEl);
+  function applyTransformToggleText(): void {
+    transformToggleBtn.textContent = t("transform.toggle");
+  }
+  applyTransformToggleText();
+  transformToggleBtn.addEventListener("click", () => {
+    const open = transformPanelEl.style.display === "none";
+    transformPanelEl.style.display = open ? "block" : "none";
+    transformToggleBtn.classList.toggle("btn-primary", open);
+  });
   applyZoom();
   updateInfoPanel();
   onSessionChange();
@@ -1239,9 +1364,12 @@ export function mountEditorCanvas(
     }
     // 信息侧栏 + resize 按钮文案随 lang 切换，避免用户切语言后旧字面残留。
     updateInfoPanel();
+    accAdvSlotLabel.textContent = t("editorCanvas.accessoryRequireSlot");
+    slotDropdown.setValue(currentSlotValue);
     // lang 切换时 badge 文案需重渲染。
     lastBadgeKey = "";
     refreshBadge();
+    applyTransformToggleText();
   });
 
   // footer 高度按 layoutEngine `editorCanvas.footerPct` 百分比持久化，顶部 grip 拖拽调节。
@@ -1288,10 +1416,13 @@ export function mountEditorCanvas(
 
   return () => {
     unsubscribe();
+    slotDropdown.destroy();
     unsubZones();
     unsubBadge();
     unsubLang();
     detachInvertedBorder();
+    detachAltCursor();
+    detachTransform();
     pendingKey = null;
     // mousedown/move/up/leave 已只在 stageEl 注册；mouseup/mouseleave 用了箭头函数
     // 无法可靠 removeEventListener，依靠 stageEl 随 SPA 销毁即可。

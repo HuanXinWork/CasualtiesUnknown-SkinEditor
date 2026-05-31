@@ -15,6 +15,58 @@ export interface Translations {
     detachFallbackToast: string;
     reattachToMain: string;
   };
+  autoSave: {
+    savedToast: string;
+  };
+  partClipboard: {
+    copy: string;
+    delete: string;
+    copyTitle: string;
+    tagExists: string;
+    tagNew: string;
+    overwriteHint: string;
+    newHint: string;
+    noTarget: string;
+    copyToast: string;
+    deleteConfirm: string;
+    deleteToast: string;
+    confirm: string;
+    cancel: string;
+  };
+  layerClipboard: {
+    copyLayer: string;
+    pasteLayer: string;
+    copyToast: string;
+    pasteToast: string;
+  };
+  transform: {
+    toggle: string;
+    label: string;
+    flipH: string;
+    flipV: string;
+    flipHShort: string;
+    flipVShort: string;
+    scaleX: string;
+    scaleY: string;
+    rotation: string;
+    apply: string;
+    cancel: string;
+    appliedToast: string;
+  };
+  softBrush: {
+    title: string;
+    apply: string;
+    cancel: string;
+    dblclickHint: string;
+  };
+  switchSave: {
+    title: string;
+    desc: string;
+    remember: string;
+    save: string;
+    discard: string;
+    cancel: string;
+  };
   partPanel: {
     title: string;
     bodyGroup: string;
@@ -26,6 +78,21 @@ export interface Translations {
     loadFailed: string;
     corruptedTag: string;
     noSkin: string;
+  };
+  addPart: {
+    title: string;
+    button: string;
+    size: string;
+    frontBack: string;
+    leftRight: string;
+    front: string;
+    back: string;
+    left: string;
+    right: string;
+    add: string;
+    addNext: string;
+    cancel: string;
+    resultToast: string;
   };
   wingDebugPanel: {
     title: string;
@@ -100,9 +167,11 @@ export interface Translations {
   };
   toolPanel: {
     brush: string;
+    softBrush: string;
     eraser: string;
     pan: string;
     gradient: string;
+    fill: string;
     zoneBrush: string;
     eraserModePart: string;
     eraserModeZone: string;
@@ -111,6 +180,9 @@ export interface Translations {
     historyTool_brush: string;
     historyTool_eraser: string;
     historyTool_gradient: string;
+    historyTool_fill: string;
+    historyTool_softBrush: string;
+    historyTool_transform: string;
     historyTool_undo: string;
     historyTool_redo: string;
     size: string;
@@ -185,6 +257,7 @@ export interface Translations {
     resizeBelowBaseNo: string;
     createSideFBtn: string;
     createSideBBtn: string;
+    createOrientRBtn: string;
     accessoryEnabledLabel: string;
     accessoryDisabledLabel: string;
     accessoryAdvancedShow: string;
@@ -195,6 +268,8 @@ export interface Translations {
     accessoryOffsetY: string;
     accessoryRotation: string;
     accessoryZOrder: string;
+    accessoryRequireSlot: string;
+    accessorySlotNone: string;
     accessoryLight: string;
     accessoryLightIntensity: string;
     accessoryLightOuter: string;
@@ -304,6 +379,12 @@ export interface Translations {
       showMotionDebugPanel: string;
       showWingDebugPanel: string;
       showBloodPanel: string;
+      autoSaveEnabled: string;
+      autoSaveInterval: string;
+      switchSaveBehavior: string;
+      switchSaveAsk: string;
+      switchSaveSave: string;
+      switchSaveAuto: string;
       shortcutsTitle: string;
       clickToRecord: string;
       recordingHint: string;
@@ -341,6 +422,56 @@ export interface Translations {
 export const dictionaries: Record<Lang, Translations> = {
   zh: {
     common: { close: "关闭", alwaysOnTop: "始终置顶", unpinFromTop: "取消置顶", toggleCollapse: "折叠/展开", detachFallbackToast: "无法打开独立窗口，已回退浮动卡片", reattachToMain: "嵌回主窗口" },
+    autoSave: { savedToast: "已自动保存 {n} 个部件" },
+    partClipboard: {
+      copy: "复制部件",
+      delete: "删除部件",
+      copyTitle: "复制 {name} 到哪个部件：",
+      tagExists: "已有",
+      tagNew: "未建",
+      overwriteHint: "目标 {name} 已存在，复制后将覆盖该部件",
+      newHint: "将新建部件 {name}",
+      noTarget: "该分类没有可复制的目标部件",
+      copyToast: "已复制到 {name}",
+      deleteConfirm: "确定删除部件 {name}？此操作会移除 PNG 与图层数据。",
+      deleteToast: "已删除部件 {name}",
+      confirm: "确定",
+      cancel: "取消",
+    },
+    layerClipboard: {
+      copyLayer: "复制图层",
+      pasteLayer: "粘贴图层到当前部件",
+      copyToast: "已复制图层 {name}",
+      pasteToast: "已粘贴图层 {name}",
+    },
+    transform: {
+      toggle: "变换",
+      label: "变换当前图层",
+      flipH: "水平翻转",
+      flipV: "垂直翻转",
+      flipHShort: "⇋",
+      flipVShort: "⇅",
+      scaleX: "横向",
+      scaleY: "纵向",
+      rotation: "旋转°",
+      apply: "应用",
+      cancel: "取消",
+      appliedToast: "变换已应用",
+    },
+    softBrush: {
+      title: "柔和笔刷硬度",
+      apply: "应用",
+      cancel: "取消",
+      dblclickHint: "双击设置硬度",
+    },
+    switchSave: {
+      title: "当前部件有未保存改动",
+      desc: "切换到其它部件前，是否保存当前部件的改动？",
+      remember: "记住我的选择（之后不再询问）",
+      save: "保存并切换",
+      discard: "不保存直接切换",
+      cancel: "取消",
+    },
     partPanel: {
       title: "角色",
       bodyGroup: "身体",
@@ -352,6 +483,21 @@ export const dictionaries: Record<Lang, Translations> = {
       loadFailed: "加载失败",
       corruptedTag: "[损坏]",
       noSkin: "未检测到角色",
+    },
+    addPart: {
+      title: "添加部件",
+      button: "+ 添加部件",
+      size: "尺寸",
+      frontBack: "前后",
+      leftRight: "左右",
+      front: "前",
+      back: "后",
+      left: "左",
+      right: "右",
+      add: "添加",
+      addNext: "添加并继续",
+      cancel: "取消",
+      resultToast: "已创建 {n} 个，跳过 {m} 个",
     },
     wingDebugPanel: {
       title: "翅膀调试",
@@ -426,9 +572,11 @@ export const dictionaries: Record<Lang, Translations> = {
     },
     toolPanel: {
       brush: "画笔",
+      softBrush: "柔和笔刷",
       eraser: "橡皮",
       pan: "拖动",
       gradient: "渐变",
+      fill: "油漆桶",
       zoneBrush: "区块画笔",
       eraserModePart: "清部件",
       eraserModeZone: "清区块",
@@ -437,6 +585,9 @@ export const dictionaries: Record<Lang, Translations> = {
       historyTool_brush: "画笔",
       historyTool_eraser: "橡皮",
       historyTool_gradient: "渐变",
+      historyTool_fill: "油漆桶",
+      historyTool_softBrush: "柔和笔刷",
+      historyTool_transform: "变换",
       historyTool_undo: "撤销",
       historyTool_redo: "重做",
       size: "尺寸",
@@ -511,6 +662,7 @@ export const dictionaries: Record<Lang, Translations> = {
       resizeBelowBaseNo: "否",
       createSideFBtn: "创建前侧版本",
       createSideBBtn: "创建后侧版本",
+      createOrientRBtn: "创建朝右版本",
       accessoryEnabledLabel: "已启用",
       accessoryDisabledLabel: "未启用",
       accessoryAdvancedShow: "高级 ▶",
@@ -521,6 +673,8 @@ export const dictionaries: Record<Lang, Translations> = {
       accessoryOffsetY: "Y 偏移",
       accessoryRotation: "旋转",
       accessoryZOrder: "Z 序",
+      accessoryRequireSlot: "依赖装备槽",
+      accessorySlotNone: "总是显示",
       accessoryLight: "发光",
       accessoryLightIntensity: "强度",
       accessoryLightOuter: "外径",
@@ -629,6 +783,12 @@ export const dictionaries: Record<Lang, Translations> = {
       showMotionDebugPanel: "显示当前帧部件调试面板",
       showWingDebugPanel: "显示翅膀调试面板",
       showBloodPanel: "显示血液粒子面板",
+      autoSaveEnabled: "定时自动保存（覆盖原 PNG）",
+      autoSaveInterval: "自动保存间隔（秒）",
+      switchSaveBehavior: "切换部件时",
+      switchSaveAsk: "每次询问",
+      switchSaveSave: "自动保存",
+      switchSaveAuto: "直接切换",
       shortcutsTitle: "快捷键",
       clickToRecord: "点击录制",
       recordingHint: "按下任意键…（Esc 取消）",
@@ -664,6 +824,56 @@ export const dictionaries: Record<Lang, Translations> = {
   },
   en: {
     common: { close: "Close", alwaysOnTop: "Always on top", unpinFromTop: "Unpin", toggleCollapse: "Collapse/Expand", detachFallbackToast: "Could not open standalone window, falling back to floating card", reattachToMain: "Re-dock to main window" },
+    autoSave: { savedToast: "Auto-saved {n} part(s)" },
+    partClipboard: {
+      copy: "Copy part",
+      delete: "Delete part",
+      copyTitle: "Copy {name} to which part:",
+      tagExists: "exists",
+      tagNew: "new",
+      overwriteHint: "Target {name} already exists; copying will overwrite it",
+      newHint: "Will create part {name}",
+      noTarget: "No copy target available in this category",
+      copyToast: "Copied to {name}",
+      deleteConfirm: "Delete part {name}? This removes its PNG and layer data.",
+      deleteToast: "Deleted part {name}",
+      confirm: "OK",
+      cancel: "Cancel",
+    },
+    layerClipboard: {
+      copyLayer: "Copy layer",
+      pasteLayer: "Paste layer into current part",
+      copyToast: "Copied layer {name}",
+      pasteToast: "Pasted layer {name}",
+    },
+    transform: {
+      toggle: "Transform",
+      label: "Transform active layer",
+      flipH: "Flip horizontal",
+      flipV: "Flip vertical",
+      flipHShort: "⇋",
+      flipVShort: "⇅",
+      scaleX: "Scale X",
+      scaleY: "Scale Y",
+      rotation: "Rotate°",
+      apply: "Apply",
+      cancel: "Cancel",
+      appliedToast: "Transform applied",
+    },
+    softBrush: {
+      title: "Soft brush hardness",
+      apply: "Apply",
+      cancel: "Cancel",
+      dblclickHint: "Double-click to set hardness",
+    },
+    switchSave: {
+      title: "Current part has unsaved changes",
+      desc: "Save the current part before switching to another?",
+      remember: "Remember my choice (don't ask again)",
+      save: "Save and switch",
+      discard: "Switch without saving",
+      cancel: "Cancel",
+    },
     partPanel: {
       title: "Character",
       bodyGroup: "Body",
@@ -675,6 +885,21 @@ export const dictionaries: Record<Lang, Translations> = {
       loadFailed: "Load failed",
       corruptedTag: "[corrupted]",
       noSkin: "No character detected",
+    },
+    addPart: {
+      title: "Add part",
+      button: "+ Add part",
+      size: "Size",
+      frontBack: "Front/Back",
+      leftRight: "Left/Right",
+      front: "Front",
+      back: "Back",
+      left: "Left",
+      right: "Right",
+      add: "Add",
+      addNext: "Add and continue",
+      cancel: "Cancel",
+      resultToast: "Created {n}, skipped {m}",
     },
     wingDebugPanel: {
       title: "Wing debug",
@@ -749,9 +974,11 @@ export const dictionaries: Record<Lang, Translations> = {
     },
     toolPanel: {
       brush: "Brush",
+      softBrush: "Soft Brush",
       eraser: "Eraser",
       pan: "Pan",
       gradient: "Gradient",
+      fill: "Fill",
       zoneBrush: "Zone Brush",
       eraserModePart: "Erase part",
       eraserModeZone: "Erase zone",
@@ -760,6 +987,9 @@ export const dictionaries: Record<Lang, Translations> = {
       historyTool_brush: "Brush",
       historyTool_eraser: "Eraser",
       historyTool_gradient: "Gradient",
+      historyTool_fill: "Fill",
+      historyTool_softBrush: "Soft Brush",
+      historyTool_transform: "Transform",
       historyTool_undo: "Undo",
       historyTool_redo: "Redo",
       size: "Size",
@@ -834,6 +1064,7 @@ export const dictionaries: Record<Lang, Translations> = {
       resizeBelowBaseNo: "No",
       createSideFBtn: "Create front variant",
       createSideBBtn: "Create back variant",
+      createOrientRBtn: "Create right-facing variant",
       accessoryEnabledLabel: "Enabled",
       accessoryDisabledLabel: "Disabled",
       accessoryAdvancedShow: "Advanced ▶",
@@ -844,6 +1075,8 @@ export const dictionaries: Record<Lang, Translations> = {
       accessoryOffsetY: "Y offset",
       accessoryRotation: "Rotation",
       accessoryZOrder: "Z order",
+      accessoryRequireSlot: "Require worn slot",
+      accessorySlotNone: "Always shown",
       accessoryLight: "Light",
       accessoryLightIntensity: "Intensity",
       accessoryLightOuter: "Outer",
@@ -952,6 +1185,12 @@ export const dictionaries: Record<Lang, Translations> = {
       showMotionDebugPanel: "Show current frame debug panel",
       showWingDebugPanel: "Show wing debug panel",
       showBloodPanel: "Show blood particles panel",
+      autoSaveEnabled: "Auto-save (overwrites original PNG)",
+      autoSaveInterval: "Auto-save interval (sec)",
+      switchSaveBehavior: "When switching parts",
+      switchSaveAsk: "Always ask",
+      switchSaveSave: "Auto-save",
+      switchSaveAuto: "Switch directly",
       shortcutsTitle: "Shortcuts",
       clickToRecord: "Click to record",
       recordingHint: "Press any key... (Esc to cancel)",

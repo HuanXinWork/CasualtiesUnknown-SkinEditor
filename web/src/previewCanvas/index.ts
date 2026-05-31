@@ -448,6 +448,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
           viewFacing = f;
           renderToolbar();
           applyTransform();
+          if (previewMode === "assembly") refreshAssembly();
         }
       });
       orientationEl.appendChild(btn);
@@ -495,7 +496,8 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     const { expressionIndex, headVariant } = sessionStore.getState();
     metaEl.textContent = `${skinName} / ${viewFacing} / exp ${expressionIndex} / ${headVariant}`;
     const key = ++pendingAssemblyKey;
-    getCompositeImage({ skinRoot, skinName, orientation: "front", expressionIndex, headVariant, timeSec: 0 })
+    const isRight = viewFacing === "left";
+    getCompositeImage({ skinRoot, skinName, orientation: "front", expressionIndex, headVariant, timeSec: 0, isRight })
       .then((result) => {
         if (key !== pendingAssemblyKey || previewMode !== "assembly") return;
         drawPixels(result.width, result.height, result.pixels);

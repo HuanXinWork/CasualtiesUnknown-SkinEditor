@@ -6,7 +6,7 @@ import type { HeadVariant, PixelDiff } from "../apiClient";
 import { defaultTheme } from "./theme";
 
 /// 编辑工具：brush / eraser / pan / gradient / zoneBrush。
-export type Tool = "brush" | "eraser" | "pan" | "gradient" | "zoneBrush";
+export type Tool = "brush" | "eraser" | "pan" | "gradient" | "zoneBrush" | "fill" | "softBrush";
 
 /// i18n 语言；会话级，刷新页面回到默认 zh，不写盘。
 export type Lang = "zh" | "en";
@@ -24,7 +24,7 @@ export interface AppliedDiff {
 export interface HistoryRecord {
   id: number;
   partId: string;
-  tool: "brush" | "eraser" | "gradient" | "undo" | "redo";
+  tool: "brush" | "eraser" | "gradient" | "fill" | "softBrush" | "transform" | "undo" | "redo";
   rectW: number;
   rectH: number;
   timestamp: number;
@@ -71,6 +71,13 @@ export interface SessionState {
   showWingDebugPanel: boolean;
   /// 血液粒子配置面板显隐；默认关闭，需要时去设置勾选。
   showBloodPanel: boolean;
+  /// 定时自动保存开关与间隔（秒）；会话级镜像，持久化在 workspace.settings。
+  autoSaveEnabled: boolean;
+  autoSaveIntervalSec: number;
+  /// 切部件未保存处理；"" 表示尚未记住（首次切换弹框）。持久化在 workspace.settings。
+  switchSaveBehavior: "ask" | "auto" | "save" | "";
+  /// 柔和笔刷硬度 0~255（中心实心半径占比）；持久化在 workspace.settings。
+  softBrushHardness: number;
   /// 未保存改动追踪：brush/eraser/gradient/undo/redo 后置脏；savePart 成功后清脏。
   dirtyPartIds: string[];
 }
@@ -129,6 +136,10 @@ function buildInitialState(): SessionState {
     showMotionDebugPanel: true,
     showWingDebugPanel: false,
     showBloodPanel: false,
+    autoSaveEnabled: false,
+    autoSaveIntervalSec: 60,
+    switchSaveBehavior: "",
+    softBrushHardness: 128,
     dirtyPartIds: [],
   };
 }

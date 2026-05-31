@@ -6,6 +6,11 @@ import { sessionStore } from "../stateStore";
 import type { PartCategory, PartInfo, Skin } from "../stateStore/types";
 import { subscribeLang, t } from "../i18n";
 import { localizePartName } from "../i18n/partNames";
+import { categorySupportsCreate, categoryFullyCreated } from "../editorCanvas/partCatalog";
+import { openAddPartDialog } from "../editorCanvas/addPartDialog";
+import { requestSwitchPart } from "./partSwitchGuard";
+import { showContextMenu } from "../contextMenu";
+import { openCopyPartDialog, deletePartWithConfirm } from "./partClipboard";
 
 interface GroupSpec {
   key: string;
@@ -204,9 +209,44 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
         li.appendChild(tag);
       }
       li.addEventListener("click", () => {
-        sessionStore.setState({ selectedPartName: p.name, selectedCategory: cat });
+        requestSwitchPart(skinRoot, { partName: p.name, category: cat });
+      });
+      li.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        const skinName = sessionStore.getState().currentSkinName;
+        if (!skinName) return;
+        showContextMenu(e.clientX, e.clientY, [
+          { label: t("partClipboard.copy"), action: () => openCopyPartDialog(skinRoot, skinName, cat, p.name, parts.map((x) => x.name)) },
+          { label: t("partClipboard.delete"), action: () => deletePartWithConfirm(skinRoot, skinName, cat, p.name) },
+        ]);
       });
       ul.appendChild(li);
+    }
+    if (categorySupportsCreate(cat)) {
+      const skinName = sessionStore.getState().currentSkinName;
+      const existingNames = parts.map((x) => x.name);
+      if (skinName && !categoryFullyCreated(cat, existingNames)) {
+        const addLi = document.createElement("li");
+        addLi.style.cssText = "padding:4px 6px;";
+        const addBtn = document.createElement("button");
+        addBtn.className = "btn";
+        addBtn.style.cssText = "width:100%;font-size:12px;";
+        addBtn.textContent = t("addPart.button");
+        addBtn.addEventListener("click", () => {
+          openAddPartDialog({
+            skinRoot,
+            skinName,
+            category: cat,
+            existingNames,
+            onCreated: () => {
+              const cur = sessionStore.getState().partListVersion ?? 0;
+              sessionStore.setState({ partListVersion: cur + 1 });
+            },
+          });
+        });
+        addLi.appendChild(addBtn);
+        ul.appendChild(addLi);
+      }
     }
   }
 

@@ -119,6 +119,7 @@ pub fn loadIfPresent(skinDir: &Path, categoryDir: &str, partName: &str) -> Optio
             visible: entry.visible,
             opacity: entry.opacity,
             pixels,
+            transform: None,
         });
     }
     if layers.is_empty() {
@@ -165,7 +166,7 @@ mod tests {
     fn mkLayer(id: &str, opacity: u8, w: u32, h: u32, fill: [u8; 4]) -> Layer {
         let mut px = Vec::with_capacity((w * h * 4) as usize);
         for _ in 0..(w * h) { px.extend_from_slice(&fill); }
-        Layer { id: id.into(), name: id.into(), visible: true, opacity, pixels: px }
+        Layer { id: id.into(), name: id.into(), visible: true, opacity, pixels: px, transform: None }
     }
 
     #[test]

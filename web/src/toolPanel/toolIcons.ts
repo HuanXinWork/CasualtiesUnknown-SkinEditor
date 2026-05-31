@@ -48,6 +48,22 @@ export const ICON_ZONE_BRUSH =
   `<path d="M5 8l0.5 1.5L7 10l-1.5 0.5L5 12l-0.5-1.5L3 10l1.5-0.5z"/>` +
   `</svg>`;
 
+/** 油漆桶：倾斜的桶身 + 一滴漆 */
+export const ICON_FILL =
+  `<svg ${SVG_BASE}>` +
+  `<path d="M5 11l6-6 7 7-6 6a2 2 0 0 1-2.8 0L5 13.8a2 2 0 0 1 0-2.8z"/>` +
+  `<path d="M11 5L9 3"/>` +
+  `<path d="M19 14c1 1.5 1.5 2.6 1.5 3.3A1.5 1.5 0 0 1 19 18.8 1.5 1.5 0 0 1 17.5 17.3c0-0.7 0.5-1.8 1.5-3.3z"/>` +
+  `</svg>`;
+
+/** 柔和笔刷：画笔 + 围绕笔尖的柔和光晕（同心虚弧） */
+export const ICON_SOFT_BRUSH =
+  `<svg ${SVG_BASE}>` +
+  `<path d="M9 15l3-0.8 8-8a2 2 0 0 0-2.8-2.8l-8 8z"/>` +
+  `<path d="M15 6l2 2"/>` +
+  `<circle cx="7" cy="17" r="3.2" stroke-dasharray="2 2"/>` +
+  `</svg>`;
+
 /** 撤销：回转箭头 */
 export const ICON_UNDO =
   `<svg ${SVG_BASE}>` +
@@ -194,12 +210,14 @@ export const CURSOR_DROPPER_DATAURL = (() => {
   return `url("data:image/svg+xml;utf8,${svg}") 1 30, crosshair`;
 })();
 
-export const TOOL_ICONS: Record<"brush" | "eraser" | "pan" | "gradient" | "zoneBrush", string> = {
+export const TOOL_ICONS: Record<"brush" | "eraser" | "pan" | "gradient" | "zoneBrush" | "fill" | "softBrush", string> = {
   brush: ICON_BRUSH,
   eraser: ICON_ERASER,
   pan: ICON_PAN,
   gradient: ICON_GRADIENT,
   zoneBrush: ICON_ZONE_BRUSH,
+  fill: ICON_FILL,
+  softBrush: ICON_SOFT_BRUSH,
 };
 
 // editorCanvas 鼠标 cursor SVG（黑描白填，确保在任何主题色下都可见）。
@@ -238,8 +256,23 @@ const CURSOR_ZONE_BRUSH_SVG =
   '<path d="M16 3l0.5 1.5L18 5l-1.5 0.5L16 7l-0.5-1.5L14 5l1.5-0.5z"/>' +
   '</svg>';
 
+const CURSOR_FILL_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" ' +
+  'fill="white" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
+  '<path d="M5 11l6-6 7 7-6 6a2 2 0 0 1-2.8 0L5 13.8a2 2 0 0 1 0-2.8z"/>' +
+  '<path d="M11 5L9 3"/>' +
+  '</svg>';
+
+const CURSOR_SOFT_BRUSH_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" ' +
+  'fill="white" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
+  '<path d="M9 15l3-0.8 8-8a2 2 0 0 0-2.8-2.8l-8 8z"/>' +
+  '<path d="M15 6l2 2"/>' +
+  '<circle cx="7" cy="17" r="3.2" stroke-dasharray="2 2"/>' +
+  '</svg>';
+
 /** 画布 cursor：每个工具一份 data URL，调用方拼到 CSS `cursor` 字段。 */
-export const CANVAS_CURSORS: Record<"brush" | "eraser" | "gradient" | "zoneBrush", string> = {
+export const CANVAS_CURSORS: Record<"brush" | "eraser" | "gradient" | "zoneBrush" | "fill" | "softBrush", string> = {
   // 画笔尖在 (4, 20) 笔尖位置
   brush: `${cursorUrl(CURSOR_BRUSH_SVG, 4, 20)}, crosshair`,
   // 橡皮尖在 (3, 21) 左下底边
@@ -248,4 +281,8 @@ export const CANVAS_CURSORS: Record<"brush" | "eraser" | "gradient" | "zoneBrush
   gradient: `${cursorUrl(CURSOR_GRADIENT_SVG, 3, 3)}, crosshair`,
   // 魔法笔尖位置同画笔
   zoneBrush: `${cursorUrl(CURSOR_ZONE_BRUSH_SVG, 5, 19)}, crosshair`,
+  // 油漆桶漆口在左下 (5, 14)
+  fill: `${cursorUrl(CURSOR_FILL_SVG, 5, 14)}, crosshair`,
+  // 软笔刷光晕中心 (7, 17)
+  softBrush: `${cursorUrl(CURSOR_SOFT_BRUSH_SVG, 7, 17)}, crosshair`,
 };

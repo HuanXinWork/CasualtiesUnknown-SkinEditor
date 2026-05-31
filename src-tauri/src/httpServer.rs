@@ -14,12 +14,15 @@ use axum::Router;
 use crate::apiLayer::{
     AddLayerParams, ApiError, ApiLayer, AssemblyParams, AssemblyResult, BrushParams,
     CompositeParams, CompositeResult, CoreApi, EraserParams, ExportSkinPackParams,
-    ExportSkinPackResult, GradientParams, ImportSkinPackParams, LayerOpacityParams, LayerVisibilityParams,
+    ExportSkinPackResult, GradientParams, FillParams, SoftBrushParams, ImportSkinPackParams, LayerOpacityParams, LayerVisibilityParams,
     LayersSnapshot, LoadPartParams, LoadPartResult, MotionCaptureListParams, MotionCaptureMeta,
     MotionCaptureResult, MotionCompositeParams, MotionCompositeResult, PartIdParams, PartsParams,
     RemoveLayerParams, ReorderLayersParams, ResizePartParams, ResizePartResult, SavePartParams, SaveWorkspaceParams,
     GetBaseSizeParams, GetBaseSizeResult,
     CreateSidePartParams, CreateSidePartResult,
+    CreateOrientationPartParams, CreateOrientationPartResult,
+    CreatePartParams, CreatePartResult,
+    CopyPartParams, DeletePartParams, CopyLayerToPartParams, SetLayerTransformParams,
     SetActiveLayerParams, SetAssemblyOverrideParams, SetAccessoryEnabledParams, SaveAccessoryConfigParams, LoadZonesParams, LoadZonesResult, SaveZonesParams, SkinsParams, SaveWingsConfigParams,
     BloodConfigPathParams, SaveBloodConfigParams,
     WingsConfig, WingsConfigPathParams, WorkspacePathParams,
@@ -46,6 +49,8 @@ pub async fn serve(config: HttpConfig, api: SharedApi) {
         .route("/api/brush", post(handleBrush))
         .route("/api/eraser", post(handleEraser))
         .route("/api/gradient", post(handleGradient))
+        .route("/api/fill", post(handleFill))
+        .route("/api/softBrush", post(handleSoftBrush))
         .route("/api/undo", post(handleUndo))
         .route("/api/redo", post(handleRedo))
         .route("/api/strokeBegin", post(handleBeginStroke))
@@ -56,6 +61,13 @@ pub async fn serve(config: HttpConfig, api: SharedApi) {
         .route("/api/resizePart", post(handleResizePart))
         .route("/api/baseSize", post(handleGetBaseSize))
         .route("/api/createSidePart", post(handleCreateSidePart))
+        .route("/api/createOrientationPart", post(handleCreateOrientationPart))
+        .route("/api/createPart", post(handleCreatePart))
+        .route("/api/copyPart", post(handleCopyPart))
+        .route("/api/deletePart", post(handleDeletePart))
+        .route("/api/layer/copyToPart", post(handleCopyLayerToPart))
+        .route("/api/layer/transform", post(handleSetLayerTransform))
+        .route("/api/layer/transform/bake", post(handleBakeLayerTransform))
         .route("/api/layer/add", post(handleAddLayer))
         .route("/api/layer/remove", post(handleRemoveLayer))
         .route("/api/layer/visibility", post(handleSetLayerVisibility))
@@ -217,6 +229,22 @@ async fn handleGradient(
     intoResponse(result)
 }
 
+async fn handleFill(
+    State(api): State<SharedApi>,
+    Json(params): Json<FillParams>,
+) -> axum::response::Response {
+    let result: Result<PixelDiff, ApiError> = api.applyFill(params);
+    intoResponse(result)
+}
+
+async fn handleSoftBrush(
+    State(api): State<SharedApi>,
+    Json(params): Json<SoftBrushParams>,
+) -> axum::response::Response {
+    let result: Result<PixelDiff, ApiError> = api.applySoftBrush(params);
+    intoResponse(result)
+}
+
 async fn handleUndo(
     State(api): State<SharedApi>,
     Json(params): Json<PartIdParams>,
@@ -294,6 +322,62 @@ async fn handleCreateSidePart(
     Json(params): Json<CreateSidePartParams>,
 ) -> axum::response::Response {
     let result: Result<CreateSidePartResult, ApiError> = api.createSidePart(params);
+    intoResponse(result)
+}
+
+async fn handleCreateOrientationPart(
+    State(api): State<SharedApi>,
+    Json(params): Json<CreateOrientationPartParams>,
+) -> axum::response::Response {
+    let result: Result<CreateOrientationPartResult, ApiError> = api.createOrientationPart(params);
+    intoResponse(result)
+}
+
+async fn handleCreatePart(
+    State(api): State<SharedApi>,
+    Json(params): Json<CreatePartParams>,
+) -> axum::response::Response {
+    let result: Result<CreatePartResult, ApiError> = api.createPart(params);
+    intoResponse(result)
+}
+
+async fn handleCopyPart(
+    State(api): State<SharedApi>,
+    Json(params): Json<CopyPartParams>,
+) -> axum::response::Response {
+    let result: Result<CreatePartResult, ApiError> = api.copyPart(params);
+    intoResponse(result)
+}
+
+async fn handleDeletePart(
+    State(api): State<SharedApi>,
+    Json(params): Json<DeletePartParams>,
+) -> axum::response::Response {
+    let result: Result<(), ApiError> = api.deletePart(params);
+    intoResponse(result)
+}
+
+async fn handleCopyLayerToPart(
+    State(api): State<SharedApi>,
+    Json(params): Json<CopyLayerToPartParams>,
+) -> axum::response::Response {
+    let result: Result<LayersSnapshot, ApiError> = api.copyLayerToPart(params);
+    intoResponse(result)
+}
+
+async fn handleSetLayerTransform(
+    State(api): State<SharedApi>,
+    Json(params): Json<SetLayerTransformParams>,
+) -> axum::response::Response {
+    let result: Result<(), ApiError> = api.setLayerTransform(params);
+    intoResponse(result)
+}
+
+async fn handleBakeLayerTransform(
+    State(api): State<SharedApi>,
+    Json(params): Json<RemoveLayerParams>,
+) -> axum::response::Response {
+    let result: Result<PixelDiff, ApiError> = api.bakeLayerTransform(params);
     intoResponse(result)
 }
 

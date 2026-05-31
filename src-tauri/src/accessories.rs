@@ -27,9 +27,9 @@ pub struct AccessoryEntry {
     /// 副件列表，仿游戏 Wearable.secondaryLimbs。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secondaryLimbs: Option<Vec<SecondaryLimb>>,
-    /// 仅元数据备注，导出导入保持原样不参与渲染。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slot: Option<String>,
+    /// 仅在玩家穿戴对应 wearSlotId 装备时才显示该配件；空 = 总是显示。读时兼容旧字段名 slot。
+    #[serde(default, alias = "slot", skip_serializing_if = "Option::is_none")]
+    pub requireWornSlot: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -233,7 +233,7 @@ mod tests {
             z: 3,
             enabled: true,
             secondaryLimbs: None,
-            slot: Some("hat".into()),
+            requireWornSlot: Some("hat".into()),
         }];
         saveAccessories(&path, &list).unwrap();
         let loaded = loadAccessories(&path);
@@ -249,7 +249,7 @@ mod tests {
             sprite: "a".into(),
             offX: 0, offY: 0, rot: 0.0, z: 5, enabled: false,
             secondaryLimbs: None,
-            slot: None,
+            requireWornSlot: None,
         }];
         assert!(setEnabledById(&mut list, "a", true));
         assert!(list[0].enabled);
@@ -270,7 +270,7 @@ mod tests {
                 sprite: "wizardCape".into(),
                 offX: 0, offY: 1, rot: 0.0, z: 6,
             }]),
-            slot: None,
+            requireWornSlot: None,
         }];
         saveAccessories(&path, &list).unwrap();
         let loaded = loadAccessories(&path);

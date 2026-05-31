@@ -10,12 +10,15 @@ use tauri::State;
 use crate::apiLayer::{
     AddLayerParams, ApiError, ApiLayer, AssemblyParams, AssemblyResult, BrushParams,
     CompositeParams, CompositeResult, CoreApi, EraserParams, ExportSkinPackParams,
-    ExportSkinPackResult, GradientParams, ImportSkinPackParams, LayerOpacityParams, LayerVisibilityParams,
+    ExportSkinPackResult, GradientParams, FillParams, SoftBrushParams, ImportSkinPackParams, LayerOpacityParams, LayerVisibilityParams,
     LayersSnapshot, LoadPartParams, LoadPartResult, MotionCaptureListParams, MotionCaptureMeta,
     MotionCaptureResult, MotionCompositeParams, MotionCompositeResult, PartIdParams, PartsParams,
     RemoveLayerParams, ReorderLayersParams, ResizePartParams, ResizePartResult, SavePartParams, SaveWorkspaceParams,
     GetBaseSizeParams, GetBaseSizeResult,
     CreateSidePartParams, CreateSidePartResult,
+    CreateOrientationPartParams, CreateOrientationPartResult,
+    CreatePartParams, CreatePartResult,
+    CopyPartParams, DeletePartParams, CopyLayerToPartParams, SetLayerTransformParams,
     SetActiveLayerParams, SetAssemblyOverrideParams, SetAccessoryEnabledParams, SaveAccessoryConfigParams, LoadZonesParams, LoadZonesResult, SaveZonesParams, SkinsParams, SaveWingsConfigParams,
     BloodConfigPathParams, SaveBloodConfigParams,
     WingsConfig, WingsConfigPathParams, WorkspacePathParams,
@@ -94,6 +97,22 @@ pub fn api_applyGradient(
 }
 
 #[tauri::command]
+pub fn api_applyFill(
+    api: State<'_, SharedApi>,
+    params: FillParams,
+) -> Result<PixelDiff, String> {
+    api.applyFill(params).map_err(toErrString)
+}
+
+#[tauri::command]
+pub fn api_applySoftBrush(
+    api: State<'_, SharedApi>,
+    params: SoftBrushParams,
+) -> Result<PixelDiff, String> {
+    api.applySoftBrush(params).map_err(toErrString)
+}
+
+#[tauri::command]
 pub fn api_undo(api: State<'_, SharedApi>, params: PartIdParams) -> Result<PixelDiff, String> {
     api.undo(params).map_err(toErrString)
 }
@@ -159,6 +178,62 @@ pub fn api_createSidePart(
     params: CreateSidePartParams,
 ) -> Result<CreateSidePartResult, String> {
     api.createSidePart(params).map_err(toErrString)
+}
+
+#[tauri::command]
+pub fn api_createOrientationPart(
+    api: State<'_, SharedApi>,
+    params: CreateOrientationPartParams,
+) -> Result<CreateOrientationPartResult, String> {
+    api.createOrientationPart(params).map_err(toErrString)
+}
+
+#[tauri::command]
+pub fn api_createPart(
+    api: State<'_, SharedApi>,
+    params: CreatePartParams,
+) -> Result<CreatePartResult, String> {
+    api.createPart(params).map_err(toErrString)
+}
+
+#[tauri::command]
+pub fn api_copyPart(
+    api: State<'_, SharedApi>,
+    params: CopyPartParams,
+) -> Result<CreatePartResult, String> {
+    api.copyPart(params).map_err(toErrString)
+}
+
+#[tauri::command]
+pub fn api_deletePart(
+    api: State<'_, SharedApi>,
+    params: DeletePartParams,
+) -> Result<(), String> {
+    api.deletePart(params).map_err(toErrString)
+}
+
+#[tauri::command]
+pub fn api_copyLayerToPart(
+    api: State<'_, SharedApi>,
+    params: CopyLayerToPartParams,
+) -> Result<LayersSnapshot, String> {
+    api.copyLayerToPart(params).map_err(toErrString)
+}
+
+#[tauri::command]
+pub fn api_setLayerTransform(
+    api: State<'_, SharedApi>,
+    params: SetLayerTransformParams,
+) -> Result<(), String> {
+    api.setLayerTransform(params).map_err(toErrString)
+}
+
+#[tauri::command]
+pub fn api_bakeLayerTransform(
+    api: State<'_, SharedApi>,
+    params: RemoveLayerParams,
+) -> Result<PixelDiff, String> {
+    api.bakeLayerTransform(params).map_err(toErrString)
 }
 
 #[tauri::command]

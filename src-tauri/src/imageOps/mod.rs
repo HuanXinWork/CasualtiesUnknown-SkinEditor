@@ -16,6 +16,28 @@ pub struct Layer {
     pub visible: bool,
     pub opacity: u8,
     pub pixels: Vec<u8>,
+    /// 未落地的预览变换；仅运行时态，不写入 sidecar。
+    #[serde(skip)]
+    pub transform: Option<LayerTransform>,
+}
+
+/// 图层预览变换：绕画布中心的翻转 / 缩放 / 旋转。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct LayerTransform {
+    pub flipX: bool,
+    pub flipY: bool,
+    pub scaleX: f32,
+    pub scaleY: f32,
+    pub rotationDeg: f32,
+}
+
+impl LayerTransform {
+    pub fn isIdentity(&self) -> bool {
+        !self.flipX && !self.flipY
+            && (self.scaleX - 1.0).abs() < 1e-4
+            && (self.scaleY - 1.0).abs() < 1e-4
+            && self.rotationDeg.abs() < 1e-4
+    }
 }
 
 /// 单个部件的可编辑状态（多图层）。
@@ -25,6 +47,48 @@ pub struct PartEditState {
     pub width: u32,
     pub height: u32,
     pub layers: Vec<Layer>,
+}
+
+/// 对图层像素做绕画布中心的 flip/scale/rotate（反向采样，最近邻，画布尺寸不变）。
+/// transform 为 None 或 identity 时原样返回，避免无谓拷贝采样误差。
+pub fn transformLayerPixels(pixels: &[u8], width: u32, height: u32, transform: &LayerTransform) -> Vec<u8> {
+    if transform.isIdentity() {
+        return pixels.to_vec();
+    }
+    let w = width as i32;
+    let h = height as i32;
+    let mut out = vec![0u8; pixels.len()];
+    let cx = (width as f32) / 2.0;
+    let cy = (height as f32) / 2.0;
+    let rad = -transform.rotationDeg.to_radians();
+    let cosR = rad.cos();
+    let sinR = rad.sin();
+    let sx = if transform.scaleX.abs() < 1e-4 { 1e-4 } else { transform.scaleX };
+    let sy = if transform.scaleY.abs() < 1e-4 { 1e-4 } else { transform.scaleY };
+    for dy in 0..h {
+        for dx in 0..w {
+            let rx = (dx as f32 + 0.5) - cx;
+            let ry = (dy as f32 + 0.5) - cy;
+            // 反向旋转
+            let urx = rx * cosR + ry * sinR;
+            let ury = -rx * sinR + ry * cosR;
+            // 反向缩放
+            let mut sxf = urx / sx;
+            let mut syf = ury / sy;
+            // 反向翻转
+            if transform.flipX { sxf = -sxf; }
+            if transform.flipY { syf = -syf; }
+            let srcX = (sxf + cx).floor() as i32;
+            let srcY = (syf + cy).floor() as i32;
+            if srcX < 0 || srcY < 0 || srcX >= w || srcY >= h {
+                continue;
+            }
+            let s = ((srcY * w + srcX) as usize) * 4;
+            let d = ((dy * w + dx) as usize) * 4;
+            out[d..d + 4].copy_from_slice(&pixels[s..s + 4]);
+        }
+    }
+    out
 }
 
 /// `visible == false` 或 `opacity == 0` 的图层跳过。
@@ -39,12 +103,17 @@ pub fn flatten(state: &PartEditState) -> Vec<u8> {
         if layer.pixels.len() != out.len() {
             continue;
         }
+        let transformed = match &layer.transform {
+            Some(tf) if !tf.isIdentity() => Some(transformLayerPixels(&layer.pixels, state.width, state.height, tf)),
+            _ => None,
+        };
+        let src = transformed.as_deref().unwrap_or(&layer.pixels);
         for i in 0..pixelCount {
             let base = i * 4;
-            let sr = layer.pixels[base] as u32;
-            let sg = layer.pixels[base + 1] as u32;
-            let sb = layer.pixels[base + 2] as u32;
-            let sa = layer.pixels[base + 3] as u32;
+            let sr = src[base] as u32;
+            let sg = src[base + 1] as u32;
+            let sb = src[base + 2] as u32;
+            let sa = src[base + 3] as u32;
             let saE = (sa * layer.opacity as u32 + 127) / 255;
             if saE == 0 {
                 continue;
@@ -156,6 +225,191 @@ pub fn applyEraser(
     }
     let after = copyRect(pixels, width, x0, y0, x1, y1);
     PixelDiff { x: x0, y: y0, width: x1 - x0, height: y1 - y0, before, after }
+}
+
+
+/// 从 (cx,cy) 起对颜色与起点在容差内相近的 4 连通区域覆盖为 color。
+/// tolerance 为各通道（含 alpha）最大允许差；起点已是 color 时无操作。
+/// 返回受影响像素包围盒的 PixelDiff。
+pub fn applyFill(
+    pixels: &mut Vec<u8>,
+    width: u32,
+    height: u32,
+    cx: i32,
+    cy: i32,
+    color: [u8; 4],
+    tolerance: u8,
+) -> PixelDiff {
+    if width == 0 || height == 0 || cx < 0 || cy < 0 || cx >= width as i32 || cy >= height as i32 {
+        return emptyDiff();
+    }
+    let w = width as usize;
+    let h = height as usize;
+    let startOff = (cy as usize * w + cx as usize) * 4;
+    let target = [
+        pixels[startOff],
+        pixels[startOff + 1],
+        pixels[startOff + 2],
+        pixels[startOff + 3],
+    ];
+    if target == color {
+        return emptyDiff();
+    }
+    let tol = tolerance as i32;
+    let matches = |off: usize| -> bool {
+        (pixels[off] as i32 - target[0] as i32).abs() <= tol
+            && (pixels[off + 1] as i32 - target[1] as i32).abs() <= tol
+            && (pixels[off + 2] as i32 - target[2] as i32).abs() <= tol
+            && (pixels[off + 3] as i32 - target[3] as i32).abs() <= tol
+    };
+    let mut visited = vec![false; w * h];
+    let mut stack: Vec<(usize, usize)> = vec![(cx as usize, cy as usize)];
+    let mut filled: Vec<usize> = Vec::new();
+    let (mut minX, mut minY, mut maxX, mut maxY) = (w, h, 0usize, 0usize);
+    while let Some((x, y)) = stack.pop() {
+        let pi = y * w + x;
+        if visited[pi] {
+            continue;
+        }
+        visited[pi] = true;
+        if !matches(pi * 4) {
+            continue;
+        }
+        filled.push(pi);
+        if x < minX { minX = x; }
+        if x > maxX { maxX = x; }
+        if y < minY { minY = y; }
+        if y > maxY { maxY = y; }
+        if x > 0 { stack.push((x - 1, y)); }
+        if x + 1 < w { stack.push((x + 1, y)); }
+        if y > 0 { stack.push((x, y - 1)); }
+        if y + 1 < h { stack.push((x, y + 1)); }
+    }
+    if filled.is_empty() {
+        return emptyDiff();
+    }
+    let (x0, y0) = (minX as u32, minY as u32);
+    let (x1, y1) = (maxX as u32 + 1, maxY as u32 + 1);
+    let before = copyRect(pixels, width, x0, y0, x1, y1);
+    for pi in filled {
+        let off = pi * 4;
+        pixels[off] = color[0];
+        pixels[off + 1] = color[1];
+        pixels[off + 2] = color[2];
+        pixels[off + 3] = color[3];
+    }
+    let after = copyRect(pixels, width, x0, y0, x1, y1);
+    PixelDiff { x: x0, y: y0, width: x1 - x0, height: y1 - y0, before, after }
+}
+
+
+/// 在 coverage（整图，0~255 表示笔画在该像素的最大覆盖率）上叠加一个羽化圆，
+/// 半径 = brushSize/2，边缘 1px 线性羽化；逐像素取 max。返回受影响像素的包围盒 rect。
+/// hardness 0~255：硬度越高羽化带越窄。越界裁剪，无更新返回 None。
+pub fn stampSoftCoverage(
+    coverage: &mut [u8],
+    width: u32,
+    height: u32,
+    cx: i32,
+    cy: i32,
+    brushSize: u8,
+    hardness: u8,
+) -> Option<(u32, u32, u32, u32)> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let radius = (brushSize.clamp(1, 32) as f32) / 2.0;
+    if radius <= 0.0 {
+        return None;
+    }
+    // 硬核半径：hardness 越大越接近实心圆；至少留 0.5px 羽化带。
+    let inner = (radius * (hardness as f32 / 255.0)).min(radius - 0.5).max(0.0);
+    let feather = (radius - inner).max(0.5);
+    let x0 = ((cx as f32 - radius).floor() as i32).max(0);
+    let y0 = ((cy as f32 - radius).floor() as i32).max(0);
+    let x1 = ((cx as f32 + radius).ceil() as i32).min(width as i32 - 1);
+    let y1 = ((cy as f32 + radius).ceil() as i32).min(height as i32 - 1);
+    if x1 < x0 || y1 < y0 {
+        return None;
+    }
+    let cxf = cx as f32 + 0.5;
+    let cyf = cy as f32 + 0.5;
+    let (mut bx0, mut by0, mut bx1, mut by1) = (width, height, 0u32, 0u32);
+    let mut touched = false;
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let dx = (x as f32 + 0.5) - cxf;
+            let dy = (y as f32 + 0.5) - cyf;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist > radius {
+                continue;
+            }
+            let t = if dist <= inner { 1.0 } else { 1.0 - (dist - inner) / feather };
+            let cov = (t.clamp(0.0, 1.0) * 255.0).round() as u8;
+            if cov == 0 {
+                continue;
+            }
+            let idx = (y as u32 * width + x as u32) as usize;
+            if cov > coverage[idx] {
+                coverage[idx] = cov;
+                touched = true;
+                let ux = x as u32;
+                let uy = y as u32;
+                if ux < bx0 { bx0 = ux; }
+                if uy < by0 { by0 = uy; }
+                if ux + 1 > bx1 { bx1 = ux + 1; }
+                if uy + 1 > by1 { by1 = uy + 1; }
+            }
+        }
+    }
+    if touched { Some((bx0, by0, bx1, by1)) } else { None }
+}
+
+/// 按 coverage 把 color 以非预乘 source-over 合成到 baseline 上，写入 out（与 baseline 同尺寸）。
+/// 仅处理 rect 内像素；coverage 作为 color 的 alpha 系数（与 color.a 相乘）。
+pub fn compositeSoftStroke(
+    out: &mut [u8],
+    baseline: &[u8],
+    coverage: &[u8],
+    width: u32,
+    rect: (u32, u32, u32, u32),
+    color: [u8; 4],
+) {
+    let (x0, y0, x1, y1) = rect;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let pi = (y * width + x) as usize;
+            let cov = coverage[pi] as u32;
+            let base = pi * 4;
+            if cov == 0 {
+                out[base..base + 4].copy_from_slice(&baseline[base..base + 4]);
+                continue;
+            }
+            let srcA = (color[3] as u32 * cov + 127) / 255;
+            let dr = baseline[base] as u32;
+            let dg = baseline[base + 1] as u32;
+            let db = baseline[base + 2] as u32;
+            let da = baseline[base + 3] as u32;
+            if srcA == 0 {
+                out[base..base + 4].copy_from_slice(&baseline[base..base + 4]);
+                continue;
+            }
+            let dstFactor = (da * (255 - srcA) + 127) / 255;
+            let outA = srcA + dstFactor;
+            if outA == 0 {
+                out[base] = 0;
+                out[base + 1] = 0;
+                out[base + 2] = 0;
+                out[base + 3] = 0;
+                continue;
+            }
+            let half = outA / 2;
+            out[base] = (((color[0] as u32 * srcA + dr * dstFactor) + half) / outA).min(255) as u8;
+            out[base + 1] = (((color[1] as u32 * srcA + dg * dstFactor) + half) / outA).min(255) as u8;
+            out[base + 2] = (((color[2] as u32 * srcA + db * dstFactor) + half) / outA).min(255) as u8;
+            out[base + 3] = outA.min(255) as u8;
+        }
+    }
 }
 
 
@@ -385,7 +639,7 @@ mod tests {
     }
 
     fn mkLayer(id: &str, visible: bool, opacity: u8, pixels: Vec<u8>) -> Layer {
-        Layer { id: id.into(), name: id.into(), visible, opacity, pixels }
+        Layer { id: id.into(), name: id.into(), visible, opacity, pixels, transform: None }
     }
 
     #[test]
@@ -711,5 +965,118 @@ mod gradientTests {
             assert_eq!(px[i + 3], 200);
             assert_eq!(px[i], 10);
         }
+    }
+}
+
+#[cfg(test)]
+mod fillTests {
+    use super::*;
+
+    #[test]
+    fn fillsConnectedRegionOnly() {
+        // 2×2：左列与右列不同色，从 (0,0) 填只覆盖左列连通块。
+        let mut px = vec![
+            0, 0, 0, 255,   255, 255, 255, 255,
+            0, 0, 0, 255,   255, 255, 255, 255,
+        ];
+        let diff = applyFill(&mut px, 2, 2, 0, 0, [1, 2, 3, 255], 0);
+        assert_eq!((diff.x, diff.y, diff.width, diff.height), (0, 0, 1, 2));
+        assert_eq!(&px[0..4], &[1, 2, 3, 255]);
+        assert_eq!(&px[8..12], &[1, 2, 3, 255]);
+        assert_eq!(&px[4..8], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn noopWhenStartAlreadyTargetColor() {
+        let mut px = vec![1, 2, 3, 255];
+        let diff = applyFill(&mut px, 1, 1, 0, 0, [1, 2, 3, 255], 0);
+        assert_eq!((diff.width, diff.height), (0, 0));
+    }
+
+    #[test]
+    fn toleranceExpandsMatch() {
+        // 两像素差 5，tolerance=8 时一并填充。
+        let mut px = vec![100, 100, 100, 255, 105, 105, 105, 255];
+        let diff = applyFill(&mut px, 2, 1, 0, 0, [0, 0, 0, 255], 8);
+        assert_eq!((diff.width, diff.height), (2, 1));
+        assert_eq!(&px[0..4], &[0, 0, 0, 255]);
+        assert_eq!(&px[4..8], &[0, 0, 0, 255]);
+    }
+}
+
+#[cfg(test)]
+mod softBrushTests {
+    use super::*;
+
+    #[test]
+    fn coverageCenterFullEdgeFades() {
+        // 5×5 画布，半径 ~2 的软笔落在中心，中心覆盖 255，最外圈应小于中心。
+        let mut cov = vec![0u8; 25];
+        let rect = stampSoftCoverage(&mut cov, 5, 5, 2, 2, 5, 0).expect("touched");
+        assert_eq!(cov[2 * 5 + 2], 255);
+        let (x0, y0, x1, y1) = rect;
+        assert!(x0 <= 2 && y0 <= 2 && x1 >= 3 && y1 >= 3);
+    }
+
+    #[test]
+    fn coverageTakesMaxNotSum() {
+        // 同点两次落笔，覆盖率不累加，仍是单次的值。
+        let mut cov = vec![0u8; 25];
+        stampSoftCoverage(&mut cov, 5, 5, 2, 2, 5, 128);
+        let once = cov[2 * 5 + 2];
+        stampSoftCoverage(&mut cov, 5, 5, 2, 2, 5, 128);
+        assert_eq!(cov[2 * 5 + 2], once);
+    }
+
+    #[test]
+    fn compositeAppliesCoverageAsAlpha() {
+        // baseline 全透明，coverage 满 + 不透明红 → 输出不透明红。
+        let baseline = vec![0u8; 4];
+        let mut out = vec![0u8; 4];
+        let cov = vec![255u8; 1];
+        compositeSoftStroke(&mut out, &baseline, &cov, 1, (0, 0, 1, 1), [255, 0, 0, 255]);
+        assert_eq!(out, vec![255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn compositeHalfCoverageHalfAlpha() {
+        let baseline = vec![0u8; 4];
+        let mut out = vec![0u8; 4];
+        let cov = vec![128u8; 1];
+        compositeSoftStroke(&mut out, &baseline, &cov, 1, (0, 0, 1, 1), [0, 0, 255, 255]);
+        assert!((out[3] as i32 - 128).abs() <= 2, "A={}", out[3]);
+    }
+}
+
+#[cfg(test)]
+mod transformTests {
+    use super::*;
+
+    fn tf(flipX: bool, flipY: bool, sx: f32, sy: f32, rot: f32) -> LayerTransform {
+        LayerTransform { flipX, flipY, scaleX: sx, scaleY: sy, rotationDeg: rot }
+    }
+
+    #[test]
+    fn identityReturnsSame() {
+        let px = vec![1, 2, 3, 255, 4, 5, 6, 255];
+        let out = transformLayerPixels(&px, 2, 1, &tf(false, false, 1.0, 1.0, 0.0));
+        assert_eq!(out, px);
+    }
+
+    #[test]
+    fn flipXSwapsColumns() {
+        // 2×1：左[1] 右[2]，水平翻转后应交换。
+        let px = vec![1, 0, 0, 255, 2, 0, 0, 255];
+        let out = transformLayerPixels(&px, 2, 1, &tf(true, false, 1.0, 1.0, 0.0));
+        assert_eq!(&out[0..4], &[2, 0, 0, 255]);
+        assert_eq!(&out[4..8], &[1, 0, 0, 255]);
+    }
+
+    #[test]
+    fn flipYSwapsRows() {
+        let px = vec![1, 0, 0, 255, 2, 0, 0, 255];
+        let out = transformLayerPixels(&px, 1, 2, &tf(false, true, 1.0, 1.0, 0.0));
+        assert_eq!(&out[0..4], &[2, 0, 0, 255]);
+        assert_eq!(&out[4..8], &[1, 0, 0, 255]);
     }
 }

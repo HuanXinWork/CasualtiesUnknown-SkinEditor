@@ -16,7 +16,7 @@ import {
 const APP_META = {
   // 与 src-tauri/Cargo.toml `version` 保持一致；版权字符串与 tauri.conf.json bundle.copyright 同步。
   name: "CasualtiesUnknown-SkinEditor",
-  version: "1.0.4",
+  version: "1.0.5",
   authorName: "huanxin996",
   authorUrl: "https://github.com/huanxin996",
   repo: "https://github.com/huanxin996/CasualtiesUnknown-SkinEditor",
@@ -172,6 +172,41 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
   // 当前正在录制快捷键的 action id；null 表示未在录制。
   let recordingId: ActionId | null = null;
 
+  // 把自动保存设置同步到 sessionStore 并持久化到 workspace.settings。
+  function persistAutoSave(patch: { autoSaveEnabled?: boolean; autoSaveIntervalSec?: number }): void {
+    sessionStore.setState(patch);
+    const st = sessionStore.getState();
+    void getWorkspace(workspacePath)
+      .then((ws) => saveWorkspace(workspacePath, {
+        ...ws.layout,
+        settings: {
+          ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false, showBloodPanel: false }),
+          autoSaveEnabled: st.autoSaveEnabled,
+          autoSaveIntervalSec: st.autoSaveIntervalSec,
+        },
+      }, ws.theme))
+      .catch((e) => {
+        console.warn(`[settingsPanel] persist autoSave failed: ${String(e)}`);
+      });
+  }
+
+  // 把切部件保存行为同步到 sessionStore 并持久化。
+  function persistSwitchBehavior(behavior: "ask" | "save" | "auto"): void {
+    // "ask" 在 sessionStore 中以 "" 表示首次弹框语义。
+    sessionStore.setState({ switchSaveBehavior: behavior === "ask" ? "" : behavior });
+    void getWorkspace(workspacePath)
+      .then((ws) => saveWorkspace(workspacePath, {
+        ...ws.layout,
+        settings: {
+          ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false, showBloodPanel: false }),
+          switchSaveBehavior: behavior,
+        },
+      }, ws.theme))
+      .catch((e) => {
+        console.warn(`[settingsPanel] persist switchSaveBehavior failed: ${String(e)}`);
+      });
+  }
+
   function position(): void {
     const rect = triggerBtn.getBoundingClientRect();
     popover.style.right = `${window.innerWidth - rect.right}px`;
@@ -270,6 +305,71 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
     bloodRow.appendChild(bloodCb);
     bloodRow.appendChild(bloodLabel);
     popover.appendChild(bloodRow);
+
+    // 自动保存开关 + 间隔输入。开关持久化到 workspace.settings。
+    const autoRow = document.createElement("label");
+    autoRow.style.cssText = "padding:8px 12px;display:flex;gap:8px;align-items:center;cursor:pointer;";
+    const autoCb = document.createElement("input");
+    autoCb.type = "checkbox";
+    autoCb.checked = sessionStore.getState().autoSaveEnabled;
+    const autoLabel = document.createElement("span");
+    autoLabel.style.cssText = "flex:1;";
+    autoLabel.textContent = t("settings.autoSaveEnabled");
+    autoCb.addEventListener("change", () => {
+      persistAutoSave({ autoSaveEnabled: autoCb.checked });
+    });
+    autoRow.appendChild(autoCb);
+    autoRow.appendChild(autoLabel);
+    popover.appendChild(autoRow);
+
+    const intervalRow = document.createElement("div");
+    intervalRow.style.cssText = "padding:4px 12px 8px;display:flex;gap:8px;align-items:center;";
+    const intervalLabel = document.createElement("span");
+    intervalLabel.style.cssText = "flex:1;opacity:0.85;";
+    intervalLabel.textContent = t("settings.autoSaveInterval");
+    const intervalInput = document.createElement("input");
+    intervalInput.type = "number";
+    intervalInput.min = "10";
+    intervalInput.step = "5";
+    intervalInput.className = "input";
+    intervalInput.style.cssText = "width:72px;";
+    intervalInput.value = String(sessionStore.getState().autoSaveIntervalSec);
+    intervalInput.addEventListener("change", () => {
+      const v = Math.max(10, Number.parseInt(intervalInput.value, 10) || 60);
+      intervalInput.value = String(v);
+      persistAutoSave({ autoSaveIntervalSec: v });
+    });
+    intervalRow.appendChild(intervalLabel);
+    intervalRow.appendChild(intervalInput);
+    popover.appendChild(intervalRow);
+
+    // 切部件未保存处理行为下拉：询问 / 自动切换 / 先保存。
+    const switchRow = document.createElement("div");
+    switchRow.style.cssText = "padding:4px 12px 8px;display:flex;gap:8px;align-items:center;";
+    const switchLabel = document.createElement("span");
+    switchLabel.style.cssText = "flex:1;opacity:0.85;";
+    switchLabel.textContent = t("settings.switchSaveBehavior");
+    const switchSel = document.createElement("select");
+    switchSel.className = "input";
+    switchSel.style.cssText = "flex:none;";
+    for (const [val, key] of [
+      ["ask", "settings.switchSaveAsk"],
+      ["save", "settings.switchSaveSave"],
+      ["auto", "settings.switchSaveAuto"],
+    ] as const) {
+      const opt = document.createElement("option");
+      opt.value = val;
+      opt.textContent = t(key);
+      switchSel.appendChild(opt);
+    }
+    const curBehavior = sessionStore.getState().switchSaveBehavior;
+    switchSel.value = curBehavior === "" ? "ask" : curBehavior;
+    switchSel.addEventListener("change", () => {
+      persistSwitchBehavior(switchSel.value as "ask" | "save" | "auto");
+    });
+    switchRow.appendChild(switchLabel);
+    switchRow.appendChild(switchSel);
+    popover.appendChild(switchRow);
 
     const header = document.createElement("div");
     header.style.cssText = "padding:6px 12px;font-weight:600;border-top:1px solid rgba(0,0,0,var(--border-opacity));border-bottom:1px solid rgba(0,0,0,var(--border-opacity));margin:4px 0;";

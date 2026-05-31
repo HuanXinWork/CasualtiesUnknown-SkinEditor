@@ -42,8 +42,8 @@ export interface AccessoryEntry {
   enabled: boolean;
   /** 副件列表，仿游戏 Wearable.secondaryLimbs。 */
   secondaryLimbs?: AccessorySecondaryLimb[];
-  /** 仅元数据备注，前端不参与渲染。 */
-  slot?: string;
+  /** 仅在玩家穿戴对应 wearSlotId 装备时才显示；空 = 总是显示。读时兼容旧字段名 slot。 */
+  requireWornSlot?: string;
 }
 
 export interface AccessorySecondaryLimb {
@@ -237,6 +237,14 @@ export interface WorkspaceSettings {
   showMotionDebugPanel: boolean;
   showWingDebugPanel: boolean;
   showBloodPanel: boolean;
+  /** 定时自动保存所有未保存部件；默认关闭。 */
+  autoSaveEnabled?: boolean;
+  /** 自动保存间隔（秒），默认 60，最小 10。 */
+  autoSaveIntervalSec?: number;
+  /** 切换部件时对未保存改动的处理：ask 弹框 / auto 直接切不保存 / save 先保存再切。 */
+  switchSaveBehavior?: "ask" | "auto" | "save";
+  /** 柔和笔刷硬度 0~255，默认 128。 */
+  softBrushHardness?: number;
   /** 最近用色 FIFO（最多 12 项），与 colorPalette/index.ts.RECENT_LIMIT 对齐。 */
   colorPaletteRecent?: Array<[number, number, number]>;
   /** 用户自定义色卡槽：3 排 × 8 = 24 个；空槽用 null 表示。 */
