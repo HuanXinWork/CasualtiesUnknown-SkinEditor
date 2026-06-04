@@ -13,7 +13,7 @@ namespace CasualtiesUnknown.MotionRecorder
     {
         private const string PluginGuid = "com.casualtiesUnknown.motionRecorder";
         private const string PluginName = "MotionRecorder";
-        private const string PluginVersion = "1.0.0";
+        private const string PluginVersion = "1.0.1";
 
         // —— 配置项 —— //
         private ConfigEntry<KeyboardShortcut> _startHotkey;
