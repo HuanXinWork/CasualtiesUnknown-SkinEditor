@@ -1,6 +1,6 @@
 [package]
 name = "skin-preview-editor"
-version = "1.0.5"
+version = "1.0.6"
 edition = "2021"
 description = "Skin Preview Editor 后端：桌面壳 + HTTP 双形态共享同一 Rust 核心"
 

@@ -11,7 +11,7 @@
 _✨ 为 游戏 `Casualties Unknown` 提供独立的皮肤预览与像素级编辑器 ✨_
 
 <p>
-  <img src="https://img.shields.io/badge/version-1.0.5-blue.svg" alt="version">
+  <img src="https://img.shields.io/badge/version-1.0.6-blue.svg" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="license">
   <img src="https://img.shields.io/badge/tauri-v2-FFC131?logo=tauri" alt="tauri">
   <img src="https://img.shields.io/badge/rust-1.75+-orange.svg?logo=rust" alt="rust">

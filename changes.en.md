@@ -6,11 +6,22 @@
 
 ---
 
-## 1.0.5 (2026-06-06)
+## 1.0.6 (2026-06-06)
 
 ### Added
 
 - **Built-in default skin `exp`**: `data/skin/exp` is embedded at compile time via `rust_embed`. When `data/skin/` has no skin subdirectories, first launch unpacks it to `data/skin/exp/` (Body / Head / Wings / Accessories / Blood plus `accessories.json`, etc.), sets `workspace.json` to `exp`, so a portable exe dropped into an empty folder is ready to preview and edit immediately.
+
+### Improved
+
+- **Data-root path resolution**: the relative `data/skin` path is always resolved against the application root (next to the exe or AppRoot), so seeding the default skin still works when the release exe is started from another working directory.
+
+---
+
+## 1.0.5 (2026-05-31)
+
+### Added
+
 - **Eyedropper**: hold Alt while using the brush / eraser / soft brush and click the canvas to pick the composited color there into the palette; the cursor turns into a dropper and reverts to the original tool when Alt is released.
 - **Fill bucket**: new bucket tool that fills the region connected to the clicked pixel (4-connected) on the current layer.
 - **Soft brush**: new soft brush with a feathered circular edge; passing over the same spot within one stroke does not darken it further. Double-click the tool button to set hardness (0–100%).
@@ -22,7 +33,6 @@
 
 ### Improved
 
-- **Data-root path resolution**: the relative `data/skin` path is always resolved against the application root (next to the exe or AppRoot), so seeding the default skin still works when the release exe is started from another working directory.
 - **Add-part dedup**: the new-part dialog only lists parts not yet fully created; existing front/back and left/right combinations are skipped automatically, and a category's "Add part" button is hidden once everything in it exists.
 - **Settings dropdown styling**: the switch-part behavior dropdown and the auto-save interval input now use the themed input style, consistent with the rest of the panel.
 - **New config cached in workspace**: auto-save toggle and interval, switch-part behavior, and soft brush hardness are all written to `workspace.json` and survive restarts.

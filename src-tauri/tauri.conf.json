@@ -1,6 +1,6 @@
 {
   "productName": "CasualtiesUnknown-SkinEditor",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "identifier": "com.casualtiesUnknown.skinPreviewEditor",
   "build": {
     "frontendDist": "../web/dist",
