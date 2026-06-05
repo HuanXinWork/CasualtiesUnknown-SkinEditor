@@ -681,7 +681,15 @@ impl Default for CoreApi {
 
 impl ApiLayer for CoreApi {
     fn listSkins(&self, params: SkinsParams) -> Result<Vec<String>, ApiError> {
-        Ok(skinLoader::listSkins(&PathBuf::from(params.skinRoot)))
+        let root = crate::dataPaths::resolveSkinRoot(&params.skinRoot);
+        if let Err(e) = std::fs::create_dir_all(&root) {
+            return Err(ApiError {
+                code: "io_failed".into(),
+                message: format!("create skin root {} failed: {}", root.display(), e),
+            });
+        }
+        let _ = crate::ensureEmbeddedDefaultSkin(&root);
+        Ok(skinLoader::listSkins(&root))
     }
 
     fn listMotionCaptures(&self, params: MotionCaptureListParams) -> Result<Vec<MotionCaptureMeta>, ApiError> {
@@ -1431,6 +1439,10 @@ impl ApiLayer for CoreApi {
         }
         let catDirName = categoryDir(params.category);
         let catDir = PathBuf::from(&params.skinRoot).join(&params.skinName).join(catDirName);
+        std::fs::create_dir_all(&catDir).map_err(|e| ApiError {
+            code: "io_failed".into(),
+            message: format!("mkdir {} failed: {}", catDir.display(), e),
+        })?;
         let dst = catDir.join(format!("{}.png", name));
         if dst.exists() {
             return Err(ApiError {
@@ -3204,6 +3216,27 @@ mod tests {
         let (w, h, pixels) = imageOps::loadPng(&target).expect("reload");
         assert_eq!((w, h), (1, 1));
         assert_eq!(pixels, vec![11, 22, 33, 255]);
+    }
+
+    #[test]
+    fn createPartCreatesMissingCategoryDirectory() {
+        let tmp = TempDir::new();
+        fs::create_dir_all(tmp.path().join("st1")).unwrap();
+        let api = CoreApi::new();
+
+        let result = api
+            .createPart(CreatePartParams {
+                skinRoot: tmp.path().to_string_lossy().into_owned(),
+                skinName: "st1".into(),
+                category: PartCategory::Wings,
+                fileName: "wingUL".into(),
+                width: 32,
+                height: 32,
+            })
+            .expect("create part");
+
+        assert_eq!(result.partName, "wingUL");
+        assert!(tmp.path().join("st1").join("Wings").join("wingUL.png").is_file());
     }
 
     #[test]

@@ -2,7 +2,7 @@
 import type { PartCategory } from "../stateStore/types";
 import { t } from "../i18n";
 import { localizePartName } from "../i18n/partNames";
-import { createPart } from "../apiClient";
+import { createPart, type ApiError } from "../apiClient";
 import { showToast } from "../toast";
 import { PART_CATALOG, inferPrefix, buildPartFileName, isPartFullyCreated, type PartDef } from "./partCatalog";
 
@@ -112,14 +112,33 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
     return defs.filter((d) => !isPartFullyCreated(d, prefix, existing));
   }
 
+  function missingCombos(def: PartDef): Array<{ side: "" | "F" | "B"; right: boolean }> {
+    const sides: Array<"" | "F" | "B"> = def.fb ? ["F", "B"] : [""];
+    const rights: boolean[] = def.lr ? [false, true] : [false];
+    const out: Array<{ side: "" | "F" | "B"; right: boolean }> = [];
+    for (const side of sides) for (const right of rights) {
+      const fileName = buildPartFileName(prefix, def.base, side, right);
+      if (existing.has(fileName)) continue;
+      out.push({ side, right });
+    }
+    return out;
+  }
+
+  function primeMissingSelection(def: PartDef): void {
+    const missing = missingCombos(def);
+    wantF = !def.fb || missing.some((c) => c.side === "F");
+    wantB = def.fb && missing.some((c) => c.side === "B");
+    wantLeft = !def.lr || missing.some((c) => !c.right);
+    wantRight = def.lr && missing.some((c) => c.right);
+  }
+
   function selectDef(def: PartDef): void {
     selected = def;
     width = def.width;
     height = def.height;
     wInput.value = String(width);
     hInput.value = String(height);
-    if (!def.fb) { wantF = true; wantB = false; }
-    if (!def.lr) { wantLeft = true; wantRight = false; }
+    primeMissingSelection(def);
     syncControls();
     renderList();
   }
@@ -167,17 +186,22 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
     if (combos.length === 0) return;
     let created = 0;
     let skipped = 0;
+    let firstError: ApiError | null = null;
     for (const c of combos) {
       const fileName = buildPartFileName(prefix, selected.base, c.side, c.right);
       try {
         await createPart(opts.skinRoot, opts.skinName, opts.category, fileName, width, height);
         existing.add(fileName);
         created++;
-      } catch {
+      } catch (e) {
+        if (!firstError && e && typeof e === "object" && "message" in e && "code" in e) {
+          firstError = e as ApiError;
+        }
         skipped++;
       }
     }
-    showToast(t("addPart.resultToast").replace("{n}", String(created)).replace("{m}", String(skipped)), created > 0 ? "info" : "error");
+    const resultText = t("addPart.resultToast").replace("{n}", String(created)).replace("{m}", String(skipped));
+    showToast(firstError ? `${resultText} ${firstError.message}` : resultText, created > 0 ? "info" : "error");
     if (created > 0) opts.onCreated();
     if (keepOpen) {
       const remaining = visibleDefs();
@@ -188,7 +212,7 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
       // 当前选中项已建齐时切到下一个仍可建的部件。
       if (!remaining.includes(selected)) selectDef(remaining[0]);
       else { renderList(); syncControls(); }
-    } else {
+    } else if (created > 0) {
       close();
     }
   }
@@ -229,6 +253,7 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
 
   wInput.value = String(width);
   hInput.value = String(height);
+  primeMissingSelection(selected);
   applyTexts();
   renderList();
   syncControls();

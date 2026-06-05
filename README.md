@@ -70,6 +70,7 @@ _✨ 为 游戏 `Casualties Unknown` 提供独立的皮肤预览与像素级编�
                                       ▼
                         ┌──────────────────────────────┐
                         │  rust-embed (编译期嵌入二进制) │
+                        │  前端 bundle + 默认皮肤 exp   │
                         └──────────────────────────────┘
                                       │
               ┌───────────────────────┼────────────────────────┐
@@ -139,7 +140,7 @@ data/
 
 mod 只读 `Body/` 与 `Head/` 下的扁平 PNG。`layers/` 是编辑器自管的工程文件，结构变化不影响 mod 加载，因此可以在不破坏运行期产物的前提下保留多图层信息。
 
-启动时若 `data/` 缺失会被自动创建，并写入一份默认的 `workspace.json` 与空的 `data/skin/default/{Body,Head}/` 骨架。
+启动时若 `data/` 缺失会被自动创建，并写入默认 `workspace.json`。若 `data/skin/` 下没有任何皮肤子目录，会把编译期内置的 `exp` 皮肤包展开到 `data/skin/exp/` 并自动选中。
 
 ## 开发与运行
 
@@ -210,7 +211,7 @@ cd web && npm run build
 cargo build --release --manifest-path src-tauri/Cargo.toml --bin CasualtiesUnknown-SkinEditor
 ```
 
-release 产物：`src-tauri/target/release/CasualtiesUnknown-SkinEditor.exe`（Windows，约 11 MB）。前端 bundle 通过 `rust-embed` 编译期嵌入。
+release 产物：`src-tauri/target/release/CasualtiesUnknown-SkinEditor.exe`（Windows，约 15 MB，含内置 `exp` 皮肤包）。前端 bundle 与默认皮肤通过 `rust-embed` 编译期嵌入。
 
 跨平台桌面包（在对应平台上执行）：
 
@@ -222,7 +223,7 @@ cargo tauri build --bundles appimage   # Linux
 
 ### 运行目录
 
-首次启动若工作目录下没有 `data/`，应用会创建 `data/skin/default/{Body,Head}/`、`data/workspace.json` 各一份默认骨架。从其他工作目录运行 release exe 时，`data/` 是 exe 所在目录的相对路径。把 exe 放到任意位置都可以，但要让它有写权限（无写权限会回退到只读模式，所有保存按钮静默失败，UI 不会自动恢复）
+首次启动若工作目录下没有 `data/`，应用会创建 `data/workspace.json`；若 `data/skin/` 为空则自动展开内置 `exp` 皮肤。`data/` 始终相对 exe 所在目录（AppRoot）解析，与当前工作目录无关。把 exe 放到任意位置都可以，但要让它有写权限（无写权限会回退到只读模式，所有保存按钮静默失败，UI 不会自动恢复）
 
 ## 文档与规范
 

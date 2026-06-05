@@ -70,6 +70,7 @@ This project is a standalone desktop application that turns the skin directory u
                                       ▼
                         ┌──────────────────────────────┐
                         │ rust-embed (embedded at build time) │
+                        │  frontend bundle + default exp skin │
                         └──────────────────────────────┘
                                       │
               ┌───────────────────────┼────────────────────────┐
@@ -140,7 +141,7 @@ data/
 
 The mod only reads the flat PNG files under `Body/` and `Head/`. The `layers/` directory is project data managed by the editor itself, so structural changes there do not affect what the mod loads and multi-layer information can be preserved without changing the runtime output.
 
-If `data/` is missing at startup, the app creates it automatically and writes a default `workspace.json` plus an empty `data/skin/default/{Body,Head}/` scaffold.
+If `data/` is missing at startup, the app creates it automatically and writes a default `workspace.json`. When `data/skin/` has no skin subdirectories, the built-in `exp` skin pack is unpacked to `data/skin/exp/` and selected automatically.
 
 ## Development and Running
 
@@ -211,7 +212,7 @@ cd web && npm run build
 cargo build --release --manifest-path src-tauri/Cargo.toml --bin CasualtiesUnknown-SkinEditor
 ```
 
-Release artifact: `src-tauri/target/release/CasualtiesUnknown-SkinEditor.exe` on Windows, roughly 11 MB. The frontend bundle is embedded at compile time via `rust-embed`.
+Release artifact: `src-tauri/target/release/CasualtiesUnknown-SkinEditor.exe` on Windows, roughly 15 MB including the built-in `exp` skin pack. The frontend bundle and default skin are embedded at compile time via `rust-embed`.
 
 Cross-platform desktop packaging, executed on the target platform:
 
@@ -223,7 +224,7 @@ cargo tauri build --bundles appimage   # Linux
 
 ### Runtime Directory Behavior
 
-On first launch, if the current working directory does not contain `data/`, the app creates `data/skin/default/{Body,Head}/` plus `data/workspace.json` as a default scaffold. If you run the release executable from another working directory, `data/` is resolved relative to the exe location. You can place the exe anywhere, but it must have write permission. If it does not, the app falls back to read-only mode, save operations fail silently, and the UI does not recover automatically.
+On first launch, if `data/` is missing next to the exe, the app creates `data/workspace.json`; if `data/skin/` is empty it unpacks the built-in `exp` skin. `data/` is always resolved relative to the exe location (AppRoot), not the current working directory. You can place the exe anywhere, but it must have write permission. If it does not, the app falls back to read-only mode, save operations fail silently, and the UI does not recover automatically.
 
 ## Documentation
 

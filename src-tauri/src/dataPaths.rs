@@ -30,6 +30,16 @@ pub fn skinDir(name: &str) -> PathBuf {
     dataDir().join("skin").join(name)
 }
 
+/// 前端传入的 `data/skin` 等相对路径按 AppRoot 解析；已是绝对路径则原样返回。
+pub fn resolveSkinRoot(skinRoot: &str) -> PathBuf {
+    let p = PathBuf::from(skinRoot);
+    if p.is_absolute() {
+        p
+    } else {
+        appRoot().join(p)
+    }
+}
+
 pub fn workspaceFile() -> PathBuf {
     dataDir().join("workspace.json")
 }

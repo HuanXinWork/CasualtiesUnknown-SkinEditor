@@ -224,7 +224,7 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
     }
     if (categorySupportsCreate(cat)) {
       const skinName = sessionStore.getState().currentSkinName;
-      const existingNames = parts.map((x) => x.name);
+      const existingNames = listCategoryNames(skin, cat);
       if (skinName && !categoryFullyCreated(cat, existingNames)) {
         const addLi = document.createElement("li");
         addLi.style.cssText = "padding:4px 6px;";
@@ -247,6 +247,22 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
         addLi.appendChild(addBtn);
         ul.appendChild(addLi);
       }
+    }
+  }
+
+  function listCategoryNames(skin: Skin | undefined, cat: PartCategory): string[] {
+    if (!skin) return [];
+    switch (cat) {
+      case "Body":
+        return skin.body.map((x) => x.name);
+      case "Head":
+        return skin.head.map((x) => x.name);
+      case "Wings":
+        return skin.wings.map((x) => x.name);
+      case "Accessories":
+        return skin.accessories.map((x) => x.name);
+      case "Blood":
+        return skin.blood.map((x) => x.name);
     }
   }
 

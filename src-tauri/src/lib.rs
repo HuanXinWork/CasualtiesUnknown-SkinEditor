@@ -24,6 +24,13 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
 use apiLayer::CoreApi;
+use rust_embed::RustEmbed;
+
+const EMBEDDED_DEFAULT_SKIN_NAME: &str = "exp";
+
+#[derive(RustEmbed)]
+#[folder = "../data/skin/exp/"]
+struct EmbeddedDefaultSkin;
 
 /// 主窗口关闭拦截。点 X 时拦截关窗、置 closeRequested；前端确认后置 forceClose
 /// 并主动关窗，on_window_event 检测到 forceClose 即放行。仅作用于 label = "main"。
@@ -50,14 +57,45 @@ pub fn ensureInitialized() {
         eprintln!("[init] 创建 {} 失败: {}", skinRoot.display(), e);
         return;
     }
+    let seededDefaultSkin = ensureEmbeddedDefaultSkin(&skinRoot);
     if !dataPaths::workspaceFile().exists() {
-        let layout = windowManager::defaultWorkspace();
+        let mut layout = windowManager::defaultWorkspace();
+        if seededDefaultSkin {
+            layout.activeSkin = Some(EMBEDDED_DEFAULT_SKIN_NAME.into());
+        }
         let theme = windowManager::defaultTheme();
         if let Err(e) = windowManager::saveDefaultWorkspace(&layout, &theme) {
             eprintln!("[init] 写默认 workspace.json 失败: {}", e.message);
         }
     }
     backfillBaseSizes(&skinRoot);
+}
+
+/// data/skin 下没有任何皮肤子目录时，把编译期内置的 exp 包展开到磁盘。
+pub fn ensureEmbeddedDefaultSkin(skinRoot: &std::path::Path) -> bool {
+    if !skinLoader::listSkins(skinRoot).is_empty() {
+        return false;
+    }
+
+    let targetSkinDir = skinRoot.join(EMBEDDED_DEFAULT_SKIN_NAME);
+    for rel in EmbeddedDefaultSkin::iter() {
+        let relPath = rel.as_ref();
+        let Some(file) = EmbeddedDefaultSkin::get(relPath) else {
+            continue;
+        };
+        let dst = targetSkinDir.join(relPath);
+        if let Some(parent) = dst.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("[init] 创建 {} 失败: {}", parent.display(), e);
+                return false;
+            }
+        }
+        if let Err(e) = std::fs::write(&dst, file.data.as_ref()) {
+            eprintln!("[init] 写入 {} 失败: {}", dst.display(), e);
+            return false;
+        }
+    }
+    true
 }
 
 /// 启动时为缺 `baseSizes.json` 的旧皮肤目录补齐分辨率配置。失败仅打印不阻塞启动。
@@ -256,6 +294,12 @@ mod ensureInitializedTests {
         assert!(dataPaths::dataDir().is_dir());
         assert!(dataPaths::dataDir().join("skin").is_dir());
         assert!(dataPaths::workspaceFile().is_file());
+        assert!(dataPaths::skinDir("exp").join("Body").is_dir());
+        assert!(dataPaths::skinDir("exp").join("Head").is_dir());
+        assert!(dataPaths::skinDir("exp").join("Accessories").is_dir());
+        assert!(dataPaths::skinDir("exp").join("Blood").is_dir());
+        let (layout, _theme, _source) = windowManager::loadDefaultWorkspace();
+        assert_eq!(layout.activeSkin.as_deref(), Some("exp"));
         assert!(!dataPaths::skinDir("default").exists());
     }
 
@@ -274,12 +318,26 @@ mod ensureInitializedTests {
     }
 
     #[test]
+    fn seedsExpWhenListSkinsWouldBeEmpty() {
+        let _lock = dataPaths::appRootEnvLock();
+        let tmp = TempDir::new();
+        let _guard = EnvGuard::set(tmp.path());
+        let skinRoot = dataPaths::dataDir().join("skin");
+        assert!(skinLoader::listSkins(&skinRoot).is_empty());
+        assert!(ensureEmbeddedDefaultSkin(&skinRoot));
+        let names = skinLoader::listSkins(&skinRoot);
+        assert_eq!(names, vec!["exp".to_string()]);
+        assert!(skinRoot.join("exp").join("Body").join("experimentUpTorso.png").is_file());
+    }
+
+    #[test]
     fn skipsDefaultSkeletonWhenSkinDirHasContent() {
         let _lock = dataPaths::appRootEnvLock();
         let tmp = TempDir::new();
         let _guard = EnvGuard::set(tmp.path());
         fs::create_dir_all(dataPaths::skinDir("st1").join("Body")).unwrap();
         ensureInitialized();
+        assert!(!dataPaths::skinDir("exp").exists());
         assert!(!dataPaths::skinDir("default").exists());
         assert!(dataPaths::skinDir("st1").join("Body").is_dir());
     }
