@@ -176,6 +176,8 @@ my-skin.zip
 - **装配**：按装配表合成当前皮肤所有可见部件（按 z-order）
 - **动画**：直接读取 MotionRecorder 写出的 `captures/` JSON，按帧合成当前皮肤
 
+第一次切到动画模式时，编辑器若发现 `captures/` 目录不存在会自动按 AppRoot 解析并占位创建（v1.0.7+），把 MotionRecorder 生成的 `motion_*.json` 复制进去再点刷新即可。
+
 这些 JSON 不是编辑器自己录的，而是游戏内的 BepInEx mod MotionRecorder 录出来的。。安装和字段说明见 [`motionRecorder/README.md`](../../motionRecorder/README.md)。
 
 装配模式默认开启实时预览，每次画完一笔就会重新合成；如果卡顿，可以关闭"实时预览"，改用旁边的刷新按钮手动合成。动画模式沿用同一套开关：开启时，当前部件即使还没保存到磁盘，也会直接拿编辑器里的未保存图层参与当前帧合成；关掉后会进入待刷新状态，点刷新按钮再更新当前帧。

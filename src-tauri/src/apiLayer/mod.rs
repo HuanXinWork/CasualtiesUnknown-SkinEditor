@@ -703,7 +703,16 @@ impl ApiLayer for CoreApi {
     }
 
     fn listMotionCaptures(&self, params: MotionCaptureListParams) -> Result<Vec<MotionCaptureMeta>, ApiError> {
-        let root = PathBuf::from(params.captureRoot);
+        let root = crate::dataPaths::resolveSkinRoot(&params.captureRoot);
+        if !root.exists() {
+            if let Err(e) = std::fs::create_dir_all(&root) {
+                return Err(ApiError {
+                    code: "capture_root_failed".into(),
+                    message: format!("create {} failed: {}", root.display(), e),
+                });
+            }
+            return Ok(Vec::new());
+        }
         let entries = std::fs::read_dir(&root).map_err(|e| ApiError {
             code: "capture_root_failed".into(),
             message: format!("read_dir {} failed: {}", root.display(), e),

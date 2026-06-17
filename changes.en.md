@@ -6,6 +6,14 @@
 
 ---
 
+## 1.0.7 (2026-06-17)
+
+### Improved
+
+- **Auto-create the `captures/` placeholder for animation preview**: when listing motion captures, if `captures/` does not exist the editor now resolves it against the AppRoot and creates it automatically, instead of leaving the dropdown stuck on "No captures". Drop the `motion_*.json` produced by MotionRecorder into the folder and refresh (issue #4).
+
+---
+
 ## 1.0.6 (2026-06-06)
 
 ### Added

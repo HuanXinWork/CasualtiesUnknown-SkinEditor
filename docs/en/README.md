@@ -183,6 +183,8 @@ The right preview area has two modes:
 - **Assembly**: composes every visible part of the current skin from the assembly table, in z-order
 - **Motion**: reads MotionRecorder JSON files from `captures/` and composites the skin frame by frame
 
+The first time you switch to motion mode, the editor automatically creates the `captures/` directory next to the AppRoot if it does not exist (v1.0.7+); drop the `motion_*.json` produced by MotionRecorder into that folder and hit refresh.
+
 Those JSON files are not recorded by the editor itself. They come from the in-game BepInEx mod MotionRecorder. Installation and field details are documented in [motionRecorder/README.en.md](../../motionRecorder/README.en.md).
 
 Assembly mode has live preview on by default, so every committed stroke triggers a new composite. If performance is poor, turn off live preview and use the refresh button instead. Motion mode uses the same toggle: when live preview is enabled, the current frame also picks up unsaved in-memory layer edits immediately; when it is off, the frame stays stale until you hit the refresh button.
