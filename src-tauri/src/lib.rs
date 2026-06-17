@@ -237,13 +237,16 @@ pub fn runDesktop() {
 /// 创建编辑器主窗口；与历史 tauri.conf.json 中 main 窗口尺寸 / 居中 / 拖放配置一致。
 fn createMainWindow(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let url = tauri::WebviewUrl::App("index.html".into());
-    tauri::WebviewWindowBuilder::new(app, "main", url)
+    let builder = tauri::WebviewWindowBuilder::new(app, "main", url)
         .title("CasualtiesUnknown-SkinEditor")
         .inner_size(1440.0, 900.0)
         .min_inner_size(1024.0, 640.0)
-        .center()
-        .drag_and_drop(false)
-        .build()?;
+        .center();
+    // drag_and_drop 仅 Windows 平台提供（禁用原生拖放以放行前端 HTML5 拖放）；
+    // 其他平台无此方法，非 Windows 不调用以保证跨平台编译。
+    #[cfg(windows)]
+    let builder = builder.drag_and_drop(false);
+    builder.build()?;
     Ok(())
 }
 
