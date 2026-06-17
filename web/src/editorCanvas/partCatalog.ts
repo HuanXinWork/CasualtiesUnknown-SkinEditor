@@ -56,6 +56,40 @@ export const PART_CATALOG: Partial<Record<PartCategory, PartDef[]>> = {
     { base: "wingDL", width: 32, height: 32, fb: false, lr: false },
     { base: "wingDR", width: 32, height: 32, fb: false, lr: false },
   ],
+  Accessories: [
+    { base: "autopump", width: 12, height: 12, fb: false, lr: false },
+    { base: "autozoomgoggles", width: 16, height: 12, fb: false, lr: false },
+    { base: "balaclava", width: 26, height: 12, fb: false, lr: false },
+    { base: "bellyarmor", width: 12, height: 12, fb: false, lr: false },
+    { base: "belt", width: 10, height: 8, fb: false, lr: false },
+    { base: "bigpack", width: 24, height: 24, fb: false, lr: false },
+    { base: "bikehelmet", width: 20, height: 18, fb: false, lr: false },
+    { base: "blindfold", width: 26, height: 12, fb: false, lr: false },
+    { base: "carapace", width: 12, height: 18, fb: false, lr: false },
+    { base: "climbingclaws", width: 8, height: 12, fb: false, lr: false },
+    { base: "duffelbag", width: 20, height: 24, fb: false, lr: false },
+    { base: "dustmask", width: 26, height: 12, fb: false, lr: false },
+    { base: "fannypack", width: 16, height: 10, fb: false, lr: false },
+    { base: "headlamp", width: 26, height: 12, fb: false, lr: false },
+    { base: "holidayhat", width: 22, height: 18, fb: false, lr: false },
+    { base: "jetpack", width: 24, height: 30, fb: false, lr: false },
+    { base: "latexgloves", width: 6, height: 8, fb: false, lr: false },
+    { base: "legpouch", width: 10, height: 12, fb: false, lr: false },
+    { base: "makeshiftheadlamp", width: 20, height: 20, fb: false, lr: false },
+    { base: "makeshifthelmet", width: 22, height: 18, fb: false, lr: false },
+    { base: "materialpouch", width: 12, height: 12, fb: false, lr: false },
+    { base: "safetyglasses", width: 26, height: 12, fb: false, lr: false },
+    { base: "scarf", width: 12, height: 14, fb: false, lr: false },
+    { base: "slingbag", width: 26, height: 16, fb: false, lr: false },
+    { base: "smallpack", width: 16, height: 14, fb: false, lr: false },
+    { base: "sneakers", width: 8, height: 11, fb: false, lr: false },
+    { base: "woodsandals", width: 10, height: 11, fb: false, lr: false },
+  ],
+  Blood: [
+    { base: "BloodParticle", width: 32, height: 32, fb: false, lr: false },
+    { base: "limbBlood", width: 128, height: 128, fb: false, lr: false },
+    { base: "nosebleed", width: 14, height: 12, fb: false, lr: false },
+  ],
 };
 
 /// 分类是否提供"添加部件"功能。
@@ -63,9 +97,9 @@ export function categorySupportsCreate(cat: PartCategory): boolean {
   return cat in PART_CATALOG;
 }
 
-/// 推断该分类新建部件的前缀：Wings 恒空；其它取已有部件公共前缀，缺失默认 "experiment"。
+/// 推断该分类新建部件的前缀：Wings / Blood / Accessories 恒空（base 名即文件名）；其它取已有部件公共前缀，缺失默认 "experiment"。
 export function inferPrefix(cat: PartCategory, existingNames: string[]): string {
-  if (cat === "Wings") return "";
+  if (cat === "Wings" || cat === "Blood" || cat === "Accessories") return "";
   for (const name of existingNames) {
     const m = /^([a-z]+)[A-Z]/.exec(name.replace(/^R_/, ""));
     if (m) return m[1];

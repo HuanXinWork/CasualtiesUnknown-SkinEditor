@@ -18,6 +18,7 @@ use crate::apiLayer::{
     CreateSidePartParams, CreateSidePartResult,
     CreateOrientationPartParams, CreateOrientationPartResult,
     CreatePartParams, CreatePartResult,
+    CreatePartFromTemplateParams,
     CopyPartParams, DeletePartParams, CopyLayerToPartParams, SetLayerTransformParams,
     SetActiveLayerParams, SetAssemblyOverrideParams, SetAccessoryEnabledParams, SaveAccessoryConfigParams, LoadZonesParams, LoadZonesResult, SaveZonesParams, SkinsParams, SaveWingsConfigParams,
     BloodConfigPathParams, SaveBloodConfigParams,
@@ -202,6 +203,14 @@ pub fn api_copyPart(
     params: CopyPartParams,
 ) -> Result<CreatePartResult, String> {
     api.copyPart(params).map_err(toErrString)
+}
+
+#[tauri::command]
+pub fn api_createPartFromTemplate(
+    api: State<'_, SharedApi>,
+    params: CreatePartFromTemplateParams,
+) -> Result<CreatePartResult, String> {
+    api.createPartFromTemplate(params).map_err(toErrString)
 }
 
 #[tauri::command]

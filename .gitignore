@@ -1,5 +1,12 @@
 .history
+.vscode
+.idea
+*.log
 src-tauri/target
 src-tauri/proptest-regressions
+src-tauri/Cargo.lock
 web/node_modules
 web/dist
+web/package-lock.json
+motionRecorder/bin
+motionRecorder/obj

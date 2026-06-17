@@ -4,7 +4,7 @@
 
 该文档主要用来说明如何使用。开发与构建说明见仓库根目录 [README.md](../../README.md)。
 
-当前版本：**1.0.4**（更新内容见 [更新日志](../../changes.md)）。
+当前版本：**1.0.6**（更新内容见 [更新日志](../../changes.md)）。
 
 ---
 
@@ -37,15 +37,15 @@ mod 加载时只关心 `Body/` / `Head/` / `Wings/` / `Accessories/` / `Blood/` 
 
 在 release exe 所在目录或开发模式下双击启动。首次启动会做两件事：
 
-1. 在工作目录下创建 `data/workspace.json`，写入默认布局与主题
-2. 如果 `data/skin/` 为空，创建一份空的 `data/skin/default/{Body,Head}/` 骨架占位
+1. 在 exe 同目录下创建 `data/workspace.json`，写入默认布局与主题
+2. 如果 `data/skin/` 下没有任何皮肤子目录，把编译期内置的 `exp` 皮肤包展开到 `data/skin/exp/` 并自动选中
 
 启动后界面如下，自上而下分别是工具栏、左侧部件列表、中央编辑画布、底部图层栏、右侧合成预览、最右调色盘。
 
 [主窗口]<img src="https://raw.githubusercontent.com/huanxin996/CasualtiesUnknown-SkinEditor/main/docs/zh/images/main.png" alt="中文界面 / Chinese UI" width="100%">
       <br>
 
-如果你的 `data/skin/` 已经放过皮肤目录，启动后左上角"皮肤"下拉会自动列出全部皮肤名。否则下拉只有一个空的 `default`，需要先导入或手动放入皮肤目录。
+如果你的 `data/skin/` 已经放过皮肤目录，启动后左上角"皮肤"下拉会自动列出全部皮肤名。全新安装且目录为空时，会自动出现内置的 `exp` 皮肤，可直接开始编辑；也可随时导入 zip 或手动放入其它皮肤目录。
 
 ## 三、导入皮肤压缩包
 
@@ -298,7 +298,7 @@ my-skin.zip
 | 现象 | 可能原因 | 应对 |
 | --- | --- | --- |
 | 启动后界面是空白深色页 | Windows 处于系统暗色模式，且 WebView2 误把空背景渲成黑 | 已在前端固定 `color-scheme: light`，如果仍出现请重装 WebView2 Runtime |
-| 部件列表为空 | `data/skin/` 下没有任何 `<皮肤名>/{Body,Head}/` 结构 | 用导入按钮拖一个 zip 进来，或手动把目录拷到 `data/skin/` |
+| 部件列表为空 | `data/skin/` 下没有任何皮肤目录，且自动播种 `exp` 失败（常见原因：exe 目录无写权限） | 确认 exe 旁有写权限后重启；或手动把皮肤目录拷到 `data/skin/`，或用导入按钮拖 zip 进来 |
 | 导入提示 `imported=0` | zip 内部没有 `Body/` 或 `Head/` 子目录 | 检查 zip 结构是否符合"皮肤包规范"小节 |
 | 保存后 mod 仍然加载旧贴图 | mod 在游戏运行时缓存贴图 | 重启游戏，或在 mod 提供的方式里触发热重载 |
 | 取色针在图片子窗口不工作 | 取色针未激活、或子窗口不属于本程序 | 取色针只在本程序的 webview 内有效，跨进程屏幕取色不支持 |

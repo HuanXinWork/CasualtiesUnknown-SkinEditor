@@ -22,6 +22,7 @@ use crate::apiLayer::{
     CreateSidePartParams, CreateSidePartResult,
     CreateOrientationPartParams, CreateOrientationPartResult,
     CreatePartParams, CreatePartResult,
+    CreatePartFromTemplateParams,
     CopyPartParams, DeletePartParams, CopyLayerToPartParams, SetLayerTransformParams,
     SetActiveLayerParams, SetAssemblyOverrideParams, SetAccessoryEnabledParams, SaveAccessoryConfigParams, LoadZonesParams, LoadZonesResult, SaveZonesParams, SkinsParams, SaveWingsConfigParams,
     BloodConfigPathParams, SaveBloodConfigParams,
@@ -64,6 +65,7 @@ pub async fn serve(config: HttpConfig, api: SharedApi) {
         .route("/api/createOrientationPart", post(handleCreateOrientationPart))
         .route("/api/createPart", post(handleCreatePart))
         .route("/api/copyPart", post(handleCopyPart))
+        .route("/api/createPartFromTemplate", post(handleCreatePartFromTemplate))
         .route("/api/deletePart", post(handleDeletePart))
         .route("/api/layer/copyToPart", post(handleCopyLayerToPart))
         .route("/api/layer/transform", post(handleSetLayerTransform))
@@ -346,6 +348,14 @@ async fn handleCopyPart(
     Json(params): Json<CopyPartParams>,
 ) -> axum::response::Response {
     let result: Result<CreatePartResult, ApiError> = api.copyPart(params);
+    intoResponse(result)
+}
+
+async fn handleCreatePartFromTemplate(
+    State(api): State<SharedApi>,
+    Json(params): Json<CreatePartFromTemplateParams>,
+) -> axum::response::Response {
+    let result: Result<CreatePartResult, ApiError> = api.createPartFromTemplate(params);
     intoResponse(result)
 }
 

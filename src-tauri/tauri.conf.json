@@ -7,19 +7,7 @@
     "beforeBuildCommand": "npm --prefix ../web run build"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "CasualtiesUnknown-SkinEditor",
-        "url": "index.html",
-        "width": 1440,
-        "height": 900,
-        "minWidth": 1024,
-        "minHeight": 640,
-        "center": true,
-        "dragDropEnabled": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

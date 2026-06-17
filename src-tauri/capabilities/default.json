@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "默认权限：主窗口与子窗口的核心 webview / window 操作",
-  "windows": ["main", "panel_*", "image_*"],
+  "windows": ["main", "panel_*", "image_*", "pet_*"],
   "permissions": [
     "core:default",
     "core:event:allow-listen",
@@ -11,6 +11,7 @@
     "core:webview:allow-create-webview-window",
     "core:webview:allow-set-webview-position",
     "core:webview:allow-set-webview-size",
+    "core:window:allow-set-ignore-cursor-events",
     "core:window:allow-set-always-on-top",
     "core:window:allow-set-position",
     "core:window:allow-set-size",

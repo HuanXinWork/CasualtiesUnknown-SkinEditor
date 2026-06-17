@@ -2,7 +2,7 @@
 import type { PartCategory } from "../stateStore/types";
 import { t } from "../i18n";
 import { localizePartName } from "../i18n/partNames";
-import { createPart, type ApiError } from "../apiClient";
+import { createPart, createPartFromTemplate, type ApiError } from "../apiClient";
 import { showToast } from "../toast";
 import { PART_CATALOG, inferPrefix, buildPartFileName, isPartFullyCreated, type PartDef } from "./partCatalog";
 
@@ -19,6 +19,8 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
   if (!allDefs || allDefs.length === 0) return;
   const prefix = inferPrefix(opts.category, opts.existingNames);
   const existing = new Set(opts.existingNames);
+  // 模板分类：贴图直接从内置 exp 复制（保持原尺寸/原像素），不再让用户手动改尺寸。
+  const useTemplate = opts.category === "Accessories" || opts.category === "Blood";
   // 只列还没建齐全部维度组合的部件。
   const defs = allDefs.filter((d) => !isPartFullyCreated(d, prefix, existing));
   if (defs.length === 0) return;
@@ -158,6 +160,7 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
   function syncControls(): void {
     fbRow.style.display = selected.fb ? "flex" : "none";
     lrRow.style.display = selected.lr ? "flex" : "none";
+    sizeRow.style.display = useTemplate ? "none" : "flex";
     cbF.checked = wantF; cbB.checked = wantB;
     cbL.checked = wantLeft; cbR.checked = wantRight;
     const combos = computeCombos();
@@ -190,7 +193,11 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
     for (const c of combos) {
       const fileName = buildPartFileName(prefix, selected.base, c.side, c.right);
       try {
-        await createPart(opts.skinRoot, opts.skinName, opts.category, fileName, width, height);
+        if (useTemplate) {
+          await createPartFromTemplate(opts.skinRoot, opts.skinName, opts.category, fileName);
+        } else {
+          await createPart(opts.skinRoot, opts.skinName, opts.category, fileName, width, height);
+        }
         existing.add(fileName);
         created++;
       } catch (e) {

@@ -206,6 +206,15 @@ pub struct CreatePartResult {
     pub partName: String,
 }
 
+/// 从内置 exp 模板皮肤复制部件 PNG 入参：用于 Accessories / Blood 等"按模板创建"分类。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePartFromTemplateParams {
+    pub skinRoot: String,
+    pub skinName: String,
+    pub category: PartCategory,
+    pub partName: String,
+}
+
 /// 复制部件入参：把源部件（含图层）复制为同皮肤同类别下的新部件名。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CopyPartParams {
@@ -605,6 +614,7 @@ pub trait ApiLayer: Send + Sync + 'static {
     fn createSidePart(&self, params: CreateSidePartParams) -> Result<CreateSidePartResult, ApiError>;
     fn createOrientationPart(&self, params: CreateOrientationPartParams) -> Result<CreateOrientationPartResult, ApiError>;
     fn createPart(&self, params: CreatePartParams) -> Result<CreatePartResult, ApiError>;
+    fn createPartFromTemplate(&self, params: CreatePartFromTemplateParams) -> Result<CreatePartResult, ApiError>;
     fn copyPart(&self, params: CopyPartParams) -> Result<CreatePartResult, ApiError>;
     fn deletePart(&self, params: DeletePartParams) -> Result<(), ApiError>;
     fn copyLayerToPart(&self, params: CopyLayerToPartParams) -> Result<LayersSnapshot, ApiError>;
@@ -1458,6 +1468,45 @@ impl ApiLayer for CoreApi {
         imageOps::savePng(&dst, params.width, params.height, &pixels)?;
         let skinDir = PathBuf::from(&params.skinRoot).join(&params.skinName);
         let _ = baseSizes::upsert(&skinDir, &baseSizes::keyFor(catDirName, name), params.width, params.height);
+        Ok(CreatePartResult { partName: name.to_string() })
+    }
+
+    fn createPartFromTemplate(&self, params: CreatePartFromTemplateParams) -> Result<CreatePartResult, ApiError> {
+        let name = params.partName.trim();
+        if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err(ApiError {
+                code: "invalid_name".into(),
+                message: format!("invalid partName: {}", params.partName),
+            });
+        }
+        let catDirName = categoryDir(params.category);
+        let rel = format!("{}/{}.png", catDirName, name);
+        let bytes = crate::embeddedTemplateBytes(&rel).ok_or_else(|| ApiError {
+            code: "template_not_found".into(),
+            message: format!("no embedded template at {}", rel),
+        })?;
+        let catDir = PathBuf::from(&params.skinRoot).join(&params.skinName).join(catDirName);
+        std::fs::create_dir_all(&catDir).map_err(|e| ApiError {
+            code: "io_failed".into(),
+            message: format!("mkdir {} failed: {}", catDir.display(), e),
+        })?;
+        let dst = catDir.join(format!("{}.png", name));
+        if dst.exists() {
+            return Err(ApiError {
+                code: "part_exists".into(),
+                message: format!("part PNG already exists: {}", dst.display()),
+            });
+        }
+        std::fs::write(&dst, &bytes).map_err(|e| ApiError {
+            code: "io_failed".into(),
+            message: format!("write {} failed: {}", dst.display(), e),
+        })?;
+        let (w, h, _) = imageOps::loadPng(&dst)?;
+        let skinDir = PathBuf::from(&params.skinRoot).join(&params.skinName);
+        let _ = baseSizes::upsert(&skinDir, &baseSizes::keyFor(catDirName, name), w, h);
+        if matches!(params.category, PartCategory::Accessories) {
+            let _ = appendAccessoryEntryFromTemplate(&skinDir, name);
+        }
         Ok(CreatePartResult { partName: name.to_string() })
     }
 
@@ -2828,6 +2877,31 @@ fn emptyPixelDiff() -> PixelDiff {
         before: vec![],
         after: vec![],
     }
+}
+
+/// 从内置 exp 模板的 accessories.json 取 id=accessoryId 的 entry，追加到目标皮肤；
+/// 已有同 id 跳过，模板缺该 id 跳过。失败仅打印不阻断。
+fn appendAccessoryEntryFromTemplate(skinDir: &Path, accessoryId: &str) -> Result<(), ApiError> {
+    let templateBytes = match crate::embeddedTemplateBytes("accessories.json") {
+        Some(b) => b,
+        None => return Ok(()),
+    };
+    let templateList: Vec<accessories::AccessoryEntry> =
+        serde_json::from_slice(&templateBytes).unwrap_or_default();
+    let entry = match templateList.into_iter().find(|e| e.id == accessoryId) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+    let path = accessories::accessoriesPath(
+        skinDir.parent().unwrap_or(Path::new("")),
+        skinDir.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+    );
+    let mut list = accessories::loadAccessories(&path);
+    if list.iter().any(|e| e.id == accessoryId) {
+        return Ok(());
+    }
+    list.push(entry);
+    accessories::saveAccessories(&path, &list)
 }
 
 fn categoryDir(category: PartCategory) -> &'static str {

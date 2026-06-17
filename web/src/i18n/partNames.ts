@@ -95,6 +95,7 @@ const ZH_MAP: Record<string, string> = {
   // ---- Blood（血液贴图）----
   BloodParticle: "血液粒子",
   bloodParticle: "血液粒子",
+  limbBlood: "肢体血迹",
 };
 
 /// 把 PNG 文件名（不含扩展名）转成当前语言下的显示名。

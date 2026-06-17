@@ -343,6 +343,20 @@ export function copyPart(
   return httpPost<CreatePartResult>("/api/copyPart", params);
 }
 
+/// 从内置 exp 模板皮肤复制部件 PNG 到目标皮肤；目标已存在或模板缺失时报错。
+export function createPartFromTemplate(
+  skinRoot: string,
+  skinName: string,
+  category: PartCategory,
+  partName: string,
+): Promise<CreatePartResult> {
+  const params = { skinRoot, skinName, category, partName };
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<CreatePartResult>("api_createPartFromTemplate", { params });
+  }
+  return httpPost<CreatePartResult>("/api/createPartFromTemplate", params);
+}
+
 /// 删除部件：移除 PNG + sidecar + baseSizes 项 + 卸载内存 session。
 export function deletePart(
   skinRoot: string,

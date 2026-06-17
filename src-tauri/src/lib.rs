@@ -98,6 +98,11 @@ pub fn ensureEmbeddedDefaultSkin(skinRoot: &std::path::Path) -> bool {
     true
 }
 
+/// 读内置 exp 皮肤包中的相对路径文件字节（如 "Accessories/balaclava.png"）；缺失返回 None。
+pub fn embeddedTemplateBytes(rel: &str) -> Option<Vec<u8>> {
+    EmbeddedDefaultSkin::get(rel).map(|f| f.data.into_owned())
+}
+
 /// 启动时为缺 `baseSizes.json` 的旧皮肤目录补齐分辨率配置。失败仅打印不阻塞启动。
 fn backfillBaseSizes(skinRoot: &std::path::Path) {
     let entries = match std::fs::read_dir(skinRoot) {
@@ -182,6 +187,7 @@ pub fn runDesktop() {
             tauriCommands::api_createOrientationPart,
             tauriCommands::api_createPart,
             tauriCommands::api_copyPart,
+            tauriCommands::api_createPartFromTemplate,
             tauriCommands::api_deletePart,
             tauriCommands::api_copyLayerToPart,
             tauriCommands::api_setLayerTransform,
@@ -220,8 +226,25 @@ pub fn runDesktop() {
             tauriCommands::api_setPickActive,
             tauriCommands::api_isPickActive,
         ])
+        .setup(|app| {
+            createMainWindow(app)?;
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("启动 Tauri 桌面壳失败");
+}
+
+/// 创建编辑器主窗口；与历史 tauri.conf.json 中 main 窗口尺寸 / 居中 / 拖放配置一致。
+fn createMainWindow(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let url = tauri::WebviewUrl::App("index.html".into());
+    tauri::WebviewWindowBuilder::new(app, "main", url)
+        .title("CasualtiesUnknown-SkinEditor")
+        .inner_size(1440.0, 900.0)
+        .min_inner_size(1024.0, 640.0)
+        .center()
+        .drag_and_drop(false)
+        .build()?;
+    Ok(())
 }
 
 /// 启动 HTTP 模式。同一进程同时承担 REST API 与前端静态资源分发。

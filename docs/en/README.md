@@ -4,7 +4,7 @@
 
 This document focuses on how to use the editor. For build and development details, see the repository [README.md](../../README.md). The repository overview is also available in English at [README.en.md](../../README.en.md).
 
-Current version: **1.0.4** (changes listed in [Changelog](../../changes.en.md)).
+Current version: **1.0.6** (changes listed in [Changelog](../../changes.en.md)).
 
 ---
 
@@ -37,14 +37,14 @@ The mod loads PNGs from `Body/` / `Head/` / `Wings/` / `Accessories/` / `Blood/`
 
 Double-click the release exe, or run from a development build. On first launch the editor does two things:
 
-1. Creates `data/workspace.json` in the working directory with the default layout and theme.
-2. If `data/skin/` is empty, scaffolds an empty `data/skin/default/{Body,Head}/` so the part list is not silently broken.
+1. Creates `data/workspace.json` next to the exe with the default layout and theme.
+2. If `data/skin/` has no skin subdirectories, unpacks the built-in `exp` skin pack to `data/skin/exp/` and selects it automatically.
 
 After launch the window has a top toolbar, a part list on the left, the editor canvas in the middle, a layer strip at the bottom, the composite preview on the right, and the color palette farthest right.
 
 ![Main window](images/main.png)
 
-If `data/skin/` already contains skin directories, the skin dropdown at the top-left auto-populates. Otherwise the dropdown only shows the empty `default` placeholder and you have to import a zip or drop a directory in.
+If `data/skin/` already contains skin directories, the skin dropdown at the top-left auto-populates. On a fresh install with an empty folder, the built-in `exp` skin appears automatically so you can start editing right away; you can still import a zip or drop in other skin directories at any time.
 
 ## 3. Importing a Skin Pack
 
@@ -305,7 +305,7 @@ In the settings panel, click a row's key cell to record a new binding. Per-row r
 | Symptom | Likely cause | What to try |
 | --- | --- | --- |
 | Window opens to a blank dark page | Windows is in dark mode and WebView2 paints the empty background black | The frontend pins `color-scheme: light`; if it still happens, reinstall the WebView2 Runtime |
-| Part list is empty | `data/skin/` has no `<skinName>/{Body,Head}/` structure | Import a zip, or drop a directory into `data/skin/` directly |
+| Part list is empty | `data/skin/` has no skin directories and auto-seeding `exp` failed (common cause: no write permission next to the exe) | Ensure the exe folder is writable and restart; or copy a skin directory into `data/skin/`, or import a zip |
 | Import shows `imported=0` | The zip has no `Body/` or `Head/` folder inside | Re-check the layout against the rules in section 3.1 |
 | Saved a part but the mod still shows the old texture | The mod caches textures during play | Restart the game, or use whatever hot-reload path the mod exposes |
 | Eyedropper does nothing in a drag-in image window | The dropper is off, or the window is not part of this app | The dropper only works inside this app's webviews; cross-process screen picking is not supported |
