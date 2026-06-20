@@ -23,7 +23,7 @@ import { startUpdateChecker } from "./updateChecker";
 import { mountAutoSave } from "./autoSave";
 
 // 与 src-tauri/Cargo.toml `version` / settingsPanel APP_META.version 保持一致。
-const APP_VERSION = "1.0.6";
+const APP_VERSION = "1.0.7";
 import {
   ICON_PIN,
   ICON_PIN_OFF,
