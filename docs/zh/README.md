@@ -42,7 +42,7 @@ mod 加载时只关心 `Body/` / `Head/` / `Wings/` / `Accessories/` / `Blood/` 
 
 启动后界面如下，自上而下分别是工具栏、左侧部件列表、中央编辑画布、底部图层栏、右侧合成预览、最右调色盘。
 
-[主窗口]<img src="https://raw.githubusercontent.com/huanxin996/CasualtiesUnknown-SkinEditor/main/docs/zh/images/main.png" alt="中文界面 / Chinese UI" width="100%">
+[主窗口]<img src="https://raw.githubusercontent.com/HuanXinWork/CasualtiesUnknown-SkinEditor/main/docs/zh/images/main.png" alt="中文界面 / Chinese UI" width="100%">
       <br>
 
 如果你的 `data/skin/` 已经放过皮肤目录，启动后左上角"皮肤"下拉会自动列出全部皮肤名。全新安装且目录为空时，会自动出现内置的 `exp` 皮肤，可直接开始编辑；也可随时导入 zip 或手动放入其它皮肤目录。

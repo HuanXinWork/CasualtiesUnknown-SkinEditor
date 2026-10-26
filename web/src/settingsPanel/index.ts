@@ -17,10 +17,10 @@ const APP_META = {
   // 与 src-tauri/Cargo.toml `version` 保持一致；版权字符串与 tauri.conf.json bundle.copyright 同步。
   name: "CasualtiesUnknown-SkinEditor",
   version: "1.0.7",
-  authorName: "huanxin996",
-  authorUrl: "https://github.com/huanxin996",
-  repo: "https://github.com/huanxin996/CasualtiesUnknown-SkinEditor",
-  copyright: "Copyright (c) 2026 huanxin996",
+  authorName: "huanxin886",
+  authorUrl: "https://github.com/huanxin886",
+  repo: "https://github.com/HuanXinWork/CasualtiesUnknown-SkinEditor",
+  copyright: "Copyright (c) 2026 huanxin886",
 };
 
 /** 把 popover 挂到 trigger 按钮下方。返回控制句柄：toggle / close / destroy。 */

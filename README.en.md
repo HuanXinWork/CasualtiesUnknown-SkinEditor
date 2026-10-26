@@ -3,7 +3,7 @@
 <div align="center">
 
 <p align="center">
-  <a href="https://github.com/huanxin996"><img src="https://github.com/huanxin996.png" width="200" height="200" alt="huanxin996"></a>
+  <a href="https://github.com/huanxin886"><img src="https://raw.githubusercontent.com/HuanXinWork/CasualtiesUnknown-SkinEditor/main/docs/images/avatar.png" width="200" height="200" alt="huanxin886"></a>
 </p>
 
 # CasualtiesUnknown-SkinEditor
@@ -39,12 +39,12 @@ _✨ A standalone skin preview and pixel-level editor for the game `Casualties U
 <table>
   <tr>
     <td align="center" width="50%">
-      <img src="https://raw.githubusercontent.com/huanxin996/CasualtiesUnknown-SkinEditor/main/docs/zh/images/main.png" alt="Chinese UI" width="100%">
+      <img src="https://raw.githubusercontent.com/HuanXinWork/CasualtiesUnknown-SkinEditor/main/docs/zh/images/main.png" alt="Chinese UI" width="100%">
       <br>
       <sub>Chinese UI</sub>
     </td>
     <td align="center" width="50%">
-      <img src="https://raw.githubusercontent.com/huanxin996/CasualtiesUnknown-SkinEditor/main/docs/en/images/main.png" alt="English UI" width="100%">
+      <img src="https://raw.githubusercontent.com/HuanXinWork/CasualtiesUnknown-SkinEditor/main/docs/en/images/main.png" alt="English UI" width="100%">
       <br>
       <sub>English UI</sub>
     </td>

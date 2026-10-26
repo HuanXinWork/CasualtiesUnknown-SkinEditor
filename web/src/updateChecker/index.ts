@@ -1,7 +1,7 @@
 import { subscribeLang, t } from "../i18n";
 
 // GitHub 仓库由 settingsPanel 的 APP_META.repo 决定，这里只做硬编码字符串，避免循环依赖。
-const REPO_OWNER = "huanxin996";
+const REPO_OWNER = "HuanXinWork";
 const REPO_NAME = "CasualtiesUnknown-SkinEditor";
 const RELEASES_URL = `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases`;
 const API_URL = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`;

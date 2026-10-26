@@ -15,8 +15,8 @@
   "bundle": {
     "active": true,
     "targets": ["msi", "dmg", "appimage"],
-    "copyright": "Copyright (c) 2026 huanxin996",
-    "publisher": "huanxin996",
+    "copyright": "Copyright (c) 2026 huanxin886",
+    "publisher": "huanxin886",
     "icon": ["icons/icon.ico", "icons/icon.png"]
   }
 }
