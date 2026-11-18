@@ -14,7 +14,7 @@ namespace CasualtiesUnknown.MotionRecorder
     {
         private const string PluginGuid = "com.casualtiesUnknown.motionRecorder";
         private const string PluginName = "MotionRecorder";
-        private const string PluginVersion = "1.0.1";
+        private const string PluginVersion = "1.0.2";
         private const float MaxTailDistance = 3f;
 
         private static readonly string[] WingNodeNames = { "WingUL", "WingUR", "WingDL", "WingDR" };

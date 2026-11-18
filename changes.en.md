@@ -6,23 +6,31 @@
 
 ---
 
+## 1.0.8 (2026-11-18)
+
+### Added and Changed
+
+- Added the zone brush and per-zone effect editor (up to 255 zones per part with radial/directional/scatter 2D lights, dual-color gradients, breathing pulses, 5 particle modes, and frame animations), plus 19 worn-slot bindings and `R_` right-facing sprite support across all 42 accessories.
+- Added the 8th facial expression ("Locked in" / `experimentEyeLockedIn`), `BloodParticle_splat`, and full part-name support for `exp`, `milky`, and `dune` naming conventions.
+- Aligned `baseSizes.json` serialization to the `{ "entries": { ... } }` envelope expected by `SkinSync`, and updated built-in accessory metadata to `requireWornSlot` with `HandB`/`FootB` `secondaryLimbs` for paired gear.
+
+### Fixed
+
+- Serialized `workspace.json` writes through a single in-memory snapshot and added the 5 missing backend `WorkspaceSettings` fields so concurrent updates from dividers, swatches, theme, and settings no longer overwrite each other.
+- Serialized canvas brush IPC calls with Bresenham line interpolation to eliminate skipped pixels during fast strokes, and cleared stuck gradient drags on window blur.
+- Discarded in-memory backend sessions when choosing "Don't save" on part switch, and added revision-checked dirty tracking so background saves do not clear newer edits.
+- Corrected flipped left/right facing and `R_` texture selection in the preview canvas, seeded initial assembly coordinates, and normalized cross-character part names for `Shift`+drag positioning.
+- Fixed high-DPI coordinate drift and transparent-overlay black sampling in the eyedropper, and adapted borders and highlights for dark themes.
+- Included `*.zones.json` and `baseSizes.json` in zip import/export, routed `*.zones.*` files into their matching part category folders, switched file writes to atomic temp-file replacement, and hardened zip extraction against path traversal and oversized entries.
+- Updated `MotionRecorder` (`1.0.2`) to read `Body.isRight`, bind `PlayerCamera.main.body` and `Body.tail` directly, subtract paused duration from frame timestamps, and detect `SkinSync` fluid-tail `MeshRenderer` components.
+
+---
+
 ## 1.0.7 (2026-06-17)
 
 ### Added and Changed
 
 - Automatically creates the `captures/` directory next to the executable the first time motion captures are listed, so you can drop `motion_*.json` files from `MotionRecorder` straight in and refresh (issue #4).
-- Added the zone brush and per-zone effect editor (up to 255 zones per part with radial/directional/scatter 2D lights, dual-color gradients, breathing pulses, 5 particle modes, and frame animations), plus 19 worn-slot bindings and `R_` right-facing sprite support across all 42 accessories.
-- Added the 8th facial expression ("Locked in" / `experimentEyeLockedIn`), `BloodParticle_splat`, and full part-name support for `exp`, `milky`, and `dune` naming conventions.
-
-### Fixed
-
-- Serialized `workspace.json` writes through a single in-memory snapshot so concurrent updates from layout dividers, swatches, theme, and settings no longer overwrite each other.
-- Serialized canvas brush IPC calls with Bresenham line interpolation to eliminate skipped pixels during fast strokes, and cleared stuck gradient drags on window blur.
-- Discarded in-memory backend sessions when choosing "Don't save" on part switch, and added revision-checked dirty tracking so background saves do not clear newer edits.
-- Corrected flipped left/right facing and `R_` texture selection in the preview canvas, and seeded initial assembly coordinates so `Shift`+drag no longer snaps parts to `(0, 0)` on the first move.
-- Fixed high-DPI coordinate drift and transparent-overlay black sampling in the eyedropper, and adapted borders and highlights for dark themes.
-- Included `*.zones.json` and `baseSizes.json` in zip import/export, routed `*.zones.*` files into their matching part category folders, and hardened zip extraction against path traversal and oversized entries.
-- Updated `MotionRecorder` to bind `PlayerCamera.main.body` and `Body.tail` directly, subtract paused duration from frame timestamps, and detect `SkinSync` fluid-tail `MeshRenderer` components.
 
 ---
 

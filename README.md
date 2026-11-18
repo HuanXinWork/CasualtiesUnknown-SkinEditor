@@ -11,7 +11,7 @@
 面向游戏 `Casualties Unknown`（配套 `SkinSync` 模组）的独立皮肤绘制与实时预览工具
 
 <p>
-  <img src="https://img.shields.io/badge/version-1.0.7-blue.svg" alt="version">
+  <img src="https://img.shields.io/badge/version-1.0.8-blue.svg" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="license">
   <img src="https://img.shields.io/badge/tauri-v2-FFC131?logo=tauri" alt="tauri">
   <img src="https://img.shields.io/badge/rust-1.75+-orange.svg?logo=rust" alt="rust">

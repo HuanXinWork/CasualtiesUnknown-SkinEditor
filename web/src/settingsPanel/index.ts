@@ -14,7 +14,7 @@ import { showToast } from "../toast";
 
 const APP_META = {
   name: "CasualtiesUnknown-SkinEditor",
-  version: "1.0.7",
+  version: "1.0.8",
   authorName: "huanxin886",
   authorUrl: "https://github.com/huanxin886",
   repo: "https://github.com/HuanXinWork/CasualtiesUnknown-SkinEditor",
