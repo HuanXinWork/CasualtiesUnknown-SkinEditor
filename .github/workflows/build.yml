@@ -3,6 +3,7 @@ name: Build
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
@@ -29,7 +30,7 @@ jobs:
             artifact: windows-arm64
             target: aarch64-pc-windows-msvc
             ext: .exe
-          - runner: ubuntu-latest
+          - runner: ubuntu-24.04
             platform: linux
             arch: x64
             artifact: linux-x64
@@ -41,7 +42,7 @@ jobs:
             artifact: linux-arm64
             target: aarch64-unknown-linux-gnu
             ext: ''
-          - runner: macos-14
+          - runner: macos-latest
             platform: macos
             arch: arm64
             artifact: macos-arm64
@@ -52,12 +53,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -111,7 +112,7 @@ jobs:
           fi
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: CasualtiesUnknown-SkinEditor-${{ matrix.artifact }}
           path: stage-${{ matrix.artifact }}/**
@@ -119,7 +120,7 @@ jobs:
 
   release:
     name: Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
@@ -127,7 +128,7 @@ jobs:
 
     steps:
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: CasualtiesUnknown-SkinEditor-*
           path: release-assets
@@ -153,4 +154,4 @@ jobs:
           files: release-bundles/*.zip
           generate_release_notes: true
           overwrite_files: true
-          prerelease: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
