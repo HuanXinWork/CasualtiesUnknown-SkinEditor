@@ -1,6 +1,8 @@
-# 构建引用清单
+# 本地构建引用目录
 
-本目录留给本地构建用，不入版本库。请从你本地的游戏安装目录拷贝以下 dll：
+`references/` 用于存放本地编译 `MotionRecorder.csproj` 所需的游戏与框架程序集（已加入 `.gitignore`，不会提交进版本库）。
+
+编译前请从本机 `Casualties Unknown` 安装目录拷贝以下 7 个文件到当前文件夹：
 
 ```text
 <游戏目录>/BepInEx/core/
@@ -12,11 +14,7 @@
 ├── UnityEngine.dll
 ├── UnityEngine.CoreModule.dll
 ├── UnityEngine.IMGUIModule.dll
-├── UnityEngine.UIModule.dll        # SaveManager 用
-├── UnityEngine.UI.dll              # SaveManager 用
 └── Newtonsoft.Json.dll
 ```
 
-放到 `references/` 下后即可 `dotnet build -c Release`。SaveManager 的 csproj 也把 HintPath 指到这里，两个 mod 共享同一份 references。
-
-`csproj` 里这些路径以 `HintPath` 引用，不会复制到产物目录里——MotionRecorder.dll 自身只有约几十 KB，运行期由 BepInEx 解析这些依赖。
+拷齐后在上一级 `motionRecorder/` 目录执行 `dotnet build -c Release` 即可。`MotionRecorder.csproj` 对这些程序集全部设置了 `Private=false`，输出目录只会生成轻量的 `MotionRecorder.dll`，不会把游戏自身的 DLL 一起打包进去。

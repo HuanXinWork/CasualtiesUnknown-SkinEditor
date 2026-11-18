@@ -1,16 +1,12 @@
-// 进程级图片字节缓存。主窗口拖入图片时把解码后的 RGBA 存入；
-// 图片子窗口（label = "image_<token>"）启动时按 token 取回渲染；
-// 主窗口取色器把屏幕坐标交给 Rust 找命中子窗口后按图片像素坐标取色。
-
+// 拖入参考图子窗口（`image_<token>`）的进程内 RGBA 缓存与屏幕取色读取。
 #![allow(non_snake_case)]
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 pub struct StoredImage {
     pub width: u32,
     pub height: u32,
-    /// RGBA8 扁平像素，长度 = width * height * 4。
     pub pixels: Vec<u8>,
 }
 
@@ -20,31 +16,41 @@ pub struct ImageStore {
 }
 
 impl ImageStore {
+    fn lockMap(&self) -> MutexGuard<'_, HashMap<String, StoredImage>> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn put(&self, token: String, img: StoredImage) {
-        self.inner.lock().unwrap().insert(token, img);
+        self.lockMap().insert(token, img);
     }
 
     pub fn remove(&self, token: &str) {
-        self.inner.lock().unwrap().remove(token);
+        self.lockMap().remove(token);
     }
 
-    /// 返回 (width, height, pixels) 副本。JSON 序列化必须 owned。
+    pub fn dimensions(&self, token: &str) -> Option<(u32, u32)> {
+        self.lockMap().get(token).map(|img| (img.width, img.height))
+    }
+
     pub fn get(&self, token: &str) -> Option<(u32, u32, Vec<u8>)> {
-        self.inner
-            .lock()
-            .unwrap()
+        self.lockMap()
             .get(token)
             .map(|img| (img.width, img.height, img.pixels.clone()))
     }
 
-    /// 按图片像素坐标读单像素 RGB。坐标越界返回 None。
+    /// 读取指定像素 RGB；越界或完全透明像素返回 `None`。
     pub fn pickPixel(&self, token: &str, x: u32, y: u32) -> Option<[u8; 3]> {
-        let map = self.inner.lock().unwrap();
+        let map = self.lockMap();
         let img = map.get(token)?;
         if x >= img.width || y >= img.height {
             return None;
         }
-        let i = ((y as usize) * (img.width as usize) + (x as usize)) * 4;
-        Some([img.pixels[i], img.pixels[i + 1], img.pixels[i + 2]])
+        let idx = ((y as usize).checked_mul(img.width as usize)?).checked_add(x as usize)?;
+        let i = idx.checked_mul(4)?;
+        let rgba = img.pixels.get(i..i + 4)?;
+        if rgba[3] == 0 {
+            return None;
+        }
+        Some([rgba[0], rgba[1], rgba[2]])
     }
 }

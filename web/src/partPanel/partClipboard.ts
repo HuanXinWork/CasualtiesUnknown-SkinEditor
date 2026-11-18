@@ -1,6 +1,12 @@
-// 复制部件 / 删除部件：复制走选择式对话框（仿添加部件），选目标部件覆盖，不自由改文件名。
+// 部件复制与删除对话框（复制覆盖目标部件或新建标准部件，删除时同步清除脏标记）。
+
 import { copyPart, deletePart, type ApiError } from "../apiClient";
-import { sessionStore, bumpPartListVersion } from "../stateStore";
+import {
+  bumpAssemblyOverrideVersion,
+  bumpPartListVersion,
+  markPartClean,
+  sessionStore,
+} from "../stateStore";
 import type { PartCategory } from "../stateStore/types";
 import { localizePartName } from "../i18n/partNames";
 import { PART_CATALOG, inferPrefix, partAllComboNames } from "../editorCanvas/partCatalog";
@@ -12,7 +18,6 @@ interface CopyTarget {
   exists: boolean;
 }
 
-/// 候选目标 = 该分类标准部件全维度组合名 ∪ 已有部件名；标注是否已存在，源部件排除。
 function buildTargets(category: PartCategory, existingNames: string[], sourceName: string): CopyTarget[] {
   const existing = new Set(existingNames);
   const names = new Set<string>();
@@ -45,6 +50,7 @@ export function openCopyPartDialog(
   let selected: CopyTarget | null = null;
 
   const overlay = document.createElement("div");
+  overlay.dataset.modalOpen = "true";
   overlay.style.cssText =
     "position:fixed;inset:0;z-index:2200;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;";
   const dialog = document.createElement("div");
@@ -59,7 +65,7 @@ export function openCopyPartDialog(
 
   const listWrap = document.createElement("div");
   listWrap.style.cssText =
-    "max-height:280px;overflow:auto;display:flex;flex-direction:column;gap:2px;padding:6px;border:1px solid rgba(0,0,0,var(--border-opacity));border-radius:4px;";
+    "max-height:280px;overflow:auto;display:flex;flex-direction:column;gap:2px;padding:6px;border:1px solid rgba(var(--border-rgb),var(--border-opacity));border-radius:4px;";
 
   const hint = document.createElement("div");
   hint.style.cssText = "font-size:12px;min-height:18px;opacity:0.8;";
@@ -103,11 +109,15 @@ export function openCopyPartDialog(
   }
 
   function close(): void {
-    document.removeEventListener("keydown", onKey);
+    document.removeEventListener("keydown", onKey, true);
     overlay.remove();
   }
   function onKey(e: KeyboardEvent): void {
-    if (e.key === "Escape") close();
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    }
   }
   function submit(): void {
     if (!selected) return;
@@ -115,8 +125,10 @@ export function openCopyPartDialog(
     okBtn.disabled = true;
     copyPart(skinRoot, skinName, category, sourcePartName, target.name, target.exists)
       .then(() => {
+        markPartClean(`${skinName}::${category}::${target.name}`);
         showToast(t("partClipboard.copyToast").replace("{name}", localizePartName(target.name)), "info");
         bumpPartListVersion();
+        bumpAssemblyOverrideVersion();
         close();
       })
       .catch((e: ApiError) => {
@@ -126,22 +138,32 @@ export function openCopyPartDialog(
   }
   cancelBtn.addEventListener("click", close);
   okBtn.addEventListener("click", submit);
-  overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
-  document.addEventListener("keydown", onKey);
+  overlay.addEventListener("mousedown", (e) => {
+    if (e.target === overlay) close();
+  });
+  document.addEventListener("keydown", onKey, true);
 
   renderList();
 }
 
-export function deletePartWithConfirm(skinRoot: string, skinName: string, category: PartCategory, partName: string): void {
-  confirmDialog(t("partClipboard.deleteConfirm").replace("{name}", partName), () => {
+export function deletePartWithConfirm(
+  skinRoot: string,
+  skinName: string,
+  category: PartCategory,
+  partName: string,
+): void {
+  const displayName = localizePartName(partName);
+  confirmDialog(t("partClipboard.deleteConfirm").replace("{name}", displayName), () => {
     deletePart(skinRoot, skinName, category, partName)
       .then(() => {
+        markPartClean(`${skinName}::${category}::${partName}`);
         const st = sessionStore.getState();
         if (st.selectedPartName === partName && st.selectedCategory === category) {
           sessionStore.setState({ selectedPartName: null, selectedCategory: null });
         }
-        showToast(t("partClipboard.deleteToast").replace("{name}", partName), "info");
+        showToast(t("partClipboard.deleteToast").replace("{name}", displayName), "info");
         bumpPartListVersion();
+        bumpAssemblyOverrideVersion();
       })
       .catch((e: ApiError) => showToast(e?.message ?? String(e), "error"));
   });
@@ -149,11 +171,13 @@ export function deletePartWithConfirm(skinRoot: string, skinName: string, catego
 
 function confirmDialog(message: string, onConfirm: () => void): void {
   const overlay = document.createElement("div");
+  overlay.dataset.modalOpen = "true";
   overlay.style.cssText =
     "position:fixed;inset:0;z-index:2200;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;";
   const dialog = document.createElement("div");
   dialog.className = "panel";
-  dialog.style.cssText = "min-width:320px;max-width:420px;padding:16px;display:flex;flex-direction:column;gap:12px;font-size:13px;";
+  dialog.style.cssText =
+    "min-width:320px;max-width:420px;padding:16px;display:flex;flex-direction:column;gap:12px;font-size:13px;";
   const msg = document.createElement("div");
   msg.style.cssText = "line-height:1.5;";
   msg.textContent = message;
@@ -171,14 +195,23 @@ function confirmDialog(message: string, onConfirm: () => void): void {
   document.body.appendChild(overlay);
 
   function close(): void {
-    document.removeEventListener("keydown", onKey);
+    document.removeEventListener("keydown", onKey, true);
     overlay.remove();
   }
   function onKey(e: KeyboardEvent): void {
-    if (e.key === "Escape") close();
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    }
   }
   cancelBtn.addEventListener("click", close);
-  okBtn.addEventListener("click", () => { close(); onConfirm(); });
-  overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
-  document.addEventListener("keydown", onKey);
+  okBtn.addEventListener("click", () => {
+    close();
+    onConfirm();
+  });
+  overlay.addEventListener("mousedown", (e) => {
+    if (e.target === overlay) close();
+  });
+  document.addEventListener("keydown", onKey, true);
 }

@@ -1,13 +1,14 @@
-// 未保存退出守卫。
-// Tauri 模式：Rust on_window_event 在用户点 X 时 prevent_close 并设标志位；
-// 本模块按 ~250ms 轮询 pollCloseRequest，发现 true 时根据 dirtyPartIds 决定行为：
-//   - 全干净 → 直接 confirmCloseMain（放行关窗）
-//   - 有未保存 → 弹模态确认框：保存并退出 / 不保存 / 取消
-// Web 模式：注册 beforeunload，dirty 非空时返回字符串触发浏览器原生确认。
+// 退出未保存守卫（Tauri 轮询窗口关闭拦截标志；Web 模式绑定 beforeunload）。
 
 import { confirmCloseMain, pollCloseRequest, savePart, type ApiError } from "../apiClient";
 import { getRuntimeMode } from "../runtimeMode";
-import { sessionStore, markPartClean } from "../stateStore";
+import {
+  getPartDirtyRevision,
+  markPartClean,
+  parsePartId,
+  partIdToTargetPath,
+  sessionStore,
+} from "../stateStore";
 import { localizePartName } from "../i18n/partNames";
 import { t } from "../i18n";
 import { showToast } from "../toast";
@@ -15,7 +16,6 @@ import { showToast } from "../toast";
 const POLL_INTERVAL_MS = 250;
 
 export interface CloseGuardContext {
-  /** 编辑器使用的皮肤根目录，与 main.ts 里 DEFAULT_SKIN_ROOT 同源。 */
   skinRoot: string;
 }
 
@@ -33,7 +33,7 @@ function attachTauriCloseGuard(ctx: CloseGuardContext): () => void {
     if (stopped || dialogOpen) return;
     const requested = await pollCloseRequest();
     if (!requested) return;
-    const dirty = sessionStore.getState().dirtyPartIds;
+    const dirty = [...sessionStore.getState().dirtyPartIds];
     if (dirty.length === 0) {
       void confirmCloseMain();
       return;
@@ -46,7 +46,6 @@ function attachTauriCloseGuard(ctx: CloseGuardContext): () => void {
         void confirmCloseMain();
         return;
       }
-      // saveAndExit
       const result = await saveAllDirty(ctx.skinRoot, dirty);
       if (result.failed.length > 0) {
         showToast(t("editorCanvas.saveAllFailedPrefix") + result.failed.join(", "), "error");
@@ -81,20 +80,20 @@ async function saveAllDirty(skinRoot: string, partIds: string[]): Promise<SaveAl
   const saved: string[] = [];
   const failed: string[] = [];
   for (const partId of partIds) {
-    const parts = partId.split("::");
-    if (parts.length !== 3) {
+    const parsed = parsePartId(partId);
+    const target = partIdToTargetPath(skinRoot, partId);
+    if (!parsed || !target) {
       failed.push(partId);
       continue;
     }
-    const [skinName, categoryDir, partName] = parts;
-    const target = `${skinRoot}/${skinName}/${categoryDir}/${partName}.png`;
+    const rev = getPartDirtyRevision(partId);
     try {
       await savePart(partId, target);
-      markPartClean(partId);
+      markPartClean(partId, rev);
       saved.push(partId);
     } catch (e) {
       console.warn("[closeGuard] savePart failed", (e as ApiError)?.message ?? e);
-      failed.push(localizePartName(partName));
+      failed.push(localizePartName(parsed.partName));
     }
   }
   return { saved, failed };
@@ -105,8 +104,9 @@ type Decision = "saveAndExit" | "discard" | "cancel";
 function showCloseDialog(dirtyPartIds: string[], onDecision: (d: Decision) => void): void {
   const overlay = document.createElement("div");
   overlay.className = "close-guard-overlay";
+  overlay.dataset.modalOpen = "true";
   overlay.style.cssText =
-    "position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:2000;" +
+    "position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:2000;" +
     "display:flex;align-items:center;justify-content:center;";
 
   const card = document.createElement("div");
@@ -125,11 +125,11 @@ function showCloseDialog(dirtyPartIds: string[], onDecision: (d: Decision) => vo
   const listEl = document.createElement("ul");
   listEl.style.cssText =
     "max-height:160px;overflow:auto;padding:6px 12px;margin:0;font-size:12px;" +
-    "background:rgba(0,0,0,0.04);border-radius:4px;list-style:disc inside;";
+    "background:rgba(var(--border-rgb),0.06);border-radius:4px;list-style:disc inside;";
   for (const partId of dirtyPartIds) {
     const li = document.createElement("li");
-    const tail = partId.split("::").pop() ?? partId;
-    li.textContent = localizePartName(tail);
+    const parsed = parsePartId(partId);
+    li.textContent = parsed ? `${parsed.skinName} / ${localizePartName(parsed.partName)}` : partId;
     listEl.appendChild(li);
   }
 
@@ -148,13 +148,8 @@ function showCloseDialog(dirtyPartIds: string[], onDecision: (d: Decision) => vo
   saveBtn.className = "btn btn-primary";
   saveBtn.textContent = t("editorCanvas.closeSaveAndExit");
 
-  btnRow.appendChild(cancelBtn);
-  btnRow.appendChild(discardBtn);
-  btnRow.appendChild(saveBtn);
-  card.appendChild(titleEl);
-  card.appendChild(bodyEl);
-  card.appendChild(listEl);
-  card.appendChild(btnRow);
+  btnRow.append(cancelBtn, discardBtn, saveBtn);
+  card.append(titleEl, bodyEl, listEl, btnRow);
   overlay.appendChild(card);
   document.body.appendChild(overlay);
 
@@ -164,7 +159,11 @@ function showCloseDialog(dirtyPartIds: string[], onDecision: (d: Decision) => vo
     onDecision(decision);
   }
   function onKey(e: KeyboardEvent): void {
-    if (e.key === "Escape") close("cancel");
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close("cancel");
+    }
   }
   cancelBtn.addEventListener("click", () => close("cancel"));
   discardBtn.addEventListener("click", () => close("discard"));

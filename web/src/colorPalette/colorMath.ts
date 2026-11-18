@@ -1,8 +1,4 @@
-// HSV ↔ RGB ↔ HEX 转换工具，仅 colorPalette 内部使用。
-//
-// HSV 域：H ∈ [0, 360)，S ∈ [0, 1]，V ∈ [0, 1]。
-// RGB 域：R/G/B ∈ [0, 255] 整数。
-// 公式来自 https://en.wikipedia.org/wiki/HSL_and_HSV，纯 JS 不依赖 chroma.js。
+// HSV、RGB 与 HEX 颜色换算（H ∈ [0, 360)，S/V ∈ [0, 1]，R/G/B ∈ [0, 255]）。
 
 export type Rgb = [number, number, number];
 export interface Hsv {
@@ -68,7 +64,7 @@ export function rgbToHsv(rgb: Rgb): Hsv {
 }
 
 export function rgbToHex(rgb: Rgb): string {
-  const h = (n: number) => n.toString(16).padStart(2, "0");
+  const h = (n: number) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0");
   return `#${h(rgb[0])}${h(rgb[1])}${h(rgb[2])}`;
 }
 

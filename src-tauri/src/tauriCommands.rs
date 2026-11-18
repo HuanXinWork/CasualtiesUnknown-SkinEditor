@@ -1,6 +1,4 @@
-// 把 apiLayer 的调用包装为 #[tauri::command]，与 httpServer handlers 对称。
-// Tauri 内部以 snake_case 路由 command 名，所以函数本身用 snake_case；
-// 业务实现完全委托给 apiLayer，本模块只做参数解码与错误转字符串。
+// Tauri 命令适配层：转发 `apiLayer` 业务调用，并提供桌面子窗口控制与跨窗口高分屏取色支持。
 #![allow(non_snake_case)]
 
 use std::sync::Arc;
@@ -8,22 +6,20 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::apiLayer::{
-    AddLayerParams, ApiError, ApiLayer, AssemblyParams, AssemblyResult, BrushParams,
-    CompositeParams, CompositeResult, CoreApi, EraserParams, ExportSkinPackParams,
-    ExportSkinPackResult, GradientParams, FillParams, SoftBrushParams, ImportSkinPackParams, LayerOpacityParams, LayerVisibilityParams,
-    LayersSnapshot, LoadPartParams, LoadPartResult, MotionCaptureListParams, MotionCaptureMeta,
-    MotionCaptureResult, MotionCompositeParams, MotionCompositeResult, PartIdParams, PartsParams,
-    RemoveLayerParams, ReorderLayersParams, ResizePartParams, ResizePartResult, SavePartParams, SaveWorkspaceParams,
-    GetBaseSizeParams, GetBaseSizeResult,
-    CreateSidePartParams, CreateSidePartResult,
-    CreateOrientationPartParams, CreateOrientationPartResult,
-    CreatePartParams, CreatePartResult,
-    CreatePartFromTemplateParams,
-    CopyPartParams, DeletePartParams, CopyLayerToPartParams, SetLayerTransformParams,
-    SetActiveLayerParams, SetAssemblyOverrideParams, SetAccessoryEnabledParams, SaveAccessoryConfigParams, LoadZonesParams, LoadZonesResult, SaveZonesParams, SkinsParams, SaveWingsConfigParams,
-    BloodConfigPathParams, SaveBloodConfigParams,
-    WingsConfig, WingsConfigPathParams, WorkspacePathParams,
-    WorkspaceResult,
+    AddLayerParams, ApiError, ApiLayer, AssemblyParams, AssemblyResult, BloodConfigPathParams,
+    BrushParams, CompositeParams, CompositeResult, CopyLayerToPartParams, CopyPartParams, CoreApi,
+    CreateOrientationPartParams, CreateOrientationPartResult, CreatePartFromTemplateParams,
+    CreatePartParams, CreatePartResult, CreateSidePartParams, CreateSidePartResult,
+    DeletePartParams, EraserParams, ExportSkinPackParams, ExportSkinPackResult, FillParams,
+    GetBaseSizeParams, GetBaseSizeResult, GradientParams, ImportSkinPackParams, LayerOpacityParams,
+    LayerVisibilityParams, LayersSnapshot, LoadPartParams, LoadPartResult, LoadZonesParams,
+    LoadZonesResult, MotionCaptureListParams, MotionCaptureMeta, MotionCaptureResult,
+    MotionCompositeParams, MotionCompositeResult, PartIdParams, PartsParams, RemoveLayerParams,
+    ReorderLayersParams, ResizePartParams, ResizePartResult, SaveAccessoryConfigParams,
+    SaveBloodConfigParams, SavePartParams, SaveWingsConfigParams, SaveWorkspaceParams,
+    SaveZonesParams, SetAccessoryEnabledParams, SetActiveLayerParams, SetAssemblyOverrideParams,
+    SetLayerTransformParams, SkinsParams, SoftBrushParams, WingsConfig, WingsConfigPathParams,
+    WorkspacePathParams, WorkspaceResult,
 };
 use crate::historyManager::PixelDiff;
 use crate::skinLoader::{ImportResult, Stage};
@@ -35,7 +31,10 @@ fn toErrString(err: ApiError) -> String {
 }
 
 #[tauri::command]
-pub fn api_listSkins(api: State<'_, SharedApi>, params: SkinsParams) -> Result<Vec<String>, String> {
+pub fn api_listSkins(
+    api: State<'_, SharedApi>,
+    params: SkinsParams,
+) -> Result<Vec<String>, String> {
     api.listSkins(params).map_err(toErrString)
 }
 
@@ -50,6 +49,11 @@ pub fn api_loadPartImage(
     params: LoadPartParams,
 ) -> Result<LoadPartResult, String> {
     api.loadPartImage(params).map_err(toErrString)
+}
+
+#[tauri::command]
+pub fn api_discardPart(api: State<'_, SharedApi>, params: PartIdParams) -> Result<(), String> {
+    api.discardPart(params).map_err(toErrString)
 }
 
 #[tauri::command]
@@ -98,10 +102,7 @@ pub fn api_applyGradient(
 }
 
 #[tauri::command]
-pub fn api_applyFill(
-    api: State<'_, SharedApi>,
-    params: FillParams,
-) -> Result<PixelDiff, String> {
+pub fn api_applyFill(api: State<'_, SharedApi>, params: FillParams) -> Result<PixelDiff, String> {
     api.applyFill(params).map_err(toErrString)
 }
 
@@ -129,10 +130,7 @@ pub fn api_beginStroke(api: State<'_, SharedApi>, params: PartIdParams) -> Resul
 }
 
 #[tauri::command]
-pub fn api_endStroke(
-    api: State<'_, SharedApi>,
-    params: PartIdParams,
-) -> Result<PixelDiff, String> {
+pub fn api_endStroke(api: State<'_, SharedApi>, params: PartIdParams) -> Result<PixelDiff, String> {
     api.endStroke(params).map_err(toErrString)
 }
 
@@ -140,7 +138,7 @@ pub fn api_endStroke(
 pub fn api_getFlatten(
     api: State<'_, SharedApi>,
     params: PartIdParams,
-) -> Result<crate::apiLayer::LoadPartResult, String> {
+) -> Result<LoadPartResult, String> {
     api.getFlatten(params).map_err(toErrString)
 }
 
@@ -214,10 +212,7 @@ pub fn api_createPartFromTemplate(
 }
 
 #[tauri::command]
-pub fn api_deletePart(
-    api: State<'_, SharedApi>,
-    params: DeletePartParams,
-) -> Result<(), String> {
+pub fn api_deletePart(api: State<'_, SharedApi>, params: DeletePartParams) -> Result<(), String> {
     api.deletePart(params).map_err(toErrString)
 }
 
@@ -346,8 +341,7 @@ pub fn api_importSkinPack(
     api.importSkinPack(params).map_err(toErrString)
 }
 
-/// 跨窗口关闭命令。Tauri v2 的 plugin:window|close 默认对当前窗口操作，
-/// 不支持传 label，所以通过 AppHandle 自定义命令路由到指定子窗口。
+/// 关闭指定 `label` 的独立面板或参考图子窗口。
 #[tauri::command]
 pub fn api_closeSubwindow(app: tauri::AppHandle, label: String) -> Result<(), String> {
     use tauri::Manager;
@@ -357,7 +351,6 @@ pub fn api_closeSubwindow(app: tauri::AppHandle, label: String) -> Result<(), St
     }
 }
 
-/// 装配位置覆盖。预览拖动选中部件时调用，运行时改 entry.position（不持久化）。
 #[tauri::command]
 pub fn api_setAssemblyOverride(
     api: State<'_, SharedApi>,
@@ -366,7 +359,6 @@ pub fn api_setAssemblyOverride(
     api.setAssemblyOverride(params).map_err(toErrString)
 }
 
-/// 加载单皮肤翼装配配置 wings.json；不存在时回落默认值。
 #[tauri::command]
 pub fn api_loadWingsConfig(
     api: State<'_, SharedApi>,
@@ -375,7 +367,6 @@ pub fn api_loadWingsConfig(
     api.loadWingsConfig(params).map_err(toErrString)
 }
 
-/// 保存单皮肤翼装配配置到 <skin>/wings.json。
 #[tauri::command]
 pub fn api_saveWingsConfig(
     api: State<'_, SharedApi>,
@@ -384,7 +375,6 @@ pub fn api_saveWingsConfig(
     api.saveWingsConfig(params).map_err(toErrString)
 }
 
-/// 切换单皮肤指定 id 配件的 enabled 字段并落盘 accessories.json。
 #[tauri::command]
 pub fn api_setAccessoryEnabled(
     api: State<'_, SharedApi>,
@@ -393,7 +383,6 @@ pub fn api_setAccessoryEnabled(
     api.setAccessoryEnabled(params).map_err(toErrString)
 }
 
-/// 写整条配件配置；entry.id 已存在则原位替换，否则追加。
 #[tauri::command]
 pub fn api_saveAccessoryConfig(
     api: State<'_, SharedApi>,
@@ -402,7 +391,6 @@ pub fn api_saveAccessoryConfig(
     api.saveAccessoryConfig(params).map_err(toErrString)
 }
 
-/// 读 per-skin blood.json；缺失返回全 None 默认。
 #[tauri::command]
 pub fn api_loadBloodConfig(
     api: State<'_, SharedApi>,
@@ -411,7 +399,6 @@ pub fn api_loadBloodConfig(
     api.loadBloodConfig(params).map_err(toErrString)
 }
 
-/// 整体覆写 blood.json。
 #[tauri::command]
 pub fn api_saveBloodConfig(
     api: State<'_, SharedApi>,
@@ -420,7 +407,6 @@ pub fn api_saveBloodConfig(
     api.saveBloodConfig(params).map_err(toErrString)
 }
 
-/// 加载部件区块 mask + 配置；缺失返回零 ids 与空 zones。
 #[tauri::command]
 pub fn api_loadZones(
     api: State<'_, SharedApi>,
@@ -429,47 +415,38 @@ pub fn api_loadZones(
     api.loadZones(params).map_err(toErrString)
 }
 
-/// 写整张 mask + 整份 config。
 #[tauri::command]
-pub fn api_saveZones(
-    api: State<'_, SharedApi>,
-    params: SaveZonesParams,
-) -> Result<(), String> {
+pub fn api_saveZones(api: State<'_, SharedApi>, params: SaveZonesParams) -> Result<(), String> {
     api.saveZones(params).map_err(toErrString)
 }
 
-/// 关闭拦截轮询。前端按 ~250ms 间隔读，返回 true 表示用户点过 X 触发了
-/// prevent_close。读取后立即清零防止重复触发。
 #[tauri::command]
-pub fn api_pollCloseRequest(
-    guard: State<'_, std::sync::Arc<crate::CloseGuard>>,
-) -> Result<bool, String> {
-    let mut flag = guard.closeRequested.lock().unwrap();
+pub fn api_pollCloseRequest(guard: State<'_, Arc<crate::CloseGuard>>) -> Result<bool, String> {
+    let mut flag = guard
+        .closeRequested
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let cur = *flag;
     *flag = false;
     Ok(cur)
 }
 
-/// 用户在确认对话框选"丢弃 / 保存后退出"后调用：置 forceClose 让
-/// on_window_event 不再 prevent_close，并主动关窗。
 #[tauri::command]
 pub fn api_confirmCloseMain(
     app: tauri::AppHandle,
-    guard: State<'_, std::sync::Arc<crate::CloseGuard>>,
+    guard: State<'_, Arc<crate::CloseGuard>>,
 ) -> Result<(), String> {
     use tauri::Manager;
-    *guard.forceClose.lock().unwrap() = true;
+    *guard.forceClose.lock().unwrap_or_else(|e| e.into_inner()) = true;
     if let Some(w) = app.get_webview_window("main") {
         w.close().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-/// 主窗口拖入图片时调用：解码 base64 → RGBA → 存进进程级 imageStore。
-/// 子窗口启动后用同 token 取回字节渲染。
 #[tauri::command]
 pub fn api_storeImage(
-    store: State<'_, std::sync::Arc<crate::imageStore::ImageStore>>,
+    store: State<'_, Arc<crate::imageStore::ImageStore>>,
     params: StoreImageParams,
 ) -> Result<(), String> {
     let bytes = base64Decode(&params.base64Data).map_err(|e| format!("base64 decode: {}", e))?;
@@ -487,10 +464,9 @@ pub fn api_storeImage(
     Ok(())
 }
 
-/// 图片子窗口启动时按 token 取回 RGBA + 尺寸渲染。
 #[tauri::command]
 pub fn api_loadImage(
-    store: State<'_, std::sync::Arc<crate::imageStore::ImageStore>>,
+    store: State<'_, Arc<crate::imageStore::ImageStore>>,
     params: LoadImageParams,
 ) -> Result<LoadImageResult, String> {
     match store.get(&params.token) {
@@ -499,80 +475,76 @@ pub fn api_loadImage(
             height,
             pixels,
         }),
-        None => Err("image_not_found".into()),
+        None => Err(toErrString(ApiError {
+            code: "image_not_found".into(),
+            message: "image data not found".into(),
+        })),
     }
 }
 
-/// 子窗口关闭时清掉 token 的字节缓存。
 #[tauri::command]
 pub fn api_releaseImage(
-    store: State<'_, std::sync::Arc<crate::imageStore::ImageStore>>,
+    store: State<'_, Arc<crate::imageStore::ImageStore>>,
     params: LoadImageParams,
 ) -> Result<(), String> {
     store.remove(&params.token);
     Ok(())
 }
 
-/// 取色器调用：传屏幕坐标，遍历所有 `image_*` 子窗口找命中者，按 contain
-/// 缩放映射到图片像素后取色。返回 None 表示坐标不在任何图片子窗口内。
+/// 按物理屏幕坐标命中可见的 `image_<token>` 子窗口客户区，换算 DPI 顶栏高度与 contain 缩放后采样原图像素。
 #[tauri::command]
 pub fn api_pickImagePixelByScreenCoord(
     app: tauri::AppHandle,
-    store: State<'_, std::sync::Arc<crate::imageStore::ImageStore>>,
+    store: State<'_, Arc<crate::imageStore::ImageStore>>,
     params: PickPixelParams,
 ) -> Result<Option<[u8; 3]>, String> {
     use tauri::Manager;
     for (label, win) in app.webview_windows() {
-        if !label.starts_with("image_") {
+        let Some(token) = label.strip_prefix("image_") else {
+            continue;
+        };
+        if win.is_minimized().unwrap_or(false) || !win.is_visible().unwrap_or(true) {
             continue;
         }
-        let token = label.trim_start_matches("image_").to_string();
-        let pos = win.outer_position().map_err(|e| e.to_string())?;
-        let size = win.outer_size().map_err(|e| e.to_string())?;
-        let inner_size = win.inner_size().map_err(|e| e.to_string())?;
-        // 屏幕坐标转 inner（客户区）：装饰厚度 = outer - inner。
-        let offsetX = params.screenX as i32 - pos.x;
-        let offsetY = params.screenY as i32 - pos.y;
-        if offsetX < 0
-            || offsetY < 0
-            || offsetX >= size.width as i32
-            || offsetY >= size.height as i32
-        {
-            continue;
-        }
-        let chromeY = (size.height as i32) - (inner_size.height as i32);
-        let chromeX = ((size.width as i32) - (inner_size.width as i32)) / 2;
-        let clientX = offsetX - chromeX;
-        let clientY = offsetY - chromeY;
+        let innerPos = match win.inner_position() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let innerSize = match win.inner_size() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let clientX = params.screenX - innerPos.x;
+        let clientY = params.screenY - innerPos.y;
         if clientX < 0
             || clientY < 0
-            || clientX >= inner_size.width as i32
-            || clientY >= inner_size.height as i32
+            || clientX >= innerSize.width as i32
+            || clientY >= innerSize.height as i32
         {
             continue;
         }
-        // 减去前端写死的 toolbar 高度（约 28px），再按 contain 算图片像素坐标。
-        let toolbarH = params.toolbarHeight as i32;
+        let scaleFactor = win.scale_factor().unwrap_or(1.0);
+        let toolbarH = ((params.toolbarHeight as f64) * scaleFactor).round() as i32;
         let stageY = clientY - toolbarH;
-        if stageY < 0 {
+        let stageH = (innerSize.height as i32) - toolbarH;
+        let stageW = innerSize.width as i32;
+        if stageY < 0 || stageH <= 0 || stageW <= 0 {
             continue;
         }
-        let stageH = (inner_size.height as i32) - toolbarH;
-        if stageH <= 0 {
-            continue;
-        }
-        let stageW = inner_size.width as i32;
 
-        let (imgW, imgH) = match store.get(&token) {
-            Some((w, h, _)) => (w as i32, h as i32),
-            None => continue,
+        let Some((imgWU, imgHU)) = store.dimensions(token) else {
+            continue;
         };
+        let (imgW, imgH) = (imgWU as i32, imgHU as i32);
         if imgW <= 0 || imgH <= 0 {
             continue;
         }
         let scale = (stageW as f64 / imgW as f64).min(stageH as f64 / imgH as f64);
-        let drawW = (imgW as f64 * scale) as i32;
-        let drawH = (imgH as f64 * scale) as i32;
+        let drawW = (imgW as f64 * scale).round() as i32;
+        let drawH = (imgH as f64 * scale).round() as i32;
+        if drawW <= 0 || drawH <= 0 {
+            continue;
+        }
         let drawX = (stageW - drawW) / 2;
         let drawY = (stageH - drawH) / 2;
         let dx = clientX - drawX;
@@ -582,7 +554,7 @@ pub fn api_pickImagePixelByScreenCoord(
         }
         let imgX = ((dx as f64 / drawW as f64) * imgW as f64) as u32;
         let imgY = ((dy as f64 / drawH as f64) * imgH as f64) as u32;
-        if let Some(rgb) = store.pickPixel(&token, imgX, imgY) {
+        if let Some(rgb) = store.pickPixel(token, imgX, imgY) {
             return Ok(Some(rgb));
         }
     }
@@ -619,11 +591,9 @@ pub struct PickPixelParams {
 }
 
 fn base64Decode(s: &str) -> Result<Vec<u8>, String> {
-    // 跳过 dataURL 前缀 `data:...;base64,`。
-    let body = if let Some(i) = s.find(',') {
-        &s[i + 1..]
-    } else {
-        s
+    let body = match s.find(',') {
+        Some(i) => &s[i + 1..],
+        None => s,
     };
     use base64::Engine;
     base64::engine::general_purpose::STANDARD
@@ -631,8 +601,6 @@ fn base64Decode(s: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())
 }
 
-/// 屏幕坐标系下当前光标位置。前端取色笔轮询本接口解决"鼠标移出主窗口
-/// 后浏览器 mousemove 不再触发"的问题。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CursorPos {
@@ -646,8 +614,7 @@ pub fn api_getCursorScreenPos() -> Result<CursorPos, String> {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
     let mut pt = POINT { x: 0, y: 0 };
-    let ok = unsafe { GetCursorPos(&mut pt) };
-    if ok == 0 {
+    if unsafe { GetCursorPos(&mut pt) } == 0 {
         return Err("GetCursorPos failed".into());
     }
     Ok(CursorPos { x: pt.x, y: pt.y })
@@ -659,14 +626,12 @@ pub fn api_getCursorScreenPos() -> Result<CursorPos, String> {
     Err("not_supported_on_this_platform".into())
 }
 
-/// 鼠标左键按下检测。前端取色笔轮询，未按 → 按下边沿即视为确认取色。
 #[cfg(windows)]
 #[tauri::command]
 pub fn api_isMouseLeftDown() -> Result<bool, String> {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
     const VK_LBUTTON: i32 = 0x01;
     let s = unsafe { GetAsyncKeyState(VK_LBUTTON) };
-    // 高位 0x8000 为 1 表示当前按下。
     Ok((s as u16 & 0x8000) != 0)
 }
 
@@ -676,19 +641,16 @@ pub fn api_isMouseLeftDown() -> Result<bool, String> {
     Ok(false)
 }
 
-/// 取色态全局 flag。主窗口启停时写入，图片子窗口轮询读取以同步光标样式。
 #[tauri::command]
 pub fn api_setPickActive(
-    flag: State<'_, std::sync::Arc<crate::PickActiveFlag>>,
+    flag: State<'_, Arc<crate::PickActiveFlag>>,
     active: bool,
 ) -> Result<(), String> {
-    *flag.0.lock().unwrap() = active;
+    *flag.0.lock().unwrap_or_else(|e| e.into_inner()) = active;
     Ok(())
 }
 
 #[tauri::command]
-pub fn api_isPickActive(
-    flag: State<'_, std::sync::Arc<crate::PickActiveFlag>>,
-) -> Result<bool, String> {
-    Ok(*flag.0.lock().unwrap())
+pub fn api_isPickActive(flag: State<'_, Arc<crate::PickActiveFlag>>) -> Result<bool, String> {
+    Ok(*flag.0.lock().unwrap_or_else(|e| e.into_inner()))
 }

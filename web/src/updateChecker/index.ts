@@ -1,6 +1,7 @@
+// 启动阶段静默查询 GitHub 最新 Release；发现新版时在右下角展示可关闭的跳转提示。
+
 import { subscribeLang, t } from "../i18n";
 
-// GitHub 仓库由 settingsPanel 的 APP_META.repo 决定，这里只做硬编码字符串，避免循环依赖。
 const REPO_OWNER = "HuanXinWork";
 const REPO_NAME = "CasualtiesUnknown-SkinEditor";
 const RELEASES_URL = `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases`;
@@ -12,10 +13,6 @@ interface CheckResult {
   hasUpdate: boolean;
 }
 
-/**
- * 启动版本检测：拉 GitHub releases/latest，比版本，发现新版后挂个固定红字提示到 body 上，
- * 点击文字调系统浏览器打开 release 页。失败静默 console.warn。
- */
 export function startUpdateChecker(currentVersion: string): void {
   void runCheck(currentVersion).then((r) => {
     if (r && r.hasUpdate) showUpdateBanner(r);
@@ -62,30 +59,48 @@ function stripV(s: string): string {
 }
 
 function showUpdateBanner(r: CheckResult): void {
+  if (document.getElementById("app-update-banner")) return;
   const banner = document.createElement("div");
   banner.id = "app-update-banner";
+  banner.className = "panel";
   banner.style.cssText =
-    "position:fixed;left:32px;top:12vh;z-index:10000;font-size:18px;font-weight:700;color:#ff4d4d;cursor:pointer;text-shadow:0 1px 2px rgba(0,0,0,0.4);user-select:none;";
+    "position:fixed;right:16px;bottom:16px;z-index:10000;display:flex;align-items:center;gap:8px;" +
+    "padding:8px 12px;font-size:12px;font-weight:600;box-shadow:0 4px 12px rgba(0,0,0,0.25);user-select:none;";
+
+  const linkSpan = document.createElement("span");
+  linkSpan.style.cssText = "color:#e03e3e;cursor:pointer;";
+  linkSpan.title = RELEASES_URL;
+  linkSpan.addEventListener("click", () => openExternal(RELEASES_URL));
+
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "btn";
+  closeBtn.textContent = "×";
+  closeBtn.style.cssText = "padding:0 6px;line-height:1.4;";
+
   const updateText = (): void => {
-    banner.textContent = t("updateChecker.banner")
+    linkSpan.textContent = t("updateChecker.banner")
       .replace("{current}", r.current)
       .replace("{latest}", r.latest);
+    closeBtn.title = t("common.close");
   };
   updateText();
-  banner.title = RELEASES_URL;
-  banner.addEventListener("click", () => openExternal(RELEASES_URL));
-  banner.addEventListener("mouseenter", () => {
-    banner.style.color = "#ff8c8c";
+  const unsubLang = subscribeLang(updateText);
+
+  closeBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    unsubLang();
+    banner.remove();
   });
-  banner.addEventListener("mouseleave", () => {
-    banner.style.color = "#ff4d4d";
-  });
+
+  banner.append(linkSpan, closeBtn);
   document.body.appendChild(banner);
-  subscribeLang(updateText);
 }
 
 function openExternal(url: string): void {
-  const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (cmd: string, args?: unknown) => Promise<unknown> } };
+  const w = window as unknown as {
+    __TAURI_INTERNALS__?: { invoke?: (cmd: string, args?: unknown) => Promise<unknown> };
+  };
   const invoke = w.__TAURI_INTERNALS__?.invoke;
   if (typeof invoke === "function") {
     invoke("plugin:opener|open_url", { url }).catch(() => {

@@ -3,12 +3,12 @@
 <div align="center">
 
 <p align="center">
-  <a href="https://github.com/huanxin886"><img src="https://raw.githubusercontent.com/HuanXinWork/CasualtiesUnknown-SkinEditor/main/docs/images/avatar.png" width="200" height="200" alt="huanxin886"></a>
+  <a href="https://github.com/huanxin886"><img src="https://raw.githubusercontent.com/HuanXinWork/CasualtiesUnknown-SkinEditor/main/docs/images/avatar.png" width="180" height="180" alt="huanxin886"></a>
 </p>
 
 # CasualtiesUnknown-SkinEditor
 
-_✨ A standalone skin preview and pixel-level editor for the game `Casualties Unknown` ✨_
+Standalone pixel editor and live character previewer for `Casualties Unknown` (built for the `SkinSync` mod)
 
 <p>
   <img src="https://img.shields.io/badge/version-1.0.7-blue.svg" alt="version">
@@ -24,17 +24,19 @@ _✨ A standalone skin preview and pixel-level editor for the game `Casualties U
   ·
   <a href="docs/en/README.md"><strong>English User Guide</strong></a>
   ·
+  <a href="docs/zh/README.md"><strong>中文使用文档</strong></a>
+  ·
   <a href="changes.en.md"><strong>Changelog</strong></a>
 </p>
 
 <p>
-  Skin mod repository:
+  Community skin repository:
   <a href="https://github.com/Paili-16/Scav-Prototype-The-Characters-Skins"><strong>Scav-Prototype-The-Characters-Skins</strong></a>
 </p>
 
 </div>
 
-## Preview
+## Screenshots
 
 <table>
   <tr>
@@ -53,196 +55,164 @@ _✨ A standalone skin preview and pixel-level editor for the game `Casualties U
 
 ---
 
-## Project Overview
+## Overview
 
-This project is a standalone desktop application that turns the skin directory used by the game `Casualties Unknown` into a visual, editable project format, instead of forcing users to align PNG pixels and naming rules by hand.
+Making a custom skin for `Casualties Unknown` normally means juggling dozens of tiny limb, head, wing, and item PNGs by hand and restarting the game just to check sprite alignment. This tool opens the whole skin folder as an interactive workspace: pick parts on the left, paint pixels or effect zones across layers in the center, and watch the assembled character update live on the right, either in a static pose or frame by frame on top of real gameplay motion captures.
+
+Saved PNGs, zone masks (`<Category>/<part>.zones.png` + `.zones.json`), and JSON configs (`baseSizes.json`, `wings.json`, `accessories.json`, `blood.json`) drop straight into `SkinSync`. Multi-layer work files stay under `layers/` for the editor alone and are excluded when you export a distributable zip.
 
 ## Architecture
 
-### Two Forms, One Crate
+The Tauri v2 desktop app and the Axum HTTP server compile from a single Rust crate:
 
 ```text
                         ┌──────────────────────────────┐
-                        │  web/  (TypeScript + Vite)   │
-                        │  Editor / Preview / Toolbar / i18n │
-                        └─────────────┬────────────────┘
-                                      │ build → web/dist/
-                                      ▼
+                        │   web/ (TypeScript + Vite)   │
+                        │ Canvas / Preview / Palette   │
+                        └──────────────┬───────────────┘
+                                       │ npm run build -> web/dist/
+                                       ▼
                         ┌──────────────────────────────┐
-                        │ rust-embed (embedded at build time) │
-                        │  frontend bundle + default exp skin │
-                        └──────────────────────────────┘
-                                      │
-              ┌───────────────────────┼────────────────────────┐
-              ▼                       ▼                        ▼
-     ┌──────────────┐         ┌──────────────┐         ┌─────────────────┐
-     │ Tauri desktop│         │ Axum HTTP svc│         │   apiLayer      │
-     │ shell        │ ──────► │ /api/*       │ ──────► │ single source   │
-     │ (WebView2)   │ Tauri   │ REST         │         │ of business logic│
-     └──────────────┘ cmd     └──────────────┘         └─────────────────┘
-                                                               │
-                                                               ▼
-                                                    skinLoader / imageOps /
-                                                    layerSidecar / assemblyTable /
-                                                    historyManager / windowManager
+                        │  Embedded via rust-embed     │
+                        │  Web bundle + default `exp`  │
+                        └──────────────┬───────────────┘
+                                       │
+                ┌──────────────────────┴──────────────────────┐
+                ▼                                             ▼
+       ┌─────────────────┐                           ┌─────────────────┐
+       │  Tauri Desktop  │                           │ Axum HTTP Server│
+       │ (65 IPC cmds)   │                           │ (51 /api/*)     │
+       └────────┬────────┘                           └────────┬────────┘
+                └──────────────────────┬──────────────────────┘
+                                       ▼
+                           ┌───────────────────────┐
+                           │       apiLayer        │
+                           │ Sessions & Compositor │
+                           └───────────┬───────────┘
+                                       ▼
+                  skinLoader / imageOps / layerSidecar / zones /
+                  accessories / blood / baseSizes / historyManager
 ```
 
-The desktop shell and the HTTP service are mutually exclusive startup paths, but both forward requests to the same set of business modules. The cost of this design is that the Rust backend must stay pure and must not depend on the Tauri runtime. The benefit is that any externally visible behavior only needs to be tested once to cover both entry points.
-
-The 22 Tauri commands and the 22 HTTP REST routes mirror each other: command names and field names are identical, only the transport changes. On the frontend, `apiClient` dispatches to different transport implementations depending on the current mode, transparently to the caller.
+All 51 core endpoints are exposed identically over Tauri IPC and HTTP REST. Desktop mode adds 14 native commands for child-window management and DPI-aware cross-window color picking. On the frontend, `apiClient` picks the right transport at runtime.
 
 ### Backend Modules (`src-tauri/src/`)
 
-| Module | Responsibility |
+| Module | Purpose |
 | --- | --- |
-| `apiLayer` | Business-logic entrypoint; all mutating operations are serialized behind a single mutex, so conflicts resolve as natural last-write-wins |
-| `skinLoader` | Scans skin roots, parses part files, imports and exports zip archives |
-| `imageOps` | Per-layer pixel operations such as brush, eraser, gradient, flattening, and PNG encode/decode |
-| `layerSidecar` | Persists multi-layer project data as `layers/<part>/manifest.json` plus `layerN.png` |
-| `assemblyTable` | Part assembly table: z-order, coordinates, variants; falls back to built-in defaults when files are missing |
-| `historyManager` | Ring-buffer undo/redo stack grouped by stroke rather than by pixel |
-| `windowManager` | Serializes `workspace.json` (layout sizes, theme, current skin name) |
-| `httpServer` | Axum routes; `rust-embed` asset serving plus JSON DTOs |
-| `tauriCommands` | Tauri command adapter layer; shares DTOs with HTTP and converts `Result` into `tauri::Error` |
+| `apiLayer` | Core service entry, split into static compositing (`composite`), motion playback compositing (`motionComposite`), zone light/particle rendering (`zoneRender`), part CRUD (`partManage`), and layer mutations (`layerOps`), plus `wings.json` I/O |
+| `skinLoader` | Scans skin folders, decodes PNGs, and handles `.zip` import/export (`pack`) |
+| `imageOps` | Pixel operations: hard brush, soft brush, flood fill, linear gradient, eraser, nearest-neighbor resize, and rotated/flipped blitting (`blit`) |
+| `layerSidecar` | Reads and writes multi-layer sidecars (`layers/<Cat>/<part>/manifest.json` + `layerN.png`) |
+| `assemblyTable` | Default limb coordinates, z-order, and expression/head variant filters, with optional overrides from `assembly.json` |
+| `baseSizes` | Standard part catalog and per-skin logical base dimensions (`baseSizes.json`) so high-res textures fit the character rig at proper scale |
+| `accessories` / `blood` / `zones` | Readers and writers for `accessories.json`, `blood.json`, and per-part `<part>.zones.png` / `<part>.zones.json` masks and effects |
+| `lib` / `imageStore` | App bootstrap, embedded default `exp` skin extraction, and in-memory pixel store for floating reference image windows |
+| `historyManager` | 50-entry ring undo/redo stack grouped per stroke |
+| `windowManager` / `dataPaths` | `workspace.json` persistence, path validation, and atomic file writes anchored to the app directory |
+| `tauriCommands` / `httpServer` | Tauri IPC handlers and Axum REST handlers |
 
 ### Frontend Modules (`web/src/`)
 
-The frontend is a single-page SPA. Child windows reuse the same bundle through URLs of the form `?panel=<id>` instead of building multiple entry bundles.
+The frontend is a plain TypeScript single-page app without a UI framework. Detached panel windows reuse the same bundle via `?panel=<id>`, and reference image windows load via `?image=<token>`.
 
-| Module | Responsibility |
+| Module | Purpose |
 | --- | --- |
-| `apiClient` | Dispatches between Tauri and HTTP mode; runtime selection comes from `runtimeMode` |
-| `stateStore` | Global store for skins, parts, layers, tools, undo stack, theme, language, dirty state |
-| `dockHost` | Dockable / floating / collapsible panel container; also handles detach and reattach |
-| `partPanel` / `editorCanvas` / `previewCanvas` / `layerPanel` | Four core panels; `previewCanvas` handles both part assembly preview and frame-by-frame motion preview |
-| `colorPalette` / `toolPanel` | Color palette with eyedropper plus the toolbar |
-| `closeGuard` | Dirty-state check and save prompt before the main window closes |
-| `imageWindow` | Temporary child window for drag-in images that do not become part of the project |
-| `layoutEngine` | Drag-resizable row/column sizes plus persistence into `workspace.json.sizes` |
-| `i18n` / `themeSettings` / `langSettings` / `settingsPanel` | Bilingual dictionary, theme switching, language switching, shortcut editor |
-| `shortcuts` | Global keyboard action router; automatically yields when focus is inside an input |
+| `apiClient` / `runtimeMode` | Typed backend client that routes calls to Tauri IPC or `fetch` |
+| `stateStore` | In-memory session store (`index`), zone store (`zonesStore`), theme CSS variables (`theme`), and serialized workspace persistence (`workspacePersist`) |
+| `partPanel` | Skin selector, collapsible category tree, part copy/delete menu, and unsaved-edit guard (`partSwitchGuard`) |
+| `editorCanvas` | Pixel canvas with accessory controls (`accessoryBar`), worn-slot selector (`slotDropdown`), non-destructive layer transform (`transformPanel`), zone overlay (`zonesOverlay`), resize dialog (`resizeDialog`), and add-part dialog (`addPartDialog`) |
+| `layerPanel` | Up to 8 layers per part with cross-part copy/paste; switches to the zone light/particle/animation editor (`zoneEditor`) when the zone brush is active |
+| `previewCanvas` | 100×100 composite preview supporting static assembly (Shift+drag to nudge parts) and motion-capture playback |
+| `colorPalette` | HSV wheel and SV square, preset groups, 24 custom swatch slots, and cross-window eyedropper |
+| `wingDebugPanel` / `bloodPanel` | Optional right-hand panels for tuning the 4 wing pieces and `blood.json` parameters |
+| `toolPanel` / `shortcuts` / `settingsPanel` | Main toolbar, global shortcut router, keybinding editor, and auto-save settings |
+| `dockHost` / `layoutEngine` / `imageWindow` | Dockable/collapsible panels, child-window detach/reattach, split dividers, and reference image viewer |
+| `autoSave` / `closeGuard` / `updateChecker` / `i18n` | Timed auto-save, window-close confirmation, GitHub release checker, and Chinese/English strings |
 
-### Data Contract
+### Data Layout
 
-The default data root is `data/`, and it can be changed from the UI:
+Runtime files live next to the executable under `data/` and `captures/`:
 
 ```text
-data/
-├── workspace.json            # Layout sizes / theme / current skin
-└── skin/
-    └── <skinName>/           # One skin is one directory, and the directory name is the skin name
-        ├── Body/             # Body-part PNGs
-        ├── Head/             # Head-part PNGs
-        └── layers/           # Project files used only by the editor, ignored by the mod
-            └── <Cat>/<part>/
-                ├── manifest.json
-                └── layerN.png
+<app root>/
+├── captures/                       # Motion capture JSONs from MotionRecorder
+└── data/
+    ├── workspace.json              # Panel sizes, collapse states, theme, shortcuts, swatches
+    └── skin/
+        ├── assembly.json           # Optional global assembly table override
+        └── <skinName>/
+            ├── Body/               # Torso, limb, and tail PNGs (+ optional *.zones.png / *.zones.json)
+            ├── Head/               # Head variants and eye expression PNGs
+            ├── Wings/              # Four wing sprites (wingUL / wingUR / wingDL / wingDR)
+            ├── Accessories/        # Wearable and held item PNGs
+            ├── Blood/              # Blood particle sprites (BloodParticle.png, etc.)
+            ├── baseSizes.json      # Logical base dimensions per part
+            ├── wings.json          # Optional wing offset, rotation, and zOrder
+            ├── accessories.json    # Optional accessory toggles, offsets, slots, and effects
+            ├── blood.json          # Optional bleed particle colors, glow, and sheet animation
+            └── layers/             # Editor-only multi-layer sidecars (omitted from zip exports)
 ```
 
-The mod only reads the flat PNG files under `Body/` and `Head/`. The `layers/` directory is project data managed by the editor itself, so structural changes there do not affect what the mod loads and multi-layer information can be preserved without changing the runtime output.
+On first launch, if `data/skin/` has no skin folders, the embedded `exp` skin is unpacked to `data/skin/exp/` and selected automatically. Put the executable in a writable folder so workspace settings and part saves can write to disk.
 
-If `data/` is missing at startup, the app creates it automatically and writes a default `workspace.json`. When `data/skin/` has no skin subdirectories, the built-in `exp` skin pack is unpacked to `data/skin/exp/` and selected automatically.
+## Building and Running
 
-## Development and Running
+### Prerequisites
 
-### Environment
+- Rust `1.75+` (MSVC toolchain on Windows)
+- Node.js `18+` with `npm`
+- WebView2 Runtime on Windows (preinstalled on Win10 1809+ and Win11); `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, and `librsvg2-dev` on Linux; Xcode Command Line Tools on macOS.
 
-| Tool | Version | Purpose |
-| --- | --- | --- |
-| Rust toolchain | 1.75+ | `cargo build` / `cargo test` |
-| Node.js | 18+ | Frontend build |
-| npm | Bundled with Node | Dependency management |
-| WebView2 Runtime | Built into Win11, available for Win10 1809+ | Tauri desktop shell |
-| Tauri CLI (optional) | `^2.0` | `cargo tauri dev` |
+### Commands
 
-Linux additionally needs GTK and WebKitGTK packages. macOS needs recent Xcode Command Line Tools. Windows does not require anything beyond the normal MSVC toolchain.
-
-### Install Dependencies
+Install frontend dependencies and build the web bundle once:
 
 ```bash
 cd web
-npm install
+npm ci
+npm run build
 cd ..
 ```
 
-You only need to install `web/node_modules/` once. After that, `cargo build` triggers `npm run build` automatically through `tauri.conf.json`'s `beforeBuildCommand`, so you do not need to reinstall dependencies manually.
-
-### Run Desktop Mode
-
-During development:
+Run the desktop app in development:
 
 ```bash
 cargo run --manifest-path src-tauri/Cargo.toml --bin CasualtiesUnknown-SkinEditor
 ```
 
-Or use Tauri CLI with hot reload. In that case, start `npm --prefix web run dev` in another terminal first, and temporarily switch `tauri.conf.json`'s `build.devUrl` back to `http://localhost:5173`:
-
-```bash
-cargo install tauri-cli --version "^2.0"
-cargo tauri dev --manifest-path src-tauri/Cargo.toml
-```
-
-Note: the default configuration does not use `devUrl`; the desktop shell loads directly from embedded assets.
-
-### Run HTTP Mode
-
-Run the same binary in server form:
+Run in HTTP server mode (open `http://127.0.0.1:5800` in a browser):
 
 ```bash
 cargo run --manifest-path src-tauri/Cargo.toml --bin CasualtiesUnknown-SkinEditor -- --http --bind 127.0.0.1 --port 5800
 ```
 
-Environment variables are also supported: `SPE_HTTP=1 SPE_BIND=0.0.0.0 SPE_PORT=5800`.
+You can also configure HTTP mode with `SPE_HTTP=1 SPE_BIND=0.0.0.0 SPE_PORT=5800`. Day-to-day testing focuses on Windows desktop; CI builds portable binaries for `windows-x64`, `windows-arm64`, `linux-x64`, `linux-arm64`, and `macos-arm64`.
 
-Only Windows has been tested so far. Other desktop platforms and the web build are untested.
-
-### Test and Build
+### Tests and Release Build
 
 ```bash
-# Rust unit + integration + property-based tests
+# TypeScript type check
+npm --prefix web run test
+
+# Production web bundle (outputs to web/dist/)
+npm --prefix web run build
+
+# Rust unit, property, and integration tests
 cargo test --manifest-path src-tauri/Cargo.toml
 
-# Frontend type-check only
-cd web && npm run test
-
-# Frontend build output goes to web/dist/
-cd web && npm run build
-
-# Desktop release build; the frontend is built and embedded automatically
+# Portable desktop release binary (embeds web/dist/ and default `exp` skin)
 cargo build --release --manifest-path src-tauri/Cargo.toml --bin CasualtiesUnknown-SkinEditor
 ```
 
-Release artifact: `src-tauri/target/release/CasualtiesUnknown-SkinEditor.exe` on Windows, roughly 15 MB including the built-in `exp` skin pack. The frontend bundle and default skin are embedded at compile time via `rust-embed`.
-
-Cross-platform desktop packaging, executed on the target platform:
-
-```bash
-cargo tauri build --bundles msi        # Windows
-cargo tauri build --bundles dmg        # macOS
-cargo tauri build --bundles appimage   # Linux
-```
-
-### Runtime Directory Behavior
-
-On first launch, if `data/` is missing next to the exe, the app creates `data/workspace.json`; if `data/skin/` is empty it unpacks the built-in `exp` skin. `data/` is always resolved relative to the exe location (AppRoot), not the current working directory. You can place the exe anywhere, but it must have write permission. If it does not, the app falls back to read-only mode, save operations fail silently, and the UI does not recover automatically.
+On Windows, the standalone executable is written to `src-tauri/target/release/CasualtiesUnknown-SkinEditor.exe`.
 
 ## Documentation
 
-| Entry | Content |
-| --- | --- |
-| [`docs/zh/README.md`](docs/zh/README.md) | Chinese user guide: import skin packs, edit flow, export, shortcuts |
-| [`docs/en/README.md`](docs/en/README.md) | English user guide: import, edit, export, shortcuts |
-| [`motionRecorder/README.md`](motionRecorder/README.md) | Chinese MotionRecorder guide: install, capture flow, JSON schema |
-| [`motionRecorder/README.en.md`](motionRecorder/README.en.md) | MotionRecorder guide: installation, capture flow, JSON schema |
-
-## Preview Behavior
-
-The right-side preview area does more than show a static composite. It supports two workflows:
-
-- Assembly preview: composes the current skin in real time according to `assembly.json` plus the current expression and head-state settings in the UI.
-- Motion preview: composites frames one by one from MotionRecorder JSON files under `captures/`, while still allowing expression, head, and facing changes on the active frame. The current release package already includes default captured motion data.
-
-Those JSON files are produced by the in-game BepInEx mod MotionRecorder, which samples `Body.limbs[]`, the matched `TailScript`, facing, and expression on each recorded frame and writes the result to `BepInEx/plugins/MotionRecorder/captures/` when recording stops. Both modes share the same skin-resource dispatch path. Motion mode also supports previewing and switching expressions and states.
+- [English User Guide](docs/en/README.md): full walkthrough of import/export, tools, layers, zones, blood settings, and shortcuts
+- [中文使用文档](docs/zh/README.md): Chinese user guide
+- [MotionRecorder Guide](motionRecorder/README.en.md) / [中文](motionRecorder/README.md): in-game BepInEx motion capture plugin
+- [Changelog](changes.en.md) / [更新日志](changes.md): version history
 
 ## License
 

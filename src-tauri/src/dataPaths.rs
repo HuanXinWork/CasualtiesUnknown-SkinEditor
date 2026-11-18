@@ -1,13 +1,14 @@
-// 便携模式路径解析。运行时配置与皮肤资源全部在 AppRoot/data/ 下。
-// 测试通过 SKIN_EDITOR_APP_ROOT 环境变量覆盖 AppRoot。
+// 便携模式路径解析、单段文件名安全校验与原子写盘工具。
 #![allow(non_snake_case)]
 
-use std::path::PathBuf;
+use std::fs;
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const APP_ROOT_ENV: &str = "SKIN_EDITOR_APP_ROOT";
 
-/// 解析顺序：环境变量 → current_exe().parent() → current_dir()。
-/// 三步均失败时返回 "."，让上层有机会兜底而不 panic。
+/// 按 `SKIN_EDITOR_APP_ROOT` -> 可执行文件所在目录 -> 当前工作目录 -> `.` 解析应用根目录。
 pub fn appRoot() -> PathBuf {
     if let Some(v) = std::env::var_os(APP_ROOT_ENV) {
         if !v.is_empty() {
@@ -30,9 +31,9 @@ pub fn skinDir(name: &str) -> PathBuf {
     dataDir().join("skin").join(name)
 }
 
-/// 前端传入的 `data/skin` 等相对路径按 AppRoot 解析；已是绝对路径则原样返回。
-pub fn resolveSkinRoot(skinRoot: &str) -> PathBuf {
-    let p = PathBuf::from(skinRoot);
+/// 相对路径基于 `appRoot()` 解析，绝对路径原样保留。
+pub fn resolvePath(raw: &str) -> PathBuf {
+    let p = PathBuf::from(raw);
     if p.is_absolute() {
         p
     } else {
@@ -40,12 +41,99 @@ pub fn resolveSkinRoot(skinRoot: &str) -> PathBuf {
     }
 }
 
+pub fn resolveSkinRoot(skinRoot: &str) -> PathBuf {
+    resolvePath(skinRoot)
+}
+
 pub fn workspaceFile() -> PathBuf {
     dataDir().join("workspace.json")
 }
 
-/// 测试期共享互斥锁。所有改写 SKIN_EDITOR_APP_ROOT 的单测都需先持此锁，
-/// 防止并行覆盖进程级 env。
+/// 校验名称是否为安全的单段文件名（禁止路径分隔符、`..`、控制字符、尾随空格/点及 Windows 保留设备名）。
+pub fn isValidSingleSegment(name: &str) -> bool {
+    if name.is_empty() || name == "." || name == ".." {
+        return false;
+    }
+    if name.ends_with(' ') || name.ends_with('.') {
+        return false;
+    }
+    if name.chars().any(|c| {
+        c.is_control()
+            || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+    }) {
+        return false;
+    }
+    let mut comps = Path::new(name).components();
+    if !matches!(comps.next(), Some(Component::Normal(_))) || comps.next().is_some() {
+        return false;
+    }
+    let stem = name.split('.').next().unwrap_or(name);
+    let upper = stem.to_ascii_uppercase();
+    !matches!(
+        upper.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
+/// 先写入同目录临时文件并刷盘，再原子重命名替换目标文件，防止半截写入损坏数据。
+pub fn atomicWrite(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let fileName = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("target");
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmpName = format!(".{}.tmp.{}.{}", fileName, std::process::id(), seq);
+    let tmpPath = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.join(tmpName),
+        _ => PathBuf::from(tmpName),
+    };
+
+    let writeRes = (|| -> std::io::Result<()> {
+        let mut file = fs::File::create(&tmpPath)?;
+        file.write_all(bytes)?;
+        file.flush()?;
+        Ok(())
+    })();
+    if let Err(e) = writeRes {
+        let _ = fs::remove_file(&tmpPath);
+        return Err(e);
+    }
+
+    if let Err(e) = fs::rename(&tmpPath, path) {
+        let _ = fs::remove_file(&tmpPath);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// 串行化改写 `SKIN_EDITOR_APP_ROOT` 的单元测试。
 #[cfg(test)]
 pub(crate) fn appRootEnvLock() -> std::sync::MutexGuard<'static, ()> {
     use std::sync::{Mutex, OnceLock};
@@ -58,9 +146,6 @@ pub(crate) fn appRootEnvLock() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::path::Path;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::MutexGuard;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -137,10 +222,7 @@ mod tests {
         let tmp = TempDir::new();
         let _guard = EnvGuard::set(APP_ROOT_ENV, tmp.path());
         assert_eq!(dataDir(), tmp.path().join("data"));
-        assert_eq!(
-            workspaceFile(),
-            tmp.path().join("data").join("workspace.json")
-        );
+        assert_eq!(workspaceFile(), tmp.path().join("data").join("workspace.json"));
     }
 
     #[test]
@@ -149,10 +231,6 @@ mod tests {
         let tmp = TempDir::new();
         let _guard = EnvGuard::set(APP_ROOT_ENV, tmp.path());
         assert_eq!(skinDir("st1"), tmp.path().join("data").join("skin").join("st1"));
-        assert_eq!(
-            skinDir("default"),
-            tmp.path().join("data").join("skin").join("default")
-        );
     }
 
     #[test]
@@ -164,5 +242,34 @@ mod tests {
         let data = dataDir();
         assert!(data.starts_with(&root));
         assert_eq!(data.file_name().and_then(|s| s.to_str()), Some("data"));
+    }
+
+    #[test]
+    fn singleSegmentValidationRejectsTraversalAndReservedNames() {
+        assert!(isValidSingleSegment("exp"));
+        assert!(isValidSingleSegment("R_experimentArm"));
+        assert!(isValidSingleSegment("layer0.png"));
+        assert!(!isValidSingleSegment(""));
+        assert!(!isValidSingleSegment("."));
+        assert!(!isValidSingleSegment(".."));
+        assert!(!isValidSingleSegment("../secret"));
+        assert!(!isValidSingleSegment("a/b"));
+        assert!(!isValidSingleSegment("a\\b"));
+        assert!(!isValidSingleSegment("C:foo"));
+        assert!(!isValidSingleSegment("trailing."));
+        assert!(!isValidSingleSegment("trailing "));
+        assert!(!isValidSingleSegment("CON"));
+        assert!(!isValidSingleSegment("nul.png"));
+        assert!(!isValidSingleSegment("com1"));
+    }
+
+    #[test]
+    fn atomicWriteReplacesExistingFile() {
+        let tmp = TempDir::new();
+        let target = tmp.path().join("nested").join("cfg.json");
+        atomicWrite(&target, b"first").expect("first write");
+        assert_eq!(fs::read(&target).unwrap(), b"first");
+        atomicWrite(&target, b"second").expect("overwrite");
+        assert_eq!(fs::read(&target).unwrap(), b"second");
     }
 }

@@ -1,4 +1,4 @@
-// 配件"依赖装备槽"自定义下拉：替代原生 select，统一深色主题样式。
+// 配件依赖装备槽下拉选择器（深浅色主题自适应对比度 + 视口边界防溢出）。
 import { t } from "../i18n";
 import { localizeWearSlot, WEAR_SLOT_IDS } from "../i18n/wearSlots";
 
@@ -25,7 +25,7 @@ export function mountSlotDropdown(
   menu.className = "panel slot-dd-menu";
   menu.hidden = true;
   menu.style.cssText =
-    "position:fixed;z-index:1300;min-width:140px;max-height:280px;overflow:auto;" +
+    "position:fixed;z-index:1300;min-width:140px;max-height:260px;overflow:auto;" +
     "padding:4px 0;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,0.25);";
   document.body.appendChild(menu);
 
@@ -40,8 +40,7 @@ export function mountSlotDropdown(
     const arrow = document.createElement("span");
     arrow.textContent = "▾";
     arrow.style.opacity = "0.6";
-    trigger.appendChild(text);
-    trigger.appendChild(arrow);
+    trigger.append(text, arrow);
   }
 
   function renderMenu(): void {
@@ -52,10 +51,13 @@ export function mountSlotDropdown(
       item.className = "slot-dd-item";
       item.textContent = labelOf(id);
       item.style.cssText =
-        "padding:6px 12px;cursor:pointer;" + (id === value ? "background:rgba(255,255,255,0.12);" : "");
-      item.addEventListener("mouseenter", () => { item.style.background = "rgba(255,255,255,0.18)"; });
+        "padding:6px 12px;cursor:pointer;" +
+        (id === value ? "background:rgba(var(--border-rgb),0.14);font-weight:600;" : "");
+      item.addEventListener("mouseenter", () => {
+        item.style.background = "rgba(var(--border-rgb),0.2)";
+      });
       item.addEventListener("mouseleave", () => {
-        item.style.background = id === value ? "rgba(255,255,255,0.12)" : "";
+        item.style.background = id === value ? "rgba(var(--border-rgb),0.14)" : "";
       });
       item.addEventListener("click", () => {
         if (id !== value) {
@@ -71,15 +73,24 @@ export function mountSlotDropdown(
 
   function position(): void {
     const rect = trigger.getBoundingClientRect();
-    menu.style.left = `${rect.left}px`;
-    menu.style.top = `${rect.bottom + 2}px`;
     menu.style.minWidth = `${rect.width}px`;
+    const menuW = Math.max(rect.width, 140);
+    const left = Math.max(8, Math.min(window.innerWidth - menuW - 8, rect.left));
+    menu.style.left = `${left}px`;
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    if (spaceBelow < 180 && rect.top > spaceBelow) {
+      menu.style.bottom = `${window.innerHeight - rect.top + 2}px`;
+      menu.style.top = "auto";
+    } else {
+      menu.style.top = `${rect.bottom + 2}px`;
+      menu.style.bottom = "auto";
+    }
   }
 
   function open(): void {
     renderMenu();
-    position();
     menu.hidden = false;
+    position();
   }
   function close(): void {
     menu.hidden = true;

@@ -1,13 +1,8 @@
-// toolPanel 工具栏中的主题切换入口。
-// 暴露 primary / background / surface 三个 picker + 浅色/深色两组预设；
-// onPrimary / onBackground / borderOpacity 沿用当前 theme，不让用户单独调。
-//
-// 持久化通道：每次主题字段变化 → sessionStore.setState + applyTheme +
-// 拉 workspace 当前 layout 后 saveWorkspace 写回（避免覆盖 layout）。
+// 主题切换弹出面板（浅色/深色预设与主色、背景色、表面色实时调色）。
 
-import { getWorkspace, saveWorkspace, type ApiError } from "../apiClient";
 import { sessionStore } from "../stateStore";
 import { applyTheme, darkTheme, defaultTheme } from "../stateStore/theme";
+import { updateWorkspace } from "../stateStore/workspacePersist";
 import type { ThemeConfig } from "../stateStore/types";
 import { subscribeLang, t } from "../i18n";
 import { ICON_THEME } from "../toolPanel/toolIcons";
@@ -45,7 +40,6 @@ export function mountThemeButton(container: HTMLElement, workspacePath: string):
   const surfaceInput = container.querySelector<HTMLInputElement>('[data-field="surface"]')!;
 
   function applyTexts(): void {
-    // 主题按钮：图标 + 主题二字提示，保持视觉对齐工具栏其它图标按钮
     toggleBtn.innerHTML = ICON_THEME;
     toggleBtn.title = t("themeSettings.title");
     lightBtn.textContent = t("themeSettings.light");
@@ -63,19 +57,12 @@ export function mountThemeButton(container: HTMLElement, workspacePath: string):
     surfaceInput.value = theme.surface;
   }
 
-  function persist(theme: ThemeConfig): void {
-    // 改色频率低，先 getWorkspace 拿当前 layout 再写回，避免覆盖面板状态。
-    getWorkspace(workspacePath)
-      .then((ws) => saveWorkspace(workspacePath, ws.layout, theme))
-      .catch((e: ApiError) => {
-        console.warn(`[themeSettings] saveWorkspace failed: ${e?.message ?? String(e)}`);
-      });
-  }
-
   function updateTheme(next: ThemeConfig): void {
     sessionStore.setState({ theme: next });
     applyTheme(next);
-    persist(next);
+    updateWorkspace(workspacePath, (draft) => {
+      draft.theme = { ...next };
+    });
   }
 
   toggleBtn.addEventListener("click", () => {
@@ -85,7 +72,6 @@ export function mountThemeButton(container: HTMLElement, workspacePath: string):
     popover.hidden = true;
   });
 
-  // 点击 popover / 触发按钮以外的区域时自动收起，避免占据视觉焦点。
   function onDocumentClick(event: MouseEvent): void {
     if (popover.hidden) return;
     const target = event.target as Node;

@@ -1,7 +1,4 @@
-// 临时工具：把 huanxin 4 张翼 PNG 按 WingScript 角度拼成"收敛"与"展开"两张预览。
-// 上翼以翼根 (cx,cy) 为旋转中心；下翼贴在上翼旋转后的"翼尖"位置，并用与上翼相同的旋转角，
-// 让下翼自然延续成完整翼形。
-// 运行：cargo run --example dumpWings --manifest-path src-tauri/Cargo.toml
+// 导出 4 片翅膀在收敛/展开姿态下合成预览 PNG 的本地调试示例。
 #![allow(non_snake_case)]
 
 use skin_preview_editor::imageOps;
@@ -15,8 +12,6 @@ fn loadRgba(path: &std::path::Path) -> (Vec<u8>, u32, u32) {
     (img.into_raw(), w, h)
 }
 
-// 与 imageOps::blitWithRotation 内部约定保持一致：rad = -rotDeg。
-// 对画布坐标系 (y 朝下) 的向量做"逆时针 rotDeg 度（屏幕坐标系语义）"旋转。
 fn rotateVec(dx: f32, dy: f32, rotDeg: f32) -> (f32, f32) {
     let rad = -rotDeg.to_radians();
     let c = rad.cos();
@@ -55,12 +50,7 @@ fn drawComposite(pieces: &[WingPiece]) -> Vec<u8> {
 fn savePng(canvas: &[u8], path: &std::path::Path) {
     image::save_buffer(path, canvas, CANVAS_W, CANVAS_H, image::ColorType::Rgba8)
         .expect("save png");
-    println!(
-        "[dump] wrote {} ({}x{})",
-        path.display(),
-        CANVAS_W,
-        CANVAS_H
-    );
+    println!("[dump] wrote {} ({}x{})", path.display(), CANVAS_W, CANVAS_H);
 }
 
 fn main() {
@@ -76,30 +66,20 @@ fn main() {
     let (dlPx, dlW, dlH) = loadRgba(&wingsDir.join("wingDL.png"));
     let (drPx, drW, drH) = loadRgba(&wingsDir.join("wingDR.png"));
 
-    // 上翼翼根锚到画布中心
     let cx = (CANVAS_W as i32) / 2;
     let cy = (CANVAS_H as i32) / 2;
-
-    // WingScript 角度（body.isRight=true 面右）：rest 18° / max 110°；左翼取负、右翼取正。
     let rest = 18.0f32;
     let max = 110.0f32;
 
     let outDir = projectRoot.join("agentdocs").join("wingDebug");
     std::fs::create_dir_all(&outDir).expect("mkdir");
 
-    // 给定上翼旋转角，算下翼应该贴在 (cx,cy) 加 rotate((0, halfH), rotUpper) 的位置。
-    // halfH 取上翼 PNG 半高——PNG 内部约定翼根在中心、翼尖朝下到 PNG 底边，
-    // 所以 (0, halfH) 就是 PNG 内"翼尖相对翼根"的向量。
     let halfHL = (ulH as f32) / 2.0;
     let halfHR = (urH as f32) / 2.0;
 
     let composeAt = |rotL: f32, rotR: f32| -> Vec<WingPiece> {
         let (offLx, offLy) = rotateVec(0.0, halfHL * 0.74, rotL);
         let (offRx, offRy) = rotateVec(0.0, halfHR * 0.74, rotR);
-        let downLcx = (cx as f32 + offLx).round() as i32;
-        let downLcy = (cy as f32 + offLy).round() as i32;
-        let downRcx = (cx as f32 + offRx).round() as i32;
-        let downRcy = (cy as f32 + offRy).round() as i32;
         vec![
             WingPiece {
                 pixels: &ulPx,
@@ -113,8 +93,8 @@ fn main() {
                 pixels: &dlPx,
                 w: dlW,
                 h: dlH,
-                cx: downLcx,
-                cy: downLcy,
+                cx: (cx as f32 + offLx).round() as i32,
+                cy: (cy as f32 + offLy).round() as i32,
                 rotDeg: rotL,
             },
             WingPiece {
@@ -129,16 +109,13 @@ fn main() {
                 pixels: &drPx,
                 w: drW,
                 h: drH,
-                cx: downRcx,
-                cy: downRcy,
+                cx: (cx as f32 + offRx).round() as i32,
+                cy: (cy as f32 + offRy).round() as i32,
                 rotDeg: rotR,
             },
         ]
     };
 
-    let collapsed = drawComposite(&composeAt(-rest, rest));
-    savePng(&collapsed, &outDir.join("huanxin_wings_collapsed.png"));
-
-    let spread = drawComposite(&composeAt(-max, max));
-    savePng(&spread, &outDir.join("huanxin_wings_spread.png"));
+    savePng(&drawComposite(&composeAt(-rest, rest)), &outDir.join("huanxin_wings_collapsed.png"));
+    savePng(&drawComposite(&composeAt(-max, max)), &outDir.join("huanxin_wings_spread.png"));
 }

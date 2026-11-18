@@ -1,46 +1,49 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
+using Newtonsoft.Json;
 using UnityEngine;
 
 namespace CasualtiesUnknown.MotionRecorder
 {
+    /// <summary>逐帧采集玩家角色肢体、尾巴与翅膀变换并输出为皮肤编辑器动作预览 JSON。</summary>
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
     public sealed class Plugin : BaseUnityPlugin
     {
         private const string PluginGuid = "com.casualtiesUnknown.motionRecorder";
         private const string PluginName = "MotionRecorder";
         private const string PluginVersion = "1.0.1";
+        private const float MaxTailDistance = 3f;
 
-        // —— 配置项 —— //
+        private static readonly string[] WingNodeNames = { "WingUL", "WingUR", "WingDL", "WingDR" };
+        private static readonly string[] WingEditorNames = { "wingUL", "wingUR", "wingDL", "wingDR" };
+
         private ConfigEntry<KeyboardShortcut> _startHotkey;
         private ConfigEntry<KeyboardShortcut> _stopHotkey;
-        private ConfigEntry<bool> _showOverlay;
         private ConfigEntry<KeyboardShortcut> _toggleSettingsHotkey;
+        private ConfigEntry<bool> _showOverlay;
 
-        // —— 设置面板 —— //
         private bool _settingsOpen;
         private Rect _settingsRect = new Rect(60f, 60f, 360f, 220f);
         private bool _capturingStartKey;
         private bool _capturingStopKey;
 
-        // —— 录制状态 —— //
         private bool _recording;
         private float _startTime;
+        private float _pausedDuration;
         private long _startUnixMs;
         private CaptureFile _capture;
         private Body _target;
-        private TailScript _targetTail;
+        private Transform _targetTail;
+        private FacialExpression _targetFace;
+        private readonly Transform[] _cachedWings = new Transform[4];
 
-        // —— 浮动按钮坐标（屏幕左下角） —— //
         private Rect _btnRect = new Rect(20f, 0f, 160f, 36f);
-        private Rect _statusRect = new Rect(20f, 0f, 280f, 28f);
+        private Rect _statusRect = new Rect(20f, 0f, 300f, 28f);
 
         private static ManualLogSource _log;
-
         private string _lastSavedPath;
 
         private void Awake()
@@ -51,27 +54,26 @@ namespace CasualtiesUnknown.MotionRecorder
                 "Hotkeys",
                 "StartHotkey",
                 new KeyboardShortcut(KeyCode.F9),
-                "开始录制的快捷键。在录制中按下无效。");
+                "开始录制的快捷键（录制中按下无效）。");
 
             _stopHotkey = Config.Bind(
                 "Hotkeys",
                 "StopHotkey",
                 new KeyboardShortcut(KeyCode.F10),
-                "停止录制的快捷键。在空闲状态按下无效。");
+                "停止录制并保存的快捷键（空闲时按下无效）。");
 
             _toggleSettingsHotkey = Config.Bind(
                 "Hotkeys",
                 "ToggleSettingsHotkey",
                 new KeyboardShortcut(KeyCode.F8),
-                "打开 / 关闭设置面板。在面板里可以热改其他按键与 UI 开关。");
+                "打开或关闭设置面板。");
 
             _showOverlay = Config.Bind(
                 "UI",
                 "ShowOverlay",
                 true,
-                "是否显示左下角的浮动按钮与状态文字。关掉后只能用快捷键控制。");
+                "是否显示左下角录制按钮与状态栏。");
 
-            // 准备输出目录：plugins/MotionRecorder/captures/
             try
             {
                 Directory.CreateDirectory(GetCapturesDir());
@@ -81,12 +83,20 @@ namespace CasualtiesUnknown.MotionRecorder
                 _log.LogWarning($"创建 captures 目录失败：{ex.Message}");
             }
 
-            _log.LogInfo($"{PluginName} ready · start={_startHotkey.Value} · stop={_stopHotkey.Value} · settings={_toggleSettingsHotkey.Value} · captures→{GetCapturesDir()}");
+            _log.LogInfo(
+                $"{PluginName} ready · start={_startHotkey.Value} · stop={_stopHotkey.Value} · settings={_toggleSettingsHotkey.Value} · captures→{GetCapturesDir()}");
+        }
+
+        private void OnDisable()
+        {
+            if (_recording && _capture != null && _capture.Frames.Count > 0)
+            {
+                StopRecording();
+            }
         }
 
         private void Update()
         {
-            // 设置面板开 / 关：始终响应，不被录制状态阻塞
             if (_toggleSettingsHotkey.Value.IsDown())
             {
                 _settingsOpen = !_settingsOpen;
@@ -95,7 +105,6 @@ namespace CasualtiesUnknown.MotionRecorder
                 return;
             }
 
-            // 录制开始 / 停止：拆成两个键，避免按错把"停"当"开"
             if (!_recording && _startHotkey.Value.IsDown())
             {
                 StartRecording();
@@ -107,96 +116,91 @@ namespace CasualtiesUnknown.MotionRecorder
                 return;
             }
 
-            if (_recording)
+            if (!_recording) return;
+
+            // 游戏暂停期间累扣真实挂钟增量，防止恢复后帧时间戳 `t` 出现断层。
+            if (Time.timeScale <= 0f)
             {
-                CaptureCurrentFrame();
+                _pausedDuration += Time.unscaledDeltaTime;
+                return;
             }
+
+            CaptureCurrentFrame();
         }
 
         private void OnGUI()
         {
             DrawSettingsPanel();
-            if (!_showOverlay.Value) return;
-            if (!IsInGameWorld()) return;
+            if (!_showOverlay.Value || !IsInGameWorld()) return;
 
-            // 把按钮放到屏幕左下角，避免遮 HUD
             _btnRect.y = Screen.height - _btnRect.height - 20f;
             _statusRect.y = _btnRect.y - _statusRect.height - 4f;
 
-            // 状态条
             var prevColor = GUI.color;
             GUI.color = _recording ? new Color(1f, 0.35f, 0.35f, 0.95f) : new Color(1f, 1f, 1f, 0.7f);
             string status = _recording
-                ? $"REC {FormatDuration(Time.unscaledTime - _startTime)} · {_capture?.Frames?.Count ?? 0} frames · 停止 {_stopHotkey.Value}"
+                ? $"REC {FormatDuration(GetElapsedSeconds())} · {_capture?.Frames?.Count ?? 0} frames · 停止 {_stopHotkey.Value}"
                 : (_lastSavedPath != null
                     ? $"saved: {Path.GetFileName(_lastSavedPath)}"
                     : $"idle · 开始 {_startHotkey.Value} · 设置 {_toggleSettingsHotkey.Value}");
             GUI.Label(_statusRect, status);
             GUI.color = prevColor;
 
-            // 按钮
-            string btnLabel = _recording ? "停止录制" : "开始录制";
-            if (GUI.Button(_btnRect, btnLabel))
+            if (GUI.Button(_btnRect, _recording ? "停止录制" : "开始录制"))
             {
                 ToggleRecording();
             }
         }
 
-        // —— 设置面板 —— //
-
         private void DrawSettingsPanel()
         {
             if (!_settingsOpen) return;
-
             _settingsRect = GUI.Window(GetInstanceID(), _settingsRect, DrawSettingsContent, "MotionRecorder 设置");
         }
 
         private void DrawSettingsContent(int id)
         {
-            // 1) 浮动按钮显隐
             bool newOverlay = GUI.Toggle(new Rect(16f, 28f, 320f, 22f), _showOverlay.Value, "  显示左下角录制按钮 / 状态条");
             if (newOverlay != _showOverlay.Value) _showOverlay.Value = newOverlay;
 
-            // 2) 开始键
             GUI.Label(new Rect(16f, 60f, 120f, 22f), "开始录制按键：");
-            string startBtn = _capturingStartKey ? "请按下新按键…" : _startHotkey.Value.ToString();
+            string startBtn = _capturingStartKey ? "请按下新按键（Esc 取消）…" : _startHotkey.Value.ToString();
             if (GUI.Button(new Rect(140f, 60f, 200f, 22f), startBtn))
             {
                 _capturingStartKey = true;
                 _capturingStopKey = false;
             }
 
-            // 3) 停止键
             GUI.Label(new Rect(16f, 88f, 120f, 22f), "停止录制按键：");
-            string stopBtn = _capturingStopKey ? "请按下新按键…" : _stopHotkey.Value.ToString();
+            string stopBtn = _capturingStopKey ? "请按下新按键（Esc 取消）…" : _stopHotkey.Value.ToString();
             if (GUI.Button(new Rect(140f, 88f, 200f, 22f), stopBtn))
             {
                 _capturingStopKey = true;
                 _capturingStartKey = false;
             }
 
-            // 4) 改键采集：在 Repaint 之外的事件里读 keyDown
             if (_capturingStartKey || _capturingStopKey)
             {
                 var ev = Event.current;
-                if (ev.type == EventType.KeyDown && ev.keyCode != KeyCode.None)
+                if (ev.type == EventType.KeyDown && ev.keyCode != KeyCode.None && !IsMouseKeyCode(ev.keyCode))
                 {
-                    var shortcut = new KeyboardShortcut(ev.keyCode);
-                    if (_capturingStartKey) _startHotkey.Value = shortcut;
-                    else _stopHotkey.Value = shortcut;
+                    if (ev.keyCode != KeyCode.Escape)
+                    {
+                        var shortcut = new KeyboardShortcut(ev.keyCode);
+                        if (_capturingStartKey) _startHotkey.Value = shortcut;
+                        else _stopHotkey.Value = shortcut;
+                    }
                     _capturingStartKey = false;
                     _capturingStopKey = false;
                     ev.Use();
                 }
             }
 
-            // 5) 当前状态摘要
             string status = _recording
-                ? $"录制中：{_capture?.Frames?.Count ?? 0} 帧 / {FormatDuration(Time.unscaledTime - _startTime)}"
+                ? $"录制中：{_capture?.Frames?.Count ?? 0} 帧 / {FormatDuration(GetElapsedSeconds())}"
                 : (_lastSavedPath != null ? $"上次保存：{Path.GetFileName(_lastSavedPath)}" : "空闲");
             GUI.Label(new Rect(16f, 124f, 320f, 22f), status);
 
-            // 6) 关闭按钮
             if (GUI.Button(new Rect(16f, 160f, 120f, 28f), "关闭"))
             {
                 _settingsOpen = false;
@@ -207,7 +211,15 @@ namespace CasualtiesUnknown.MotionRecorder
             GUI.DragWindow(new Rect(0f, 0f, _settingsRect.width, 24f));
         }
 
-        // —— 状态机 —— //
+        private static bool IsMouseKeyCode(KeyCode code)
+        {
+            return code >= KeyCode.Mouse0 && code <= KeyCode.Mouse6;
+        }
+
+        private float GetElapsedSeconds()
+        {
+            return Mathf.Max(0f, Time.unscaledTime - _startTime - _pausedDuration);
+        }
 
         private void ToggleRecording()
         {
@@ -230,12 +242,17 @@ namespace CasualtiesUnknown.MotionRecorder
                 StartedAtUnixMs = DateTimeOffset.Now.ToUnixTimeMilliseconds(),
                 PlayerName = _target.gameObject.name,
             };
-            _targetTail = FindTailForBody(_target);
+            _targetTail = ResolveTailTransform(_target);
+            _targetFace = _target.GetComponentInChildren<FacialExpression>(true);
+            Array.Clear(_cachedWings, 0, _cachedWings.Length);
+            RefreshWingCache(_target);
+
             _startTime = Time.unscaledTime;
+            _pausedDuration = 0f;
             _startUnixMs = _capture.StartedAtUnixMs;
             _recording = true;
             _lastSavedPath = null;
-            _log.LogInfo($"开始录制：target={_target.gameObject.name} · tail={(_targetTail != null ? _targetTail.gameObject.name : "<none>")}");
+            _log.LogInfo($"开始录制：target={_target.gameObject.name} · tail={(_targetTail != null ? _targetTail.name : "<none>")}");
         }
 
         private void StopRecording()
@@ -245,10 +262,11 @@ namespace CasualtiesUnknown.MotionRecorder
 
             try
             {
+                Directory.CreateDirectory(GetCapturesDir());
                 _capture.FrameCount = _capture.Frames.Count;
                 string fileName = BuildFileName(_capture.PlayerName, _startUnixMs);
                 string path = Path.Combine(GetCapturesDir(), fileName);
-                string json = Newtonsoft.Json.JsonConvert.SerializeObject(_capture, Newtonsoft.Json.Formatting.Indented);
+                string json = JsonConvert.SerializeObject(_capture, Formatting.Indented);
                 File.WriteAllText(path, json);
                 _lastSavedPath = path;
                 _log.LogInfo($"录制完成：{_capture.FrameCount} frames → {path}");
@@ -262,82 +280,116 @@ namespace CasualtiesUnknown.MotionRecorder
                 _capture = null;
                 _target = null;
                 _targetTail = null;
+                _targetFace = null;
+                Array.Clear(_cachedWings, 0, _cachedWings.Length);
             }
         }
 
-        // —— 采样核心 —— //
-
         private void CaptureCurrentFrame()
         {
-            if (Time.timeScale <= 0f) return;
-            if (_target == null || _capture == null) return;
-            if (_target.limbs == null) return;
+            if (_target == null || _capture == null || _target.limbs == null) return;
 
             var frame = new FrameSample
             {
-                T = Time.unscaledTime - _startTime,
-                IsRight = _target.transform.localScale.x >= 0f,
-                Expression = TryGetExpressionIndex(_target),
+                T = GetElapsedSeconds(),
+                IsRight = _target.isRight,
+                Expression = TryGetExpressionIndex(_target, ref _targetFace),
             };
 
             for (int i = 0; i < _target.limbs.Length; i++)
             {
                 var limb = _target.limbs[i];
                 if (limb == null) continue;
-                frame.Limbs.Add(BuildSample(limb.gameObject.name, i, limb.transform, limb.GetComponent<SpriteRenderer>(), useWorldRotation: false));
+                frame.Limbs.Add(BuildSample(
+                    limb.gameObject.name,
+                    i,
+                    limb.transform,
+                    limb.GetComponent<SpriteRenderer>(),
+                    useWorldRotation: false));
             }
 
             if (_targetTail == null || !_targetTail.gameObject.activeInHierarchy)
             {
-                _targetTail = FindTailForBody(_target);
+                _targetTail = ResolveTailTransform(_target);
             }
             if (_targetTail != null)
             {
-                frame.Limbs.Add(BuildSample("Tail", -1, _targetTail.transform, _targetTail.GetComponent<SpriteRenderer>(), useWorldRotation: true));
+                frame.Limbs.Add(BuildSample(
+                    "Tail",
+                    -1,
+                    _targetTail,
+                    _targetTail.GetComponent<SpriteRenderer>(),
+                    useWorldRotation: true));
             }
 
-            // 翅膀（来自 SkinSync mod 的 HwWings 容器，4 张独立 transform）：
-            // 名字固定 WingUL/WingUR/WingDL/WingDR，挂在 UpTorso 子节点下的 HwWings 容器。
-            // 录制时直接抓 SpriteRenderer 的位置 / 旋转 / sprite 元信息，编辑器渲染时按 partName 直接用。
-            // limbNum 用 -10..-13，避免与 limbs[] 索引冲突。
             CaptureWingSamples(frame);
-
             _capture.Frames.Add(frame);
         }
 
-        private static readonly string[] WingNames = { "WingUL", "WingUR", "WingDL", "WingDR" };
-
-        private void CaptureWingSamples(FrameSample frame)
+        private void RefreshWingCache(Body body)
         {
-            if (_target == null) return;
-            // 先找 HwWings 容器：UpTorso 子节点下，找不到就在整个 body 子树里找。
-            Transform[] all = _target.GetComponentsInChildren<Transform>(true);
-            for (int idx = 0; idx < WingNames.Length; idx++)
+            if (body == null) return;
+            Transform[] all = body.GetComponentsInChildren<Transform>(true);
+            for (int idx = 0; idx < WingNodeNames.Length; idx++)
             {
-                Transform wingTf = null;
-                string wn = WingNames[idx];
-                foreach (var tf in all)
+                if (_cachedWings[idx] != null) continue;
+                string wn = WingNodeNames[idx];
+                for (int i = 0; i < all.Length; i++)
                 {
-                    if (tf != null && tf.name == wn) { wingTf = tf; break; }
+                    var tf = all[i];
+                    if (tf != null && tf.name == wn)
+                    {
+                        _cachedWings[idx] = tf;
+                        break;
+                    }
                 }
-                if (wingTf == null) continue;
-                var sr = wingTf.GetComponent<SpriteRenderer>();
-                // 翼名按编辑器约定全小写：wingUL/wingUR/wingDL/wingDR；limbNum 用 -10..-13。
-                string editorName = "wing" + wn.Substring(4);
-                frame.Limbs.Add(BuildSample(editorName, -10 - idx, wingTf, sr, useWorldRotation: true));
             }
         }
 
-        private LimbSample BuildSample(string name, int limbNum, Transform t, SpriteRenderer sr, bool useWorldRotation = false)
+        // 采样 SkinSync 挂载的 `WingUL/UR/DL/DR` 节点，编号使用 `-10..-13` 避开肢体槽位。
+        private void CaptureWingSamples(FrameSample frame)
         {
-            // 把 SpriteRenderer.bounds.center（世界坐标）转回 Body 根节点局部坐标，
-            // 这是 sprite 的真实视觉中心，不受 pivot / 关节锚点 / 旋转影响。
+            if (_target == null) return;
+            bool needRefresh = false;
+            for (int idx = 0; idx < _cachedWings.Length; idx++)
+            {
+                if (_cachedWings[idx] == null)
+                {
+                    needRefresh = true;
+                    break;
+                }
+            }
+            if (needRefresh) RefreshWingCache(_target);
+
+            for (int idx = 0; idx < _cachedWings.Length; idx++)
+            {
+                var wingTf = _cachedWings[idx];
+                if (wingTf == null) continue;
+                frame.Limbs.Add(BuildSample(
+                    WingEditorNames[idx],
+                    -10 - idx,
+                    wingTf,
+                    wingTf.GetComponent<SpriteRenderer>(),
+                    useWorldRotation: true));
+            }
+        }
+
+        private LimbSample BuildSample(
+            string name,
+            int limbNum,
+            Transform t,
+            SpriteRenderer sr,
+            bool useWorldRotation)
+        {
             Vector3 centerLocal = Vector3.zero;
             string spriteName = "";
             float pivotU = 0.5f, pivotV = 0.5f, spriteW = 0f, spriteH = 0f;
+            int sortingOrder = 0;
+            bool visible = false;
+
             if (sr != null)
             {
-                centerLocal = _target.transform.InverseTransformPoint(sr.bounds.center);
+                sortingOrder = sr.sortingOrder;
                 if (sr.sprite != null)
                 {
                     spriteName = sr.sprite.name ?? "";
@@ -350,7 +402,25 @@ namespace CasualtiesUnknown.MotionRecorder
                         pivotV = sr.sprite.pivot.y / spriteH;
                     }
                 }
+                if (sr.enabled && t.gameObject.activeInHierarchy)
+                {
+                    visible = true;
+                    centerLocal = _target.transform.InverseTransformPoint(sr.bounds.center);
+                }
             }
+
+            // 兼容 SkinSync 流体尾巴：原版 SpriteRenderer 被禁用并替换为启用的 MeshRenderer。
+            if (!visible && t.gameObject.activeInHierarchy)
+            {
+                var meshRenderer = t.GetComponent<MeshRenderer>() ?? t.GetComponentInChildren<MeshRenderer>();
+                if (meshRenderer != null && meshRenderer.enabled)
+                {
+                    visible = true;
+                    sortingOrder = meshRenderer.sortingOrder;
+                    centerLocal = _target.transform.InverseTransformPoint(meshRenderer.bounds.center);
+                }
+            }
+
             return new LimbSample
             {
                 Name = name,
@@ -358,13 +428,11 @@ namespace CasualtiesUnknown.MotionRecorder
                 Px = t.localPosition.x,
                 Py = t.localPosition.y,
                 Pz = t.localPosition.z,
-                // 挂 body 子节点的 limb 直接用 localEulerAngles.z（local==画布旋转）；
-                // 挂在更深层级（HwWings/UpTorso 子节点）的翼/尾要用世界 z 才能落到画布旋转上。
                 RotZ = useWorldRotation ? t.eulerAngles.z : t.localEulerAngles.z,
                 ScaleX = t.localScale.x,
                 ScaleY = t.localScale.y,
-                SortingOrder = sr != null ? sr.sortingOrder : 0,
-                Visible = sr != null && sr.enabled && t.gameObject.activeInHierarchy,
+                SortingOrder = sortingOrder,
+                Visible = visible,
                 Bcx = centerLocal.x,
                 Bcy = centerLocal.y,
                 SpriteName = spriteName,
@@ -375,19 +443,11 @@ namespace CasualtiesUnknown.MotionRecorder
             };
         }
 
-        // —— Helpers —— //
-
-        /// <summary>
-        /// 是否处于"游戏世界已加载"状态，作为浮动按钮显示门槛。
-        /// 主菜单 / 加载中 PlayerCamera.main 与 WorldGeneration.world 都为 null。
-        /// </summary>
         private static bool IsInGameWorld()
         {
             try
             {
-                if (PlayerCamera.main == null) return false;
-                if (WorldGeneration.world == null) return false;
-                return true;
+                return PlayerCamera.main != null && WorldGeneration.world != null;
             }
             catch
             {
@@ -397,75 +457,94 @@ namespace CasualtiesUnknown.MotionRecorder
 
         private static Body FindPlayerBody()
         {
-            // 取场景里第一个 limbs 非空的 active Body。多数情况下就是玩家。
+            try
+            {
+                if (PlayerCamera.main != null &&
+                    PlayerCamera.main.body != null &&
+                    PlayerCamera.main.body.gameObject.activeInHierarchy &&
+                    PlayerCamera.main.body.limbs != null &&
+                    PlayerCamera.main.body.limbs.Length > 0)
+                {
+                    return PlayerCamera.main.body;
+                }
+            }
+            catch
+            {
+                // 回退到全局扫描
+            }
+
             var all = UnityEngine.Object.FindObjectsOfType<Body>();
             foreach (var b in all)
             {
-                if (b == null) continue;
-                if (!b.gameObject.activeInHierarchy) continue;
+                if (b == null || !b.gameObject.activeInHierarchy) continue;
                 if (b.limbs == null || b.limbs.Length == 0) continue;
                 return b;
             }
             return null;
         }
 
-        private static TailScript FindTailForBody(Body body)
+        private static Transform ResolveTailTransform(Body body)
         {
             if (body == null) return null;
+            if (body.tail != null && body.tail.gameObject.activeInHierarchy)
+            {
+                return body.tail;
+            }
+
             TailScript best = null;
             float bestScore = float.PositiveInfinity;
             var bodyRoot = body.transform.root;
             var tails = UnityEngine.Object.FindObjectsOfType<TailScript>();
             foreach (var tail in tails)
             {
-                if (tail == null) continue;
-                if (!tail.gameObject.activeInHierarchy) continue;
-                float score = Vector3.Distance(tail.transform.position, body.transform.position);
-                if (tail.transform.root == bodyRoot)
-                {
-                    score -= 1000f;
-                }
-                if (tail.transform.parent == body.transform.parent)
-                {
-                    score -= 100f;
-                }
+                if (tail == null || !tail.gameObject.activeInHierarchy) continue;
+                bool sameHierarchy = tail.transform.root == bodyRoot || tail.transform.parent == body.transform.parent;
+                float dist = Vector3.Distance(tail.transform.position, body.transform.position);
+                if (!sameHierarchy && dist > MaxTailDistance) continue;
+
+                float score = dist;
+                if (tail.transform.root == bodyRoot) score -= 1000f;
+                if (tail.transform.parent == body.transform.parent) score -= 100f;
                 if (score < bestScore)
                 {
                     bestScore = score;
                     best = tail;
                 }
             }
-            return best;
+            return best != null ? best.transform : null;
         }
 
-        private static int TryGetExpressionIndex(Body body)
+        private static int TryGetExpressionIndex(Body body, ref FacialExpression cachedFace)
         {
-            // FacialExpression 没有 currentIndex 字段，靠 eyes.sprite 在 eyeList[].front 中查找。
-            // 失败时返回 -1，与 README 描述一致。
             try
             {
-                var fe = body.GetComponentInChildren<FacialExpression>();
-                if (fe == null || fe.eyes == null || fe.eyeList == null) return -1;
-                var current = fe.eyes.sprite;
-                if (current == null) return -1;
-                for (int i = 0; i < fe.eyeList.Count; i++)
+                if (cachedFace == null)
                 {
-                    var entry = fe.eyeList[i];
+                    cachedFace = body.GetComponentInChildren<FacialExpression>();
+                }
+                if (cachedFace == null || cachedFace.eyes == null || cachedFace.eyeList == null) return -1;
+                var current = cachedFace.eyes.sprite;
+                if (current == null) return -1;
+                for (int i = 0; i < cachedFace.eyeList.Count; i++)
+                {
+                    var entry = cachedFace.eyeList[i];
                     if (entry.front == current || entry.back == current) return i;
                 }
             }
             catch
             {
-                // ignore
+                return -1;
             }
             return -1;
         }
 
         private static string GetCapturesDir()
         {
-            // dll 所在目录的兄弟 captures/，落到 BepInEx/plugins/MotionRecorder/captures/
-            var asmDir = Path.GetDirectoryName(typeof(Plugin).Assembly.Location)
-                          ?? Path.Combine(Paths.PluginPath, "MotionRecorder");
+            var asmDir = Path.GetDirectoryName(typeof(Plugin).Assembly.Location);
+            if (string.IsNullOrEmpty(asmDir))
+            {
+                asmDir = Path.Combine(Paths.PluginPath, "MotionRecorder");
+            }
             return Path.Combine(asmDir, "captures");
         }
 
@@ -484,7 +563,9 @@ namespace CasualtiesUnknown.MotionRecorder
             for (int i = 0; i < arr.Length; i++)
             {
                 if (Array.IndexOf(invalid, arr[i]) >= 0 || arr[i] == ' ')
+                {
                     arr[i] = '_';
+                }
             }
             return new string(arr);
         }

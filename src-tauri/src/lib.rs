@@ -1,19 +1,19 @@
-// 桌面壳与 HTTP 服务共用同一份 apiLayer，通过 runDesktop / runHttp 两个入口区分形态。
+// 应用库入口：初始化本地数据目录与内置 `exp` 默认皮肤，驱动 Tauri 桌面壳或 Axum HTTP 服务。
 #![allow(non_snake_case)]
 
-pub mod dataPaths;
-pub mod skinLoader;
-pub mod imageOps;
-pub mod assemblyTable;
-pub mod historyManager;
-pub mod windowManager;
-pub mod layerSidecar;
-pub mod imageStore;
-pub mod baseSizes;
 pub mod accessories;
-pub mod zones;
-pub mod blood;
 pub mod apiLayer;
+pub mod assemblyTable;
+pub mod baseSizes;
+pub mod blood;
+pub mod dataPaths;
+pub mod historyManager;
+pub mod imageOps;
+pub mod imageStore;
+pub mod layerSidecar;
+pub mod skinLoader;
+pub mod windowManager;
+pub mod zones;
 mod httpServer;
 mod tauriCommands;
 
@@ -32,20 +32,17 @@ const EMBEDDED_DEFAULT_SKIN_NAME: &str = "exp";
 #[folder = "../data/skin/exp/"]
 struct EmbeddedDefaultSkin;
 
-/// 主窗口关闭拦截。点 X 时拦截关窗、置 closeRequested；前端确认后置 forceClose
-/// 并主动关窗，on_window_event 检测到 forceClose 即放行。仅作用于 label = "main"。
+/// 主窗口关闭拦截状态：拦截首次关闭请求交由前端弹窗确认，确认后置 `forceClose` 放行。
 #[derive(Default)]
 pub struct CloseGuard {
     pub closeRequested: Mutex<bool>,
     pub forceClose: Mutex<bool>,
 }
 
-/// 取色器激活态全局标志。主窗口启停时写入，图片子窗口轮询读取以同步光标样式。
+/// 跨窗口取色激活标志，供参考图子窗口同步取色光标。
 #[derive(Default)]
 pub struct PickActiveFlag(pub Mutex<bool>);
 
-/// 启动时确保 data/ 目录与默认 workspace.json 存在。任何 IO 失败仅打印不阻塞，
-/// 后续读盘各自有兜底（loadDefaultWorkspace 回退默认布局，listSkins 返回空 Vec）。
 pub fn ensureInitialized() {
     let dataDir = dataPaths::dataDir();
     if let Err(e) = std::fs::create_dir_all(&dataDir) {
@@ -71,12 +68,11 @@ pub fn ensureInitialized() {
     backfillBaseSizes(&skinRoot);
 }
 
-/// data/skin 下没有任何皮肤子目录时，把编译期内置的 exp 包展开到磁盘。
+/// 当 `data/skin/` 为空时解包编译期内嵌的 `exp` 默认皮肤。
 pub fn ensureEmbeddedDefaultSkin(skinRoot: &std::path::Path) -> bool {
     if !skinLoader::listSkins(skinRoot).is_empty() {
         return false;
     }
-
     let targetSkinDir = skinRoot.join(EMBEDDED_DEFAULT_SKIN_NAME);
     for rel in EmbeddedDefaultSkin::iter() {
         let relPath = rel.as_ref();
@@ -84,13 +80,7 @@ pub fn ensureEmbeddedDefaultSkin(skinRoot: &std::path::Path) -> bool {
             continue;
         };
         let dst = targetSkinDir.join(relPath);
-        if let Some(parent) = dst.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!("[init] 创建 {} 失败: {}", parent.display(), e);
-                return false;
-            }
-        }
-        if let Err(e) = std::fs::write(&dst, file.data.as_ref()) {
+        if let Err(e) = dataPaths::atomicWrite(&dst, file.data.as_ref()) {
             eprintln!("[init] 写入 {} 失败: {}", dst.display(), e);
             return false;
         }
@@ -98,23 +88,25 @@ pub fn ensureEmbeddedDefaultSkin(skinRoot: &std::path::Path) -> bool {
     true
 }
 
-/// 读内置 exp 皮肤包中的相对路径文件字节（如 "Accessories/balaclava.png"）；缺失返回 None。
 pub fn embeddedTemplateBytes(rel: &str) -> Option<Vec<u8>> {
     EmbeddedDefaultSkin::get(rel).map(|f| f.data.into_owned())
 }
 
-/// 启动时为缺 `baseSizes.json` 的旧皮肤目录补齐分辨率配置。失败仅打印不阻塞启动。
 fn backfillBaseSizes(skinRoot: &std::path::Path) {
-    let entries = match std::fs::read_dir(skinRoot) {
-        Ok(it) => it,
-        Err(_) => return,
+    let Ok(entries) = std::fs::read_dir(skinRoot) else {
+        return;
     };
     for entry in entries.flatten() {
         let dir = entry.path();
-        if !dir.is_dir() { continue; }
-        if dir.join(baseSizes::BASE_SIZES_FILE).exists() { continue; }
+        if !dir.is_dir() || dir.join(baseSizes::BASE_SIZES_FILE).exists() {
+            continue;
+        }
         if let Err(e) = skinLoader::writeBaseSizesForSkin(&dir) {
-            eprintln!("[init] 生成 {}/baseSizes.json 失败: {}", dir.display(), e.message);
+            eprintln!(
+                "[init] 生成 {}/baseSizes.json 失败: {}",
+                dir.display(),
+                e.message
+            );
         }
     }
 }
@@ -131,34 +123,43 @@ impl HttpConfig {
     }
 }
 
-/// 启动桌面壳。前端产物路径在 tauri.conf.json 的 frontendDist 配置。
 pub fn runDesktop() {
     ensureInitialized();
     let api = Arc::new(CoreApi::new());
-    let closeGuard: Arc<CloseGuard> = Arc::new(CloseGuard::default());
-    let imageStore: Arc<imageStore::ImageStore> = Arc::new(imageStore::ImageStore::default());
-    let pickActiveFlag: Arc<PickActiveFlag> = Arc::new(PickActiveFlag::default());
+    let closeGuard = Arc::new(CloseGuard::default());
+    let imageStore = Arc::new(imageStore::ImageStore::default());
+    let pickActiveFlag = Arc::new(PickActiveFlag::default());
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        // opener 让前端通过 invoke("plugin:opener|open_url", { url }) 唤起系统浏览器，
-        // 避免 webview 内 `<a target="_blank">` 不打开外部应用。
         .plugin(tauri_plugin_opener::init())
         .manage(api)
         .manage(closeGuard.clone())
         .manage(imageStore.clone())
-        .manage(pickActiveFlag.clone())
+        .manage(pickActiveFlag)
         .on_window_event({
-            let guard = closeGuard.clone();
+            let guard = closeGuard;
+            let store = imageStore;
             move |window, event| {
-                if window.label() != "main" {
+                let label = window.label();
+                if let Some(token) = label.strip_prefix("image_") {
+                    if matches!(event, tauri::WindowEvent::Destroyed) {
+                        store.remove(token);
+                    }
+                    return;
+                }
+                if label != "main" {
                     return;
                 }
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    if *guard.forceClose.lock().unwrap() {
+                    let forced = *guard.forceClose.lock().unwrap_or_else(|e| e.into_inner());
+                    if forced {
                         return;
                     }
                     api.prevent_close();
-                    *guard.closeRequested.lock().unwrap() = true;
+                    *guard
+                        .closeRequested
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = true;
                 }
             }
         })
@@ -169,6 +170,7 @@ pub fn runDesktop() {
             tauriCommands::api_loadMotionCapture,
             tauriCommands::api_getMotionCompositeImage,
             tauriCommands::api_loadPartImage,
+            tauriCommands::api_discardPart,
             tauriCommands::api_applyBrush,
             tauriCommands::api_applyEraser,
             tauriCommands::api_applyGradient,
@@ -234,7 +236,6 @@ pub fn runDesktop() {
         .expect("启动 Tauri 桌面壳失败");
 }
 
-/// 创建编辑器主窗口；与历史 tauri.conf.json 中 main 窗口尺寸 / 居中 / 拖放配置一致。
 fn createMainWindow(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let url = tauri::WebviewUrl::App("index.html".into());
     let builder = tauri::WebviewWindowBuilder::new(app, "main", url)
@@ -242,15 +243,13 @@ fn createMainWindow(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
         .inner_size(1440.0, 900.0)
         .min_inner_size(1024.0, 640.0)
         .center();
-    // drag_and_drop 仅 Windows 平台提供（禁用原生拖放以放行前端 HTML5 拖放）；
-    // 其他平台无此方法，非 Windows 不调用以保证跨平台编译。
+    // Windows 下关闭 WebView2 原生拖放拦截，放行前端 HTML5 拖入图片。
     #[cfg(windows)]
     let builder = builder.drag_and_drop(false);
     builder.build()?;
     Ok(())
 }
 
-/// 启动 HTTP 模式。同一进程同时承担 REST API 与前端静态资源分发。
 #[tokio::main(flavor = "multi_thread")]
 pub async fn runHttp(config: HttpConfig) {
     ensureInitialized();
@@ -353,7 +352,11 @@ mod ensureInitializedTests {
         assert!(ensureEmbeddedDefaultSkin(&skinRoot));
         let names = skinLoader::listSkins(&skinRoot);
         assert_eq!(names, vec!["exp".to_string()]);
-        assert!(skinRoot.join("exp").join("Body").join("experimentUpTorso.png").is_file());
+        assert!(skinRoot
+            .join("exp")
+            .join("Body")
+            .join("experimentUpTorso.png")
+            .is_file());
     }
 
     #[test]
@@ -381,7 +384,9 @@ mod ensureInitializedTests {
             .save(&pngPath)
             .unwrap();
         ensureInitialized();
-        let json = fs::read_to_string(skin.join("baseSizes.json")).expect("baseSizes.json should be created");
+        let json = fs::read_to_string(skin.join("baseSizes.json"))
+            .expect("baseSizes.json should be created");
+        assert!(json.contains("\"entries\""));
         assert!(json.contains("\"Body/experimentUpTorso\": [12, 18]"));
     }
 

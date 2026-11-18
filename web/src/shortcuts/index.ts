@@ -1,9 +1,7 @@
-// 集中管理快捷键。所有动作通过统一注册表执行，绑定保存在 sessionStore.shortcuts 中。
-// 默认绑定参考主流绘画软件（SAI2 / Photoshop / Krita）的通用约定。
+// 全局快捷键注册与按键派发；输入框聚焦或模态弹窗打开时自动屏蔽。
 
 import { sessionStore } from "../stateStore";
 
-/// 全部可绑定的动作 ID。新增时同步更新 DEFAULT_SHORTCUTS、actionHandlers、i18n.shortcuts.label。
 export type ActionId =
   | "undo"
   | "redo"
@@ -31,7 +29,6 @@ export const ACTION_IDS: readonly ActionId[] = [
   "panel.settings",
 ] as const;
 
-/// 默认快捷键绑定。键格式：可选 Ctrl+/Shift+/Alt+ 修饰符 + 单键名。
 export const DEFAULT_SHORTCUTS: Readonly<Record<ActionId, string>> = Object.freeze({
   undo: "Ctrl+Z",
   redo: "Ctrl+Y",
@@ -54,7 +51,6 @@ interface ActionContext {
 const handlers: Partial<Record<ActionId, () => void>> = {};
 let context: ActionContext | null = null;
 
-/// 注册某个动作的执行器；约定单 handler，重复注册覆盖旧值。
 export function registerAction(id: ActionId, handler: () => void): () => void {
   handlers[id] = handler;
   return () => {
@@ -62,7 +58,6 @@ export function registerAction(id: ActionId, handler: () => void): () => void {
   };
 }
 
-/// 提供 popover 控制方法；toolPanel 内两个 popover 在 mount 后注入。
 export function setShortcutContext(ctx: ActionContext): void {
   context = ctx;
 }
@@ -73,7 +68,6 @@ export function getActionHandler(id: ActionId): (() => void) | undefined {
   return handlers[id];
 }
 
-/// 把 KeyboardEvent 编码为标准化字符串，与 DEFAULT_SHORTCUTS 中的格式一致。
 export function encodeKeyCombo(e: KeyboardEvent): string | null {
   if (e.key === "Control" || e.key === "Shift" || e.key === "Alt" || e.key === "Meta") {
     return null;
@@ -88,14 +82,13 @@ export function encodeKeyCombo(e: KeyboardEvent): string | null {
   return parts.join("+");
 }
 
-/// 当前生效的绑定表：用户自定义合并默认绑定。
 export function currentBindings(): Record<ActionId, string> {
   const overrides = sessionStore.getState().shortcuts ?? {};
   return { ...DEFAULT_SHORTCUTS, ...overrides };
 }
 
-/// 输入控件中击键不触发快捷键，避免文本输入被吞。
 function shouldIgnoreEventTarget(target: EventTarget | null): boolean {
+  if (document.querySelector('[data-modal-open="true"]')) return true;
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
@@ -103,7 +96,6 @@ function shouldIgnoreEventTarget(target: EventTarget | null): boolean {
   return false;
 }
 
-/// 启动全局 keydown 监听，返回卸载函数。
 export function attachGlobalShortcuts(): () => void {
   function onKeyDown(e: KeyboardEvent): void {
     if (shouldIgnoreEventTarget(e.target)) return;

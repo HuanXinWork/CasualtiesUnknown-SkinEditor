@@ -1,6 +1,4 @@
-// langSettings：toolPanel 工具栏中的语言切换按钮（zh / en）。
-// 单按钮显示当前语言短标（"中" / "EN"），title 文案随语言变化。点击在两种语言间切换，
-// 写到 sessionStore.lang；订阅同 store 反向同步外部变更。会话级、不持久化。
+// 工具栏语言切换按钮（中/英双向即时切换）。
 
 import { sessionStore } from "../stateStore";
 import { currentLang, t } from "../i18n";
@@ -14,7 +12,6 @@ export function mountLangButton(container: HTMLElement): () => void {
 
   function render(): void {
     const lang = currentLang();
-    // 仅显示图标；当前语言通过 hover title 提示，避免与图标按钮视觉冲突。
     btn.innerHTML = ICON_LANG;
     btn.title = `${t("langSettings.title")} · ${lang === "zh" ? "中文" : "English"}`;
   }

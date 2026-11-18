@@ -1,10 +1,16 @@
-// 新建标准部件对话框：选部件 + 前后/左右维度 + 尺寸，按勾选组合批量建黑块 PNG。
+// 新建标准部件弹窗（支持勾选前后 F/B 与左右 R_ 维度批量创建或从内置模板复制）。
 import type { PartCategory } from "../stateStore/types";
 import { t } from "../i18n";
 import { localizePartName } from "../i18n/partNames";
 import { createPart, createPartFromTemplate, type ApiError } from "../apiClient";
 import { showToast } from "../toast";
-import { PART_CATALOG, inferPrefix, buildPartFileName, isPartFullyCreated, type PartDef } from "./partCatalog";
+import {
+  buildPartFileName,
+  inferPrefix,
+  isPartFullyCreated,
+  PART_CATALOG,
+  type PartDef,
+} from "./partCatalog";
 
 export interface AddPartDialogOptions {
   skinRoot: string;
@@ -14,14 +20,14 @@ export interface AddPartDialogOptions {
   onCreated: () => void;
 }
 
+const MAX_DIM = 4096;
+
 export function openAddPartDialog(opts: AddPartDialogOptions): void {
   const allDefs = PART_CATALOG[opts.category];
   if (!allDefs || allDefs.length === 0) return;
   const prefix = inferPrefix(opts.category, opts.existingNames);
   const existing = new Set(opts.existingNames);
-  // 模板分类：贴图直接从内置 exp 复制（保持原尺寸/原像素），不再让用户手动改尺寸。
   const useTemplate = opts.category === "Accessories" || opts.category === "Blood";
-  // 只列还没建齐全部维度组合的部件。
   const defs = allDefs.filter((d) => !isPartFullyCreated(d, prefix, existing));
   if (defs.length === 0) return;
 
@@ -34,6 +40,7 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
   let height = selected.height;
 
   const overlay = document.createElement("div");
+  overlay.dataset.modalOpen = "true";
   overlay.style.cssText =
     "position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;";
 
@@ -50,7 +57,7 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
 
   const listWrap = document.createElement("div");
   listWrap.style.cssText =
-    "max-height:200px;overflow:auto;display:flex;flex-wrap:wrap;gap:6px;padding:6px;border:1px solid rgba(0,0,0,var(--border-opacity));border-radius:4px;";
+    "max-height:200px;overflow:auto;display:flex;flex-wrap:wrap;gap:6px;padding:6px;border:1px solid rgba(var(--border-rgb),var(--border-opacity));border-radius:4px;";
   dialog.appendChild(listWrap);
 
   const dimWrap = document.createElement("div");
@@ -60,11 +67,20 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
   const sizeRow = document.createElement("div");
   sizeRow.style.cssText = "display:flex;align-items:center;gap:8px;font-size:13px;";
   const wInput = document.createElement("input");
-  wInput.type = "number"; wInput.min = "1"; wInput.style.width = "64px";
+  wInput.className = "input";
+  wInput.type = "number";
+  wInput.min = "1";
+  wInput.max = String(MAX_DIM);
+  wInput.style.width = "68px";
   const hInput = document.createElement("input");
-  hInput.type = "number"; hInput.min = "1"; hInput.style.width = "64px";
+  hInput.className = "input";
+  hInput.type = "number";
+  hInput.min = "1";
+  hInput.max = String(MAX_DIM);
+  hInput.style.width = "68px";
   const sizeLabel = document.createElement("span");
-  const xLabel = document.createElement("span"); xLabel.textContent = "×";
+  const xLabel = document.createElement("span");
+  xLabel.textContent = "×";
   sizeRow.append(sizeLabel, wInput, xLabel, hInput);
 
   const fbRow = document.createElement("div");
@@ -72,8 +88,10 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
   const fbLabel = document.createElement("span");
   const cbF = makeCheck();
   const cbB = makeCheck();
-  const fSpan = document.createElement("label"); fSpan.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;";
-  const bSpan = document.createElement("label"); bSpan.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;";
+  const fSpan = document.createElement("label");
+  fSpan.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;";
+  const bSpan = document.createElement("label");
+  bSpan.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;";
   const fText = document.createElement("span");
   const bText = document.createElement("span");
   fSpan.append(cbF, fText);
@@ -85,8 +103,10 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
   const lrLabel = document.createElement("span");
   const cbL = makeCheck();
   const cbR = makeCheck();
-  const lSpan = document.createElement("label"); lSpan.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;";
-  const rSpan = document.createElement("label"); rSpan.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;";
+  const lSpan = document.createElement("label");
+  lSpan.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;";
+  const rSpan = document.createElement("label");
+  rSpan.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;";
   const lText = document.createElement("span");
   const rText = document.createElement("span");
   lSpan.append(cbL, lText);
@@ -97,16 +117,19 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
 
   const btnRow = document.createElement("div");
   btnRow.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:4px;";
-  const addBtn = document.createElement("button"); addBtn.className = "btn btn-primary";
-  const addNextBtn = document.createElement("button"); addNextBtn.className = "btn";
-  const cancelBtn = document.createElement("button"); cancelBtn.className = "btn";
+  const addBtn = document.createElement("button");
+  addBtn.className = "btn btn-primary";
+  const addNextBtn = document.createElement("button");
+  addNextBtn.className = "btn";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "btn";
   btnRow.append(cancelBtn, addNextBtn, addBtn);
   dialog.appendChild(btnRow);
 
   function makeCheck(): HTMLInputElement {
     const c = document.createElement("input");
     c.type = "checkbox";
-    c.style.cssText = "width:16px;height:16px;cursor:pointer;accent-color:var(--accent,#3b82f6);";
+    c.style.cssText = "width:16px;height:16px;cursor:pointer;";
     return c;
   }
 
@@ -118,10 +141,12 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
     const sides: Array<"" | "F" | "B"> = def.fb ? ["F", "B"] : [""];
     const rights: boolean[] = def.lr ? [false, true] : [false];
     const out: Array<{ side: "" | "F" | "B"; right: boolean }> = [];
-    for (const side of sides) for (const right of rights) {
-      const fileName = buildPartFileName(prefix, def.base, side, right);
-      if (existing.has(fileName)) continue;
-      out.push({ side, right });
+    for (const side of sides) {
+      for (const right of rights) {
+        const fileName = buildPartFileName(prefix, def.base, side, right);
+        if (existing.has(fileName)) continue;
+        out.push({ side, right });
+      }
     }
     return out;
   }
@@ -151,7 +176,7 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
       const b = document.createElement("button");
       b.className = def === selected ? "btn btn-primary" : "btn";
       b.style.cssText = "font-size:12px;padding:2px 8px;";
-      b.textContent = localizePartName(prefix + def.base);
+      b.textContent = localizePartName(buildPartFileName(prefix, def.base, "", false));
       b.addEventListener("click", () => selectDef(def));
       listWrap.appendChild(b);
     }
@@ -161,8 +186,10 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
     fbRow.style.display = selected.fb ? "flex" : "none";
     lrRow.style.display = selected.lr ? "flex" : "none";
     sizeRow.style.display = useTemplate ? "none" : "flex";
-    cbF.checked = wantF; cbB.checked = wantB;
-    cbL.checked = wantLeft; cbR.checked = wantRight;
+    cbF.checked = wantF;
+    cbB.checked = wantB;
+    cbL.checked = wantLeft;
+    cbR.checked = wantRight;
     const combos = computeCombos();
     addBtn.disabled = combos.length === 0;
     addNextBtn.disabled = combos.length === 0;
@@ -176,10 +203,11 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
       ? [...(wantLeft ? [false] : []), ...(wantRight ? [true] : [])]
       : [false];
     const out: Array<{ side: "" | "F" | "B"; right: boolean }> = [];
-    for (const s of sides) for (const r of rights) {
-      // 跳过已存在的组合，避免重复创建。
-      if (existing.has(buildPartFileName(prefix, selected.base, s, r))) continue;
-      out.push({ side: s, right: r });
+    for (const s of sides) {
+      for (const r of rights) {
+        if (existing.has(buildPartFileName(prefix, selected.base, s, r))) continue;
+        out.push({ side: s, right: r });
+      }
     }
     return out;
   }
@@ -187,6 +215,8 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
   async function doCreate(keepOpen: boolean): Promise<void> {
     const combos = computeCombos();
     if (combos.length === 0) return;
+    addBtn.disabled = true;
+    addNextBtn.disabled = true;
     let created = 0;
     let skipped = 0;
     let firstError: ApiError | null = null;
@@ -201,14 +231,19 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
         existing.add(fileName);
         created++;
       } catch (e) {
-        if (!firstError && e && typeof e === "object" && "message" in e && "code" in e) {
+        if (!firstError && e && typeof e === "object" && "message" in e) {
           firstError = e as ApiError;
         }
         skipped++;
       }
     }
-    const resultText = t("addPart.resultToast").replace("{n}", String(created)).replace("{m}", String(skipped));
-    showToast(firstError ? `${resultText} ${firstError.message}` : resultText, created > 0 ? "info" : "error");
+    const resultText = t("addPart.resultToast")
+      .replace("{n}", String(created))
+      .replace("{m}", String(skipped));
+    showToast(
+      firstError ? `${resultText} (${firstError.message})` : resultText,
+      created > 0 ? "info" : "error",
+    );
     if (created > 0) opts.onCreated();
     if (keepOpen) {
       const remaining = visibleDefs();
@@ -216,11 +251,15 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
         close();
         return;
       }
-      // 当前选中项已建齐时切到下一个仍可建的部件。
       if (!remaining.includes(selected)) selectDef(remaining[0]);
-      else { renderList(); syncControls(); }
+      else {
+        renderList();
+        syncControls();
+      }
     } else if (created > 0) {
       close();
+    } else {
+      syncControls();
     }
   }
 
@@ -239,24 +278,42 @@ export function openAddPartDialog(opts: AddPartDialogOptions): void {
   }
 
   function close(): void {
-    document.removeEventListener("keydown", onKey);
+    document.removeEventListener("keydown", onKey, true);
     overlay.remove();
   }
   function onKey(e: KeyboardEvent): void {
-    if (e.key === "Escape") close();
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    }
+  }
+
+  function clampDim(raw: string, fallback: number): number {
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(1, Math.min(MAX_DIM, parsed));
   }
 
   cbF.addEventListener("change", () => { wantF = cbF.checked; syncControls(); });
   cbB.addEventListener("change", () => { wantB = cbB.checked; syncControls(); });
   cbL.addEventListener("change", () => { wantLeft = cbL.checked; syncControls(); });
   cbR.addEventListener("change", () => { wantRight = cbR.checked; syncControls(); });
-  wInput.addEventListener("input", () => { width = Math.max(1, Number.parseInt(wInput.value, 10) || 1); });
-  hInput.addEventListener("input", () => { height = Math.max(1, Number.parseInt(hInput.value, 10) || 1); });
+  wInput.addEventListener("change", () => {
+    width = clampDim(wInput.value, selected.width);
+    wInput.value = String(width);
+  });
+  hInput.addEventListener("change", () => {
+    height = clampDim(hInput.value, selected.height);
+    hInput.value = String(height);
+  });
   addBtn.addEventListener("click", () => void doCreate(false));
   addNextBtn.addEventListener("click", () => void doCreate(true));
   cancelBtn.addEventListener("click", close);
-  overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
-  document.addEventListener("keydown", onKey);
+  overlay.addEventListener("mousedown", (e) => {
+    if (e.target === overlay) close();
+  });
+  document.addEventListener("keydown", onKey, true);
 
   wInput.value = String(width);
   hInput.value = String(height);

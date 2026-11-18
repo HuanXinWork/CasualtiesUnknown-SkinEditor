@@ -1,40 +1,45 @@
-// 定时自动保存：开启后按间隔把所有未保存部件覆盖写回原 PNG（含 sidecar 分层）。
+// 定时自动保存：单飞串行写盘并校验部件脏版本号，防止保存途中产生的新笔迹被误标干净。
+
 import { savePart, type ApiError } from "../apiClient";
-import { sessionStore, markPartClean } from "../stateStore";
+import {
+  getPartDirtyRevision,
+  markPartClean,
+  partIdToTargetPath,
+  sessionStore,
+} from "../stateStore";
 import { showToast } from "../toast";
 import { t } from "../i18n";
 
 const MIN_INTERVAL_SEC = 10;
-
-/// partId（skinName::Category::partName）解码为原始 PNG 目标路径。
-function partIdToTarget(skinRoot: string, partId: string): string | null {
-  const parts = partId.split("::");
-  if (parts.length !== 3) return null;
-  const [skinName, categoryDir, partName] = parts;
-  return `${skinRoot}/${skinName}/${categoryDir}/${partName}.png`;
-}
+let flushing = false;
 
 async function flushDirty(skinRoot: string): Promise<void> {
+  if (flushing) return;
   const dirty = [...sessionStore.getState().dirtyPartIds];
   if (dirty.length === 0) return;
+  flushing = true;
   let saved = 0;
-  for (const partId of dirty) {
-    const target = partIdToTarget(skinRoot, partId);
-    if (!target) continue;
-    try {
-      await savePart(partId, target);
-      markPartClean(partId);
-      saved++;
-    } catch (e) {
-      console.warn(`[autoSave] save ${partId} failed: ${(e as ApiError)?.message ?? String(e)}`);
+  try {
+    for (const partId of dirty) {
+      const target = partIdToTargetPath(skinRoot, partId);
+      if (!target) continue;
+      const rev = getPartDirtyRevision(partId);
+      try {
+        await savePart(partId, target);
+        markPartClean(partId, rev);
+        saved++;
+      } catch (e) {
+        console.warn(`[autoSave] save ${partId} failed: ${(e as ApiError)?.message ?? String(e)}`);
+      }
     }
+  } finally {
+    flushing = false;
   }
   if (saved > 0) {
     showToast(t("autoSave.savedToast").replace("{n}", String(saved)), "info");
   }
 }
 
-/// 挂载定时保存；订阅 sessionStore 开关与间隔变化，按需启停定时器。返回卸载函数。
 export function mountAutoSave(skinRoot: string): () => void {
   let timer: number | null = null;
   let lastEnabled = false;

@@ -1,5 +1,4 @@
-// 通用右键菜单：position:fixed <ul>，复用 dock-context-menu 样式。
-// 点击外部 / 选中条目 / Esc 关闭；同一时刻只存在一个菜单。
+// 通用右键上下文菜单，挂载后自动钳制在可视窗口边界内。
 
 export interface ContextMenuItem {
   label: string;
@@ -36,6 +35,12 @@ export function showContextMenu(x: number, y: number, items: ContextMenuItem[]):
   }
   document.body.appendChild(ul);
   activeMenu = ul;
+
+  const rect = ul.getBoundingClientRect();
+  const maxLeft = Math.max(4, window.innerWidth - rect.width - 4);
+  const maxTop = Math.max(4, window.innerHeight - rect.height - 4);
+  ul.style.left = `${Math.max(4, Math.min(maxLeft, x))}px`;
+  ul.style.top = `${Math.max(4, Math.min(maxTop, y))}px`;
 
   function close(): void {
     if (activeMenu === ul) activeMenu = null;

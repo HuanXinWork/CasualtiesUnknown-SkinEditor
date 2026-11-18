@@ -1,12 +1,4 @@
-// 把 PartEditState（含全部图层）持久化到 `<skinDir>/layers/<Cat>/<part>/`。
-// 与扁平合成 PNG 互补：合成 PNG 给游戏与外部工具读取，sidecar 只服务编辑器自身还原图层结构。
-//
-// 目录布局：
-//   <skinDir>/layers/<Cat>/<partName>/
-//     manifest.json    元数据（版本、activeLayerIndex、layers[i] 的 id/name/visible/opacity/file）
-//     layer0.png       每层独立 RGBA PNG，按 manifest.layers[i].file 引用
-//     layer1.png
-//     ...
+// 多图层工程目录（`<skinDir>/layers/<Cat>/<part>/`）读写，仅服务编辑器还原图层结构，游戏侧忽略。
 #![allow(non_snake_case)]
 
 use std::fs;
@@ -15,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::apiLayer::ApiError;
+use crate::dataPaths;
 use crate::imageOps::{self, Layer, PartEditState};
 
 pub const SIDECAR_VERSION: u32 = 1;
@@ -25,7 +18,6 @@ pub struct LayerEntry {
     pub name: String,
     pub visible: bool,
     pub opacity: u8,
-    /// 相对 manifest 的图层 PNG 文件名，例如 "layer0.png"。
     pub file: String,
 }
 
@@ -42,9 +34,14 @@ pub fn sidecarDir(skinDir: &Path, categoryDir: &str, partName: &str) -> PathBuf 
     skinDir.join("layers").join(categoryDir).join(partName)
 }
 
-/// 写入图层 PNG + manifest.json。已有目录原地覆盖；
-/// 旧 layerN.png 索引超出当前层数的会被删除，避免污染下次加载。
-pub fn save(skinDir: &Path, categoryDir: &str, partName: &str, state: &PartEditState, activeIndex: usize) -> Result<(), ApiError> {
+/// 先写入全部图层 PNG 并原子替换 `manifest.json`，最后清理超出当前层数的旧 `layerN.png`。
+pub fn save(
+    skinDir: &Path,
+    categoryDir: &str,
+    partName: &str,
+    state: &PartEditState,
+    activeIndex: usize,
+) -> Result<(), ApiError> {
     let dir = sidecarDir(skinDir, categoryDir, partName);
     fs::create_dir_all(&dir).map_err(|e| ioErr("mkdir", &dir, e))?;
 
@@ -61,6 +58,20 @@ pub fn save(skinDir: &Path, categoryDir: &str, partName: &str, state: &PartEditS
         });
     }
 
+    let manifest = SidecarManifest {
+        version: SIDECAR_VERSION,
+        width: state.width,
+        height: state.height,
+        activeLayerIndex: activeIndex,
+        layers: entries,
+    };
+    let bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| ApiError {
+        code: "encode_failed".into(),
+        message: format!("serialize layer manifest failed: {}", e),
+    })?;
+    let manifestPath = dir.join("manifest.json");
+    dataPaths::atomicWrite(&manifestPath, &bytes).map_err(|e| ioErr("write manifest", &manifestPath, e))?;
+
     if let Ok(rd) = fs::read_dir(&dir) {
         for entry in rd.flatten() {
             let name = entry.file_name();
@@ -76,40 +87,33 @@ pub fn save(skinDir: &Path, categoryDir: &str, partName: &str, state: &PartEditS
             }
         }
     }
-
-    let manifest = SidecarManifest {
-        version: SIDECAR_VERSION,
-        width: state.width,
-        height: state.height,
-        activeLayerIndex: activeIndex,
-        layers: entries,
-    };
-    let bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| ApiError {
-        code: "encode_failed".into(),
-        message: format!("serialize layer manifest failed: {}", e),
-    })?;
-    fs::write(dir.join("manifest.json"), bytes).map_err(|e| ioErr("write manifest", &dir, e))?;
     Ok(())
 }
 
-/// 读 sidecar 还原 PartEditState。manifest 不存在、解析失败、版本不匹配
-/// 或像素尺寸不一致都返回 None，让上层回落到读单层 PNG 的旧路径。
-pub fn loadIfPresent(skinDir: &Path, categoryDir: &str, partName: &str) -> Option<(PartEditState, usize)> {
+/// 读取 sidecar 还原多图层状态；缺失、版本不兼容、非法文件名或尺寸失配时返回 `None` 以回退单层 PNG。
+pub fn loadIfPresent(
+    skinDir: &Path,
+    categoryDir: &str,
+    partName: &str,
+) -> Option<(PartEditState, usize)> {
     let dir = sidecarDir(skinDir, categoryDir, partName);
-    let manifestPath = dir.join("manifest.json");
-    let bytes = fs::read(&manifestPath).ok()?;
+    let bytes = fs::read(dir.join("manifest.json")).ok()?;
     let manifest: SidecarManifest = serde_json::from_slice(&bytes).ok()?;
-    if manifest.version != SIDECAR_VERSION {
+    if manifest.version != SIDECAR_VERSION
+        || manifest.width == 0
+        || manifest.height == 0
+        || manifest.width > imageOps::MAX_PART_DIM
+        || manifest.height > imageOps::MAX_PART_DIM
+    {
         return None;
     }
+
     let mut layers: Vec<Layer> = Vec::with_capacity(manifest.layers.len());
     for entry in &manifest.layers {
-        let pngPath = dir.join(&entry.file);
-        let decoded = match imageOps::loadPng(&pngPath) {
-            Ok(t) => t,
-            Err(_) => return None,
-        };
-        let (w, h, pixels) = decoded;
+        if !dataPaths::isValidSingleSegment(&entry.file) {
+            return None;
+        }
+        let (w, h, pixels) = imageOps::loadPng(&dir.join(&entry.file)).ok()?;
         if w != manifest.width || h != manifest.height {
             return None;
         }
@@ -125,14 +129,16 @@ pub fn loadIfPresent(skinDir: &Path, categoryDir: &str, partName: &str) -> Optio
     if layers.is_empty() {
         return None;
     }
-    let activeIndex = manifest.activeLayerIndex.min(layers.len().saturating_sub(1));
-    let state = PartEditState {
-        partName: partName.to_string(),
-        width: manifest.width,
-        height: manifest.height,
-        layers,
-    };
-    Some((state, activeIndex))
+    let activeIndex = manifest.activeLayerIndex.min(layers.len() - 1);
+    Some((
+        PartEditState {
+            partName: partName.to_string(),
+            width: manifest.width,
+            height: manifest.height,
+            layers,
+        },
+        activeIndex,
+    ))
 }
 
 fn ioErr(action: &str, path: &Path, e: std::io::Error) -> ApiError {
@@ -145,7 +151,6 @@ fn ioErr(action: &str, path: &Path, e: std::io::Error) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -154,19 +159,42 @@ mod tests {
         fn new() -> Self {
             static SEQ: AtomicU64 = AtomicU64::new(0);
             let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-            let p = std::env::temp_dir().join(format!("spe_sidecar_{}_{}_{}", std::process::id(), nanos, seq));
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let p = std::env::temp_dir().join(format!(
+                "spe_sidecar_{}_{}_{}",
+                std::process::id(),
+                nanos,
+                seq
+            ));
             fs::create_dir_all(&p).unwrap();
             TempDir(p)
         }
-        fn path(&self) -> &Path { &self.0 }
+        fn path(&self) -> &Path {
+            &self.0
+        }
     }
-    impl Drop for TempDir { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn mkLayer(id: &str, opacity: u8, w: u32, h: u32, fill: [u8; 4]) -> Layer {
         let mut px = Vec::with_capacity((w * h * 4) as usize);
-        for _ in 0..(w * h) { px.extend_from_slice(&fill); }
-        Layer { id: id.into(), name: id.into(), visible: true, opacity, pixels: px, transform: None }
+        for _ in 0..(w * h) {
+            px.extend_from_slice(&fill);
+        }
+        Layer {
+            id: id.into(),
+            name: id.into(),
+            visible: true,
+            opacity,
+            pixels: px,
+            transform: None,
+        }
     }
 
     #[test]
@@ -185,7 +213,8 @@ mod tests {
         let manifest = sidecarDir(tmp.path(), "Body", "experimentUpTorso").join("manifest.json");
         assert!(manifest.is_file());
 
-        let (loaded, active) = loadIfPresent(tmp.path(), "Body", "experimentUpTorso").expect("load");
+        let (loaded, active) =
+            loadIfPresent(tmp.path(), "Body", "experimentUpTorso").expect("load");
         assert_eq!(active, 1);
         assert_eq!(loaded.width, 2);
         assert_eq!(loaded.layers.len(), 2);
@@ -198,6 +227,28 @@ mod tests {
     fn loadMissingReturnsNone() {
         let tmp = TempDir::new();
         assert!(loadIfPresent(tmp.path(), "Body", "ghost").is_none());
+    }
+
+    #[test]
+    fn loadRejectsTraversalInManifestEntryFile() {
+        let tmp = TempDir::new();
+        let dir = sidecarDir(tmp.path(), "Body", "p");
+        fs::create_dir_all(&dir).unwrap();
+        let evil = serde_json::json!({
+            "version": SIDECAR_VERSION,
+            "width": 1,
+            "height": 1,
+            "activeLayerIndex": 0,
+            "layers": [{
+                "id": "layer0",
+                "name": "layer0",
+                "visible": true,
+                "opacity": 255,
+                "file": "../outside.png"
+            }]
+        });
+        fs::write(dir.join("manifest.json"), evil.to_string()).unwrap();
+        assert!(loadIfPresent(tmp.path(), "Body", "p").is_none());
     }
 
     #[test]

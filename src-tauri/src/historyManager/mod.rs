@@ -1,4 +1,4 @@
-// undo / redo 双栈，存矩形像素 diff。最大深度 50 步，FIFO 丢弃最老条目。
+// 基于矩形 RGBA 差异块的撤销/重做双栈（上限 50 步，超出按 FIFO 淘汰）。
 #![allow(non_snake_case)]
 
 use std::collections::VecDeque;
@@ -12,7 +12,6 @@ pub struct HistoryEntry {
     pub timestamp: i64,
 }
 
-/// 矩形像素 diff：before/after 都是 width*height*4 字节的 RGBA 副本。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PixelDiff {
     pub x: u32,
@@ -25,7 +24,6 @@ pub struct PixelDiff {
 
 const MAX_UNDO: usize = 50;
 
-/// undo / redo 双栈的纯内存实现。调用方负责把 diff 应用到像素 buffer。
 #[derive(Debug, Default)]
 pub struct HistoryStack {
     undoStack: VecDeque<HistoryEntry>,
@@ -37,7 +35,6 @@ impl HistoryStack {
         Self::default()
     }
 
-    /// 压入新条目并清空 redo 栈。超过 MAX_UNDO 时按 FIFO 丢弃最早条目。
     pub fn push(&mut self, entry: HistoryEntry) {
         self.redoStack.clear();
         self.undoStack.push_back(entry);
@@ -46,14 +43,12 @@ impl HistoryStack {
         }
     }
 
-    /// 弹出 undo 栈最新条目搬到 redo 栈，返回该条目。调用方按 before 还原像素。
     pub fn undo(&mut self) -> Option<HistoryEntry> {
         let entry = self.undoStack.pop_back()?;
         self.redoStack.push(entry.clone());
         Some(entry)
     }
 
-    /// 弹出 redo 栈最新条目搬回 undo 栈，返回该条目。调用方按 after 重做像素。
     pub fn redo(&mut self) -> Option<HistoryEntry> {
         let entry = self.redoStack.pop()?;
         self.undoStack.push_back(entry.clone());
@@ -68,14 +63,12 @@ impl HistoryStack {
         self.redoStack.len()
     }
 
-    /// 删图层时调用，丢弃所有指向该图层的 undo/redo 条目，
-    /// 防止悬挂条目在 undo/redo 时找不到目标图层。
+    /// 删除图层时清理关联条目，避免撤销时引用已不存在的图层。
     pub fn dropEntriesForLayer(&mut self, layerId: &str) {
         self.undoStack.retain(|e| e.layerId != layerId);
         self.redoStack.retain(|e| e.layerId != layerId);
     }
 
-    /// 整体清空 undo/redo 栈，用于尺寸变更等让旧 diff 无法对齐的全局操作。
     pub fn clear(&mut self) {
         self.undoStack.clear();
         self.redoStack.clear();
@@ -83,41 +76,75 @@ impl HistoryStack {
 }
 
 fn applyRect(pixels: &mut [u8], width: u32, diff: &PixelDiff, src: &[u8]) {
-    if diff.width == 0 || diff.height == 0 {
+    if diff.width == 0 || diff.height == 0 || width == 0 {
         return;
     }
-    let rectW = diff.width as usize;
-    let rowBytes = rectW * 4;
+    let Some(endX) = diff.x.checked_add(diff.width) else {
+        return;
+    };
+    if endX > width {
+        return;
+    }
+    let Some(rowBytes) = (diff.width as usize).checked_mul(4) else {
+        return;
+    };
+    let Some(expectedSrc) = rowBytes.checked_mul(diff.height as usize) else {
+        return;
+    };
+    if src.len() < expectedSrc {
+        return;
+    }
+    let stride = (width as usize).saturating_mul(4);
     for row in 0..diff.height {
-        let dstStart = (((diff.y + row) * width) + diff.x) as usize * 4;
+        let Some(absRow) = diff.y.checked_add(row) else {
+            return;
+        };
+        let Some(rowOffset) = (absRow as usize).checked_mul(stride) else {
+            return;
+        };
+        let Some(dstStart) = rowOffset.checked_add((diff.x as usize).saturating_mul(4)) else {
+            return;
+        };
+        let Some(dstEnd) = dstStart.checked_add(rowBytes) else {
+            return;
+        };
+        if dstEnd > pixels.len() {
+            return;
+        }
         let srcStart = (row as usize) * rowBytes;
-        let dstEnd = dstStart + rowBytes;
-        let srcEnd = srcStart + rowBytes;
-        pixels[dstStart..dstEnd].copy_from_slice(&src[srcStart..srcEnd]);
+        pixels[dstStart..dstEnd].copy_from_slice(&src[srcStart..srcStart + rowBytes]);
     }
 }
 
-/// 把 diff.before 写回 pixels 在 (x,y,width,height) 矩形位置，用于 undo。
 pub fn applyBefore(pixels: &mut [u8], width: u32, diff: &PixelDiff) {
     applyRect(pixels, width, diff, &diff.before);
 }
 
-/// 把 diff.after 写回 pixels 在 (x,y,width,height) 矩形位置，用于 redo。
 pub fn applyAfter(pixels: &mut [u8], width: u32, diff: &PixelDiff) {
     applyRect(pixels, width, diff, &diff.after);
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn mkEntry(layerId: &str, ts: i64, diff: PixelDiff) -> HistoryEntry {
-        HistoryEntry { layerId: layerId.into(), diff, timestamp: ts }
+        HistoryEntry {
+            layerId: layerId.into(),
+            diff,
+            timestamp: ts,
+        }
     }
 
     fn emptyDiff() -> PixelDiff {
-        PixelDiff { x: 0, y: 0, width: 0, height: 0, before: vec![], after: vec![] }
+        PixelDiff {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            before: vec![],
+            after: vec![],
+        }
     }
 
     fn pixelDiff1x1(x: u32, y: u32, before: [u8; 4], after: [u8; 4]) -> PixelDiff {
@@ -184,8 +211,7 @@ mod tests {
     #[test]
     fn applyBeforeRestoresPixels() {
         let mut pixels = vec![
-            10, 20, 30, 40,   50, 60, 70, 80,
-            90, 100, 110, 120, 130, 140, 150, 160,
+            10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160,
         ];
         let snapshot = pixels.clone();
         let diff = pixelDiff1x1(1, 0, [50, 60, 70, 80], [200, 210, 220, 230]);
@@ -196,12 +222,13 @@ mod tests {
     }
 
     #[test]
-    fn emptyDiffIsNoop() {
+    fn emptyOrOutOfBoundsDiffIsNoop() {
         let mut pixels = vec![1, 2, 3, 4];
         let snapshot = pixels.clone();
-        let diff = emptyDiff();
-        applyBefore(&mut pixels, 1, &diff);
-        applyAfter(&mut pixels, 1, &diff);
+        applyBefore(&mut pixels, 1, &emptyDiff());
+        applyAfter(&mut pixels, 1, &emptyDiff());
+        let bad = pixelDiff1x1(5, 5, [0; 4], [9; 4]);
+        applyAfter(&mut pixels, 1, &bad);
         assert_eq!(pixels, snapshot);
     }
 

@@ -1,6 +1,4 @@
-// Axum HTTP 服务：REST API + 前端 build 产物（rust-embed 编译期嵌入）。
-// handlers 仅做参数解码与错误码映射，业务委托给 apiLayer。
-// 编译前必须先在 web/ 下执行 `npm run build` 产出 dist/。
+// Axum HTTP 服务：暴露与桌面端对称的 REST API，并分发编译期嵌入的前端静态资源。
 #![allow(non_snake_case)]
 
 use std::sync::Arc;
@@ -12,22 +10,20 @@ use axum::routing::{get, post};
 use axum::Router;
 
 use crate::apiLayer::{
-    AddLayerParams, ApiError, ApiLayer, AssemblyParams, AssemblyResult, BrushParams,
-    CompositeParams, CompositeResult, CoreApi, EraserParams, ExportSkinPackParams,
-    ExportSkinPackResult, GradientParams, FillParams, SoftBrushParams, ImportSkinPackParams, LayerOpacityParams, LayerVisibilityParams,
-    LayersSnapshot, LoadPartParams, LoadPartResult, MotionCaptureListParams, MotionCaptureMeta,
-    MotionCaptureResult, MotionCompositeParams, MotionCompositeResult, PartIdParams, PartsParams,
-    RemoveLayerParams, ReorderLayersParams, ResizePartParams, ResizePartResult, SavePartParams, SaveWorkspaceParams,
-    GetBaseSizeParams, GetBaseSizeResult,
-    CreateSidePartParams, CreateSidePartResult,
-    CreateOrientationPartParams, CreateOrientationPartResult,
-    CreatePartParams, CreatePartResult,
-    CreatePartFromTemplateParams,
-    CopyPartParams, DeletePartParams, CopyLayerToPartParams, SetLayerTransformParams,
-    SetActiveLayerParams, SetAssemblyOverrideParams, SetAccessoryEnabledParams, SaveAccessoryConfigParams, LoadZonesParams, LoadZonesResult, SaveZonesParams, SkinsParams, SaveWingsConfigParams,
-    BloodConfigPathParams, SaveBloodConfigParams,
-    WingsConfig, WingsConfigPathParams, WorkspacePathParams,
-    WorkspaceResult,
+    AddLayerParams, ApiError, ApiLayer, AssemblyParams, AssemblyResult, BloodConfigPathParams,
+    BrushParams, CompositeParams, CompositeResult, CopyLayerToPartParams, CopyPartParams, CoreApi,
+    CreateOrientationPartParams, CreateOrientationPartResult, CreatePartFromTemplateParams,
+    CreatePartParams, CreatePartResult, CreateSidePartParams, CreateSidePartResult,
+    DeletePartParams, EraserParams, ExportSkinPackParams, ExportSkinPackResult, FillParams,
+    GetBaseSizeParams, GetBaseSizeResult, GradientParams, ImportSkinPackParams, LayerOpacityParams,
+    LayerVisibilityParams, LayersSnapshot, LoadPartParams, LoadPartResult, LoadZonesParams,
+    LoadZonesResult, MotionCaptureListParams, MotionCaptureMeta, MotionCaptureResult,
+    MotionCompositeParams, MotionCompositeResult, PartIdParams, PartsParams, RemoveLayerParams,
+    ReorderLayersParams, ResizePartParams, ResizePartResult, SaveAccessoryConfigParams,
+    SaveBloodConfigParams, SavePartParams, SaveWingsConfigParams, SaveWorkspaceParams,
+    SaveZonesParams, SetAccessoryEnabledParams, SetActiveLayerParams, SetAssemblyOverrideParams,
+    SetLayerTransformParams, SkinsParams, SoftBrushParams, WingsConfig, WingsConfigPathParams,
+    WorkspacePathParams, WorkspaceResult,
 };
 use crate::historyManager::PixelDiff;
 use crate::skinLoader::Stage;
@@ -47,6 +43,7 @@ pub async fn serve(config: HttpConfig, api: SharedApi) {
         .route("/api/motionCapture", get(handleLoadMotionCapture))
         .route("/api/motionComposite", post(handleMotionComposite))
         .route("/api/loadPart", post(handleLoadPart))
+        .route("/api/discardPart", post(handleDiscardPart))
         .route("/api/brush", post(handleBrush))
         .route("/api/eraser", post(handleEraser))
         .route("/api/gradient", post(handleGradient))
@@ -97,7 +94,10 @@ pub async fn serve(config: HttpConfig, api: SharedApi) {
     let addr = config.socketAddr();
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .unwrap_or_else(|e| panic!("绑定 {} 失败: {}", addr, e));
+        .unwrap_or_else(|e| {
+            eprintln!("绑定 {} 失败: {}", addr, e);
+            std::process::exit(1);
+        });
 
     println!("Skin Preview Editor HTTP server listening on http://{}", addr);
     axum::serve(listener, app)
@@ -105,7 +105,6 @@ pub async fn serve(config: HttpConfig, api: SharedApi) {
         .expect("HTTP server 异常退出");
 }
 
-/// 嵌入资源中找不到对应路径时回退 index.html，对齐 SPA 路由行为。
 async fn handleStatic(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let key = if path.is_empty() { "index.html" } else { path };
@@ -138,7 +137,7 @@ fn mimeOf(path: &str) -> &'static str {
     }
 }
 
-fn intoResponse<T: serde::Serialize>(result: Result<T, ApiError>) -> axum::response::Response {
+fn intoResponse<T: serde::Serialize>(result: Result<T, ApiError>) -> Response {
     match result {
         Ok(value) => Json(value).into_response(),
         Err(err) => (statusFor(&err.code), Json(err)).into_response(),
@@ -147,7 +146,12 @@ fn intoResponse<T: serde::Serialize>(result: Result<T, ApiError>) -> axum::respo
 
 fn statusFor(code: &str) -> StatusCode {
     match code {
-        "not_loaded" | "skin_not_found" | "layer_not_found" | "capture_not_found" => StatusCode::NOT_FOUND,
+        "not_loaded"
+        | "skin_not_found"
+        | "layer_not_found"
+        | "capture_not_found"
+        | "accessory_not_found"
+        | "template_not_found" => StatusCode::NOT_FOUND,
         "nothing_to_undo" | "nothing_to_redo" => StatusCode::CONFLICT,
         c if c.ends_with("_failed") || c == "lock_poisoned" => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
@@ -157,7 +161,7 @@ fn statusFor(code: &str) -> StatusCode {
 async fn handleListSkins(
     State(api): State<SharedApi>,
     Query(params): Query<SkinsParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<Vec<String>, ApiError> = api.listSkins(params);
     intoResponse(result)
 }
@@ -165,7 +169,7 @@ async fn handleListSkins(
 async fn handleListParts(
     State(api): State<SharedApi>,
     Query(params): Query<PartsParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<Stage, ApiError> = api.listParts(params);
     intoResponse(result)
 }
@@ -173,7 +177,7 @@ async fn handleListParts(
 async fn handleListMotionCaptures(
     State(api): State<SharedApi>,
     Query(params): Query<MotionCaptureListParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<Vec<MotionCaptureMeta>, ApiError> = api.listMotionCaptures(params);
     intoResponse(result)
 }
@@ -186,7 +190,7 @@ struct MotionCapturePathQuery {
 async fn handleLoadMotionCapture(
     State(api): State<SharedApi>,
     Query(params): Query<MotionCapturePathQuery>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<MotionCaptureResult, ApiError> = api.loadMotionCapture(params.path);
     intoResponse(result)
 }
@@ -194,7 +198,7 @@ async fn handleLoadMotionCapture(
 async fn handleMotionComposite(
     State(api): State<SharedApi>,
     Json(params): Json<MotionCompositeParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<MotionCompositeResult, ApiError> = api.getMotionCompositeImage(params);
     intoResponse(result)
 }
@@ -202,23 +206,25 @@ async fn handleMotionComposite(
 async fn handleLoadPart(
     State(api): State<SharedApi>,
     Json(params): Json<LoadPartParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<LoadPartResult, ApiError> = api.loadPartImage(params);
     intoResponse(result)
 }
 
-async fn handleBrush(
+async fn handleDiscardPart(
     State(api): State<SharedApi>,
-    Json(params): Json<BrushParams>,
-) -> axum::response::Response {
+    Json(params): Json<PartIdParams>,
+) -> Response {
+    let result: Result<(), ApiError> = api.discardPart(params);
+    intoResponse(result)
+}
+
+async fn handleBrush(State(api): State<SharedApi>, Json(params): Json<BrushParams>) -> Response {
     let result: Result<PixelDiff, ApiError> = api.applyBrush(params);
     intoResponse(result)
 }
 
-async fn handleEraser(
-    State(api): State<SharedApi>,
-    Json(params): Json<EraserParams>,
-) -> axum::response::Response {
+async fn handleEraser(State(api): State<SharedApi>, Json(params): Json<EraserParams>) -> Response {
     let result: Result<PixelDiff, ApiError> = api.applyEraser(params);
     intoResponse(result)
 }
@@ -226,15 +232,12 @@ async fn handleEraser(
 async fn handleGradient(
     State(api): State<SharedApi>,
     Json(params): Json<GradientParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<PixelDiff, ApiError> = api.applyGradient(params);
     intoResponse(result)
 }
 
-async fn handleFill(
-    State(api): State<SharedApi>,
-    Json(params): Json<FillParams>,
-) -> axum::response::Response {
+async fn handleFill(State(api): State<SharedApi>, Json(params): Json<FillParams>) -> Response {
     let result: Result<PixelDiff, ApiError> = api.applyFill(params);
     intoResponse(result)
 }
@@ -242,23 +245,17 @@ async fn handleFill(
 async fn handleSoftBrush(
     State(api): State<SharedApi>,
     Json(params): Json<SoftBrushParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<PixelDiff, ApiError> = api.applySoftBrush(params);
     intoResponse(result)
 }
 
-async fn handleUndo(
-    State(api): State<SharedApi>,
-    Json(params): Json<PartIdParams>,
-) -> axum::response::Response {
+async fn handleUndo(State(api): State<SharedApi>, Json(params): Json<PartIdParams>) -> Response {
     let result: Result<PixelDiff, ApiError> = api.undo(params);
     intoResponse(result)
 }
 
-async fn handleRedo(
-    State(api): State<SharedApi>,
-    Json(params): Json<PartIdParams>,
-) -> axum::response::Response {
+async fn handleRedo(State(api): State<SharedApi>, Json(params): Json<PartIdParams>) -> Response {
     let result: Result<PixelDiff, ApiError> = api.redo(params);
     intoResponse(result)
 }
@@ -266,7 +263,7 @@ async fn handleRedo(
 async fn handleBeginStroke(
     State(api): State<SharedApi>,
     Json(params): Json<PartIdParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<(), ApiError> = api.beginStroke(params);
     intoResponse(result)
 }
@@ -274,7 +271,7 @@ async fn handleBeginStroke(
 async fn handleEndStroke(
     State(api): State<SharedApi>,
     Json(params): Json<PartIdParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<PixelDiff, ApiError> = api.endStroke(params);
     intoResponse(result)
 }
@@ -282,7 +279,7 @@ async fn handleEndStroke(
 async fn handleGetFlatten(
     State(api): State<SharedApi>,
     Query(params): Query<PartIdParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<LoadPartResult, ApiError> = api.getFlatten(params);
     intoResponse(result)
 }
@@ -290,7 +287,7 @@ async fn handleGetFlatten(
 async fn handleAssembly(
     State(api): State<SharedApi>,
     Query(params): Query<AssemblyParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<AssemblyResult, ApiError> = api.getAssemblyTable(params);
     intoResponse(result)
 }
@@ -298,7 +295,7 @@ async fn handleAssembly(
 async fn handleSavePart(
     State(api): State<SharedApi>,
     Json(params): Json<SavePartParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<(), ApiError> = api.savePart(params);
     intoResponse(result)
 }
@@ -306,7 +303,7 @@ async fn handleSavePart(
 async fn handleResizePart(
     State(api): State<SharedApi>,
     Json(params): Json<ResizePartParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<ResizePartResult, ApiError> = api.resizePart(params);
     intoResponse(result)
 }
@@ -314,7 +311,7 @@ async fn handleResizePart(
 async fn handleGetBaseSize(
     State(api): State<SharedApi>,
     Json(params): Json<GetBaseSizeParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<GetBaseSizeResult, ApiError> = api.getBaseSize(params);
     intoResponse(result)
 }
@@ -322,7 +319,7 @@ async fn handleGetBaseSize(
 async fn handleCreateSidePart(
     State(api): State<SharedApi>,
     Json(params): Json<CreateSidePartParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<CreateSidePartResult, ApiError> = api.createSidePart(params);
     intoResponse(result)
 }
@@ -330,7 +327,7 @@ async fn handleCreateSidePart(
 async fn handleCreateOrientationPart(
     State(api): State<SharedApi>,
     Json(params): Json<CreateOrientationPartParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<CreateOrientationPartResult, ApiError> = api.createOrientationPart(params);
     intoResponse(result)
 }
@@ -338,7 +335,7 @@ async fn handleCreateOrientationPart(
 async fn handleCreatePart(
     State(api): State<SharedApi>,
     Json(params): Json<CreatePartParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<CreatePartResult, ApiError> = api.createPart(params);
     intoResponse(result)
 }
@@ -346,7 +343,7 @@ async fn handleCreatePart(
 async fn handleCopyPart(
     State(api): State<SharedApi>,
     Json(params): Json<CopyPartParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<CreatePartResult, ApiError> = api.copyPart(params);
     intoResponse(result)
 }
@@ -354,7 +351,7 @@ async fn handleCopyPart(
 async fn handleCreatePartFromTemplate(
     State(api): State<SharedApi>,
     Json(params): Json<CreatePartFromTemplateParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<CreatePartResult, ApiError> = api.createPartFromTemplate(params);
     intoResponse(result)
 }
@@ -362,7 +359,7 @@ async fn handleCreatePartFromTemplate(
 async fn handleDeletePart(
     State(api): State<SharedApi>,
     Json(params): Json<DeletePartParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<(), ApiError> = api.deletePart(params);
     intoResponse(result)
 }
@@ -370,7 +367,7 @@ async fn handleDeletePart(
 async fn handleCopyLayerToPart(
     State(api): State<SharedApi>,
     Json(params): Json<CopyLayerToPartParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<LayersSnapshot, ApiError> = api.copyLayerToPart(params);
     intoResponse(result)
 }
@@ -378,7 +375,7 @@ async fn handleCopyLayerToPart(
 async fn handleSetLayerTransform(
     State(api): State<SharedApi>,
     Json(params): Json<SetLayerTransformParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<(), ApiError> = api.setLayerTransform(params);
     intoResponse(result)
 }
@@ -386,7 +383,7 @@ async fn handleSetLayerTransform(
 async fn handleBakeLayerTransform(
     State(api): State<SharedApi>,
     Json(params): Json<RemoveLayerParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<PixelDiff, ApiError> = api.bakeLayerTransform(params);
     intoResponse(result)
 }
@@ -394,7 +391,7 @@ async fn handleBakeLayerTransform(
 async fn handleAddLayer(
     State(api): State<SharedApi>,
     Json(params): Json<AddLayerParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<LayersSnapshot, ApiError> = api.addLayer(params);
     intoResponse(result)
 }
@@ -402,7 +399,7 @@ async fn handleAddLayer(
 async fn handleRemoveLayer(
     State(api): State<SharedApi>,
     Json(params): Json<RemoveLayerParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<LayersSnapshot, ApiError> = api.removeLayer(params);
     intoResponse(result)
 }
@@ -410,7 +407,7 @@ async fn handleRemoveLayer(
 async fn handleSetLayerVisibility(
     State(api): State<SharedApi>,
     Json(params): Json<LayerVisibilityParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<LayersSnapshot, ApiError> = api.setLayerVisibility(params);
     intoResponse(result)
 }
@@ -418,7 +415,7 @@ async fn handleSetLayerVisibility(
 async fn handleSetLayerOpacity(
     State(api): State<SharedApi>,
     Json(params): Json<LayerOpacityParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<LayersSnapshot, ApiError> = api.setLayerOpacity(params);
     intoResponse(result)
 }
@@ -426,7 +423,7 @@ async fn handleSetLayerOpacity(
 async fn handleReorderLayers(
     State(api): State<SharedApi>,
     Json(params): Json<ReorderLayersParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<LayersSnapshot, ApiError> = api.reorderLayers(params);
     intoResponse(result)
 }
@@ -434,7 +431,7 @@ async fn handleReorderLayers(
 async fn handleSetActiveLayer(
     State(api): State<SharedApi>,
     Json(params): Json<SetActiveLayerParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<LayersSnapshot, ApiError> = api.setActiveLayer(params);
     intoResponse(result)
 }
@@ -442,7 +439,7 @@ async fn handleSetActiveLayer(
 async fn handleGetLayers(
     State(api): State<SharedApi>,
     Query(params): Query<PartIdParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<LayersSnapshot, ApiError> = api.getLayers(params);
     intoResponse(result)
 }
@@ -450,7 +447,7 @@ async fn handleGetLayers(
 async fn handleComposite(
     State(api): State<SharedApi>,
     Json(params): Json<CompositeParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<CompositeResult, ApiError> = api.getCompositeImage(params);
     intoResponse(result)
 }
@@ -458,7 +455,7 @@ async fn handleComposite(
 async fn handleGetWorkspace(
     State(api): State<SharedApi>,
     Query(params): Query<WorkspacePathParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<WorkspaceResult, ApiError> = api.getWorkspace(params);
     intoResponse(result)
 }
@@ -466,12 +463,12 @@ async fn handleGetWorkspace(
 async fn handleSaveWorkspace(
     State(api): State<SharedApi>,
     Json(params): Json<SaveWorkspaceParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<(), ApiError> = api.saveWorkspace(params);
     intoResponse(result)
 }
 
-async fn handleResetLayout(State(api): State<SharedApi>) -> axum::response::Response {
+async fn handleResetLayout(State(api): State<SharedApi>) -> Response {
     let result: Result<WorkspaceResult, ApiError> = api.resetLayout();
     intoResponse(result)
 }
@@ -479,7 +476,7 @@ async fn handleResetLayout(State(api): State<SharedApi>) -> axum::response::Resp
 async fn handleExportSkinPack(
     State(api): State<SharedApi>,
     Json(params): Json<ExportSkinPackParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<ExportSkinPackResult, ApiError> = api.exportSkinPack(params);
     intoResponse(result)
 }
@@ -487,7 +484,7 @@ async fn handleExportSkinPack(
 async fn handleImportSkinPack(
     State(api): State<SharedApi>,
     Json(params): Json<ImportSkinPackParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<crate::skinLoader::ImportResult, ApiError> = api.importSkinPack(params);
     intoResponse(result)
 }
@@ -495,7 +492,7 @@ async fn handleImportSkinPack(
 async fn handleSetAssemblyOverride(
     State(api): State<SharedApi>,
     Json(params): Json<SetAssemblyOverrideParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<(), ApiError> = api.setAssemblyOverride(params);
     intoResponse(result)
 }
@@ -503,7 +500,7 @@ async fn handleSetAssemblyOverride(
 async fn handleLoadWingsConfig(
     State(api): State<SharedApi>,
     Json(params): Json<WingsConfigPathParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<WingsConfig, ApiError> = api.loadWingsConfig(params);
     intoResponse(result)
 }
@@ -511,7 +508,7 @@ async fn handleLoadWingsConfig(
 async fn handleSaveWingsConfig(
     State(api): State<SharedApi>,
     Json(params): Json<SaveWingsConfigParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<(), ApiError> = api.saveWingsConfig(params);
     intoResponse(result)
 }
@@ -519,7 +516,7 @@ async fn handleSaveWingsConfig(
 async fn handleSetAccessoryEnabled(
     State(api): State<SharedApi>,
     Json(params): Json<SetAccessoryEnabledParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<(), ApiError> = api.setAccessoryEnabled(params);
     intoResponse(result)
 }
@@ -527,7 +524,7 @@ async fn handleSetAccessoryEnabled(
 async fn handleSaveAccessoryConfig(
     State(api): State<SharedApi>,
     Json(params): Json<SaveAccessoryConfigParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<(), ApiError> = api.saveAccessoryConfig(params);
     intoResponse(result)
 }
@@ -535,21 +532,21 @@ async fn handleSaveAccessoryConfig(
 async fn handleLoadBloodConfig(
     State(api): State<SharedApi>,
     Json(params): Json<BloodConfigPathParams>,
-) -> axum::response::Response {
+) -> Response {
     intoResponse(api.loadBloodConfig(params))
 }
 
 async fn handleSaveBloodConfig(
     State(api): State<SharedApi>,
     Json(params): Json<SaveBloodConfigParams>,
-) -> axum::response::Response {
+) -> Response {
     intoResponse(api.saveBloodConfig(params))
 }
 
 async fn handleLoadZones(
     State(api): State<SharedApi>,
     Json(params): Json<LoadZonesParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<LoadZonesResult, ApiError> = api.loadZones(params);
     intoResponse(result)
 }
@@ -557,7 +554,7 @@ async fn handleLoadZones(
 async fn handleSaveZones(
     State(api): State<SharedApi>,
     Json(params): Json<SaveZonesParams>,
-) -> axum::response::Response {
+) -> Response {
     let result: Result<(), ApiError> = api.saveZones(params);
     intoResponse(result)
 }

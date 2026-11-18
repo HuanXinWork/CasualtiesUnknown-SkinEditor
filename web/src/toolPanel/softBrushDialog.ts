@@ -1,28 +1,19 @@
-// 柔和笔刷硬度设置弹框：滑块 0~100%（映射 0~255），确定后写 sessionStore 并持久化。
-import { sessionStore } from "../stateStore";
-import { getWorkspace, saveWorkspace } from "../apiClient";
-import { subscribeLang, t } from "../i18n";
+// 柔和笔刷硬度设置弹窗（0~100% 映射 0~255）。
 
-function persistHardness(workspacePath: string, hardness: number): void {
-  void getWorkspace(workspacePath)
-    .then((ws) => saveWorkspace(workspacePath, {
-      ...ws.layout,
-      settings: {
-        ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false, showBloodPanel: false }),
-        softBrushHardness: hardness,
-      },
-    }, ws.theme))
-    .catch((e) => console.warn(`[softBrushDialog] persist failed: ${String(e)}`));
-}
+import { sessionStore } from "../stateStore";
+import { updateWorkspaceSettings } from "../stateStore/workspacePersist";
+import { subscribeLang, t } from "../i18n";
 
 export function openSoftBrushDialog(workspacePath: string): void {
   const current = sessionStore.getState().softBrushHardness;
   const overlay = document.createElement("div");
+  overlay.dataset.modalOpen = "true";
   overlay.style.cssText =
     "position:fixed;inset:0;z-index:2300;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;";
   const dialog = document.createElement("div");
   dialog.className = "panel";
-  dialog.style.cssText = "min-width:300px;max-width:380px;padding:16px;display:flex;flex-direction:column;gap:12px;font-size:13px;";
+  dialog.style.cssText =
+    "min-width:300px;max-width:380px;padding:16px;display:flex;flex-direction:column;gap:12px;font-size:13px;";
   overlay.appendChild(dialog);
 
   const title = document.createElement("div");
@@ -62,24 +53,34 @@ export function openSoftBrushDialog(workspacePath: string): void {
   syncVal();
 
   function close(): void {
-    document.removeEventListener("keydown", onKey);
+    document.removeEventListener("keydown", onKey, true);
     unsubLang();
     overlay.remove();
   }
   function onKey(e: KeyboardEvent): void {
-    if (e.key === "Escape") close();
-    else if (e.key === "Enter") submit();
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      submit();
+    }
   }
   function submit(): void {
-    const pct = Number.parseInt(range.value, 10) || 0;
+    const parsed = Number.parseInt(range.value, 10);
+    const pct = Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 0;
     const hardness = Math.round((pct / 100) * 255);
     sessionStore.setState({ softBrushHardness: hardness });
-    persistHardness(workspacePath, hardness);
+    updateWorkspaceSettings(workspacePath, { softBrushHardness: hardness });
     close();
   }
   range.addEventListener("input", syncVal);
   cancelBtn.addEventListener("click", close);
   okBtn.addEventListener("click", submit);
-  overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
-  document.addEventListener("keydown", onKey);
+  overlay.addEventListener("mousedown", (e) => {
+    if (e.target === overlay) close();
+  });
+  document.addEventListener("keydown", onKey, true);
 }

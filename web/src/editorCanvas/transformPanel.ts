@@ -1,12 +1,17 @@
-// 当前图层视图变换控件：翻转/缩放/旋转预览，应用后烘焙入历史，取消还原。
+// 当前活动图层变换控件（翻转/缩放/旋转实时预览，应用烘焙入历史栈，取消还原）。
 import {
+  bakeLayerTransform,
   getLayers,
   setLayerTransform,
-  bakeLayerTransform,
   type ApiError,
   type LayerTransform,
 } from "../apiClient";
-import { sessionStore, markPartDirty, pushHistoryRecord } from "../stateStore";
+import {
+  bumpLayerSnapshotVersion,
+  markPartDirty,
+  pushHistoryRecord,
+  sessionStore,
+} from "../stateStore";
 import { subscribeLang, t } from "../i18n";
 import { showToast } from "../toast";
 
@@ -15,22 +20,24 @@ function identity(): LayerTransform {
 }
 
 function isIdentity(tf: LayerTransform): boolean {
-  return !tf.flipX && !tf.flipY
-    && Math.abs(tf.scaleX - 1) < 1e-4
-    && Math.abs(tf.scaleY - 1) < 1e-4
-    && Math.abs(tf.rotationDeg) < 1e-4;
+  return (
+    !tf.flipX &&
+    !tf.flipY &&
+    Math.abs(tf.scaleX - 1) < 1e-4 &&
+    Math.abs(tf.scaleY - 1) < 1e-4 &&
+    Math.abs(tf.rotationDeg) < 1e-4
+  );
 }
 
-/// 挂载变换控件到容器；返回卸载函数。控件作用于当前部件 active 图层。
 export function mountTransformControls(container: HTMLElement): () => void {
   container.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:12px;";
   container.innerHTML =
     `<span data-role="label" style="opacity:0.7;"></span>` +
     `<button class="btn" data-role="flipH"></button>` +
     `<button class="btn" data-role="flipV"></button>` +
-    `<label style="display:flex;align-items:center;gap:3px;"><span data-role="sxLabel"></span><input type="number" data-role="sx" step="0.05" style="width:56px;" /></label>` +
-    `<label style="display:flex;align-items:center;gap:3px;"><span data-role="syLabel"></span><input type="number" data-role="sy" step="0.05" style="width:56px;" /></label>` +
-    `<label style="display:flex;align-items:center;gap:3px;"><span data-role="rotLabel"></span><input type="number" data-role="rot" step="1" style="width:60px;" /></label>` +
+    `<label style="display:flex;align-items:center;gap:3px;"><span data-role="sxLabel"></span><input class="input" type="number" data-role="sx" step="0.05" style="width:56px;" /></label>` +
+    `<label style="display:flex;align-items:center;gap:3px;"><span data-role="syLabel"></span><input class="input" type="number" data-role="sy" step="0.05" style="width:56px;" /></label>` +
+    `<label style="display:flex;align-items:center;gap:3px;"><span data-role="rotLabel"></span><input class="input" type="number" data-role="rot" step="1" style="width:60px;" /></label>` +
     `<button class="btn btn-primary" data-role="apply"></button>` +
     `<button class="btn" data-role="cancel"></button>`;
 
@@ -49,6 +56,7 @@ export function mountTransformControls(container: HTMLElement): () => void {
   let tf = identity();
   let activeLayerId: string | null = null;
   let activePartId: string | null = null;
+  let querySeq = 0;
 
   function applyTexts(): void {
     labelEl.textContent = t("transform.label");
@@ -63,36 +71,87 @@ export function mountTransformControls(container: HTMLElement): () => void {
     cancelBtn.textContent = t("transform.cancel");
   }
 
-  function syncInputs(): void {
+  function syncActionButtons(): void {
     flipHBtn.classList.toggle("btn-primary", tf.flipX);
     flipVBtn.classList.toggle("btn-primary", tf.flipY);
-    sxInput.value = String(tf.scaleX);
-    syInput.value = String(tf.scaleY);
-    rotInput.value = String(tf.rotationDeg);
     const has = !isIdentity(tf);
     applyBtn.disabled = !has || !activeLayerId;
     cancelBtn.disabled = !has || !activeLayerId;
   }
 
-  // 把 tf 推到后端预览并刷新画布/装配/动画预览。
+  function syncInputs(): void {
+    sxInput.value = String(tf.scaleX);
+    syInput.value = String(tf.scaleY);
+    rotInput.value = String(tf.rotationDeg);
+    syncActionButtons();
+  }
+
   function pushPreview(): void {
     if (!activePartId || !activeLayerId) return;
     const partId = activePartId;
     const layerId = activeLayerId;
-    const payload = isIdentity(tf) ? null : tf;
+    const payload = isIdentity(tf) ? null : { ...tf };
     setLayerTransform(partId, layerId, payload)
-      .then(() => {
-        const v = sessionStore.getState().layerSnapshotVersion ?? 0;
-        sessionStore.setState({ layerSnapshotVersion: v + 1 });
-      })
+      .then(() => bumpLayerSnapshotVersion())
       .catch((e: ApiError) => console.warn(`[transform] setLayerTransform failed: ${e?.message ?? String(e)}`));
   }
 
-  flipHBtn.addEventListener("click", () => { tf.flipX = !tf.flipX; syncInputs(); pushPreview(); });
-  flipVBtn.addEventListener("click", () => { tf.flipY = !tf.flipY; syncInputs(); pushPreview(); });
-  sxInput.addEventListener("input", () => { tf.scaleX = Number.parseFloat(sxInput.value) || 1; syncInputs(); pushPreview(); });
-  syInput.addEventListener("input", () => { tf.scaleY = Number.parseFloat(syInput.value) || 1; syncInputs(); pushPreview(); });
-  rotInput.addEventListener("input", () => { tf.rotationDeg = Number.parseFloat(rotInput.value) || 0; syncInputs(); pushPreview(); });
+  flipHBtn.addEventListener("click", () => {
+    tf.flipX = !tf.flipX;
+    syncInputs();
+    pushPreview();
+  });
+  flipVBtn.addEventListener("click", () => {
+    tf.flipY = !tf.flipY;
+    syncInputs();
+    pushPreview();
+  });
+
+  // 输入过程仅在解析出有效非零缩放时推送预览，不覆写用户正在敲击的小数点或负号。
+  sxInput.addEventListener("input", () => {
+    const v = Number.parseFloat(sxInput.value);
+    if (Number.isFinite(v) && Math.abs(v) >= 0.05) {
+      tf.scaleX = v;
+      syncActionButtons();
+      pushPreview();
+    }
+  });
+  sxInput.addEventListener("change", () => {
+    const v = Number.parseFloat(sxInput.value);
+    tf.scaleX = Number.isFinite(v) && Math.abs(v) >= 0.05 ? v : 1;
+    syncInputs();
+    pushPreview();
+  });
+
+  syInput.addEventListener("input", () => {
+    const v = Number.parseFloat(syInput.value);
+    if (Number.isFinite(v) && Math.abs(v) >= 0.05) {
+      tf.scaleY = v;
+      syncActionButtons();
+      pushPreview();
+    }
+  });
+  syInput.addEventListener("change", () => {
+    const v = Number.parseFloat(syInput.value);
+    tf.scaleY = Number.isFinite(v) && Math.abs(v) >= 0.05 ? v : 1;
+    syncInputs();
+    pushPreview();
+  });
+
+  rotInput.addEventListener("input", () => {
+    const v = Number.parseFloat(rotInput.value);
+    if (Number.isFinite(v)) {
+      tf.rotationDeg = v;
+      syncActionButtons();
+      pushPreview();
+    }
+  });
+  rotInput.addEventListener("change", () => {
+    const v = Number.parseFloat(rotInput.value);
+    tf.rotationDeg = Number.isFinite(v) ? v : 0;
+    syncInputs();
+    pushPreview();
+  });
 
   applyBtn.addEventListener("click", () => {
     if (!activePartId || !activeLayerId || isIdentity(tf)) return;
@@ -105,16 +164,13 @@ export function mountTransformControls(container: HTMLElement): () => void {
         markPartDirty(partId);
         pushHistoryRecord({ partId, tool: "transform", rectW: diff.width, rectH: diff.height });
         sessionStore.setState({ lastAppliedDiff: { partId, diff, phase: "after" } });
-        const v = sessionStore.getState().layerSnapshotVersion ?? 0;
-        sessionStore.setState({ layerSnapshotVersion: v + 1 });
+        bumpLayerSnapshotVersion();
         showToast(t("transform.appliedToast"), "info");
       })
       .catch((e: ApiError) => showToast(e?.message ?? String(e), "error"));
   });
 
-  cancelBtn.addEventListener("click", () => {
-    resetPreview();
-  });
+  cancelBtn.addEventListener("click", () => resetPreview());
 
   function resetPreview(): void {
     const hadTransform = !isIdentity(tf);
@@ -124,36 +180,45 @@ export function mountTransformControls(container: HTMLElement): () => void {
       const partId = activePartId;
       const layerId = activeLayerId;
       setLayerTransform(partId, layerId, null)
-        .then(() => {
-          const v = sessionStore.getState().layerSnapshotVersion ?? 0;
-          sessionStore.setState({ layerSnapshotVersion: v + 1 });
-        })
+        .then(() => bumpLayerSnapshotVersion())
         .catch(() => undefined);
     }
   }
 
-  // 切部件/切图层时放弃未应用的预览，刷新 active 图层引用。
   function refreshActiveLayer(): void {
     const partId = sessionStore.getState().currentPartId;
+    const seq = ++querySeq;
     if (partId === activePartId) {
-      // 仅 active 图层可能变化时更新引用。
-      if (!partId) { activeLayerId = null; syncInputs(); return; }
-      getLayers(partId).then((snap) => {
-        const id = snap.layers[snap.activeLayerIndex]?.id ?? null;
-        if (id !== activeLayerId && !isIdentity(tf)) resetPreview();
-        activeLayerId = id;
+      if (!partId) {
+        activeLayerId = null;
         syncInputs();
-      }).catch(() => undefined);
+        return;
+      }
+      getLayers(partId)
+        .then((snap) => {
+          if (seq !== querySeq || activePartId !== partId) return;
+          const id = snap.layers[snap.activeLayerIndex]?.id ?? null;
+          if (id !== activeLayerId && !isIdentity(tf)) resetPreview();
+          activeLayerId = id;
+          syncInputs();
+        })
+        .catch(() => undefined);
       return;
     }
     if (!isIdentity(tf)) resetPreview();
     activePartId = partId;
     activeLayerId = null;
-    if (!partId) { syncInputs(); return; }
-    getLayers(partId).then((snap) => {
-      activeLayerId = snap.layers[snap.activeLayerIndex]?.id ?? null;
+    if (!partId) {
       syncInputs();
-    }).catch(() => undefined);
+      return;
+    }
+    getLayers(partId)
+      .then((snap) => {
+        if (seq !== querySeq || activePartId !== partId) return;
+        activeLayerId = snap.layers[snap.activeLayerIndex]?.id ?? null;
+        syncInputs();
+      })
+      .catch(() => undefined);
   }
 
   let lastPartId = sessionStore.getState().currentPartId;

@@ -1,40 +1,32 @@
-// 合成预览画布。
-// 默认模式仍是装配预览；新增动画模式后，可直接读取 captures JSON 播放并在右侧显示当前 limb 帧数据。
+// 静态装配与动作捕捉回放预览画布。
 
 import {
   getCompositeImage,
   getMotionCompositeImage,
-  loadMotionCapture,
   listMotionCaptures,
+  loadMotionCapture,
   setAssemblyOverride,
   type ApiError,
   type HeadVariant,
-  type MotionCaptureFrame,
   type MotionCaptureMeta,
   type MotionCaptureResult,
+  type SetAssemblyOverrideParams,
 } from "../apiClient";
 import { sessionStore, type SessionState } from "../stateStore";
 import type { PartCategory } from "../stateStore/types";
 import { subscribeLang, t } from "../i18n";
 import { localizePartName } from "../i18n/partNames";
-import { ICON_REFRESH } from "../toolPanel/toolIcons";
-
-const COMPOSITE_W = 100;
-const COMPOSITE_H = 100;
-const EXPRESSION_COUNT = 7;
-const CAPTURE_ROOT = "captures";
-
-const HEAD_VARIANTS: HeadVariant[] = [
-  "default",
-  "mouthHalf",
-  "mouth",
-  "disfigured1",
-  "disfigured2",
-  "disfigured3",
-  "disfigured1Healed",
-  "disfigured2Healed",
-  "disfigured3Healed",
-];
+import {
+  buildPreviewCanvasHtml,
+  CAPTURE_ROOT,
+  EXPRESSION_COUNT,
+  findFrameIndexByTime,
+  HEAD_VARIANTS,
+  populateBasePartPositions,
+  renderCaptureDropdown,
+  renderMotionDebugSection,
+  toAssemblyEntryName,
+} from "./helpers";
 
 type ViewFacing = "left" | "right";
 type PreviewMode = "assembly" | "motion";
@@ -44,71 +36,10 @@ type PlaceholderInfo =
   | { kind: "message"; text: string }
   | { kind: "compositeFailed"; msg: string };
 
-function findFrameIndexByTime(frames: MotionCaptureFrame[], targetTime: number): number {
-  if (frames.length === 0) return 0;
-  let lo = 0;
-  let hi = frames.length - 1;
-  while (lo < hi) {
-    const mid = Math.floor((lo + hi + 1) / 2);
-    if (frames[mid].t <= targetTime) lo = mid;
-    else hi = mid - 1;
-  }
-  return lo;
-}
-
 export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): () => void {
   container.classList.add("panel", "preview-canvas");
   container.style.flexDirection = "column";
-  container.innerHTML =
-    `<div class="preview-toolbar" style="display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid rgba(0,0,0,var(--border-opacity));flex-wrap:wrap;">` +
-    `<div data-role="orientation" style="display:flex;gap:4px;"></div>` +
-    `<div data-role="expression" style="display:flex;gap:4px;"></div>` +
-    `</div>` +
-    `<div class="preview-toolbar" style="display:flex;align-items:center;gap:4px;padding:6px 8px;border-bottom:1px solid rgba(0,0,0,var(--border-opacity));flex-wrap:wrap;">` +
-    `<span data-role="head-variant-label" style="opacity:0.7;font-size:11px;"></span>` +
-    `<div data-role="head-variant" style="display:flex;gap:4px;flex-wrap:wrap;"></div>` +
-    `</div>` +
-    `<div class="preview-toolbar" style="display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid rgba(0,0,0,var(--border-opacity));flex-wrap:wrap;">` +
-    `<div data-role="preview-mode" style="display:flex;gap:4px;"></div>` +
-    `<div data-role="motion-capture-host" style="position:relative;min-width:180px;max-width:240px;display:none;">` +
-    `<button class="btn" data-role="motion-capture-toggle" type="button" style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;padding-right:8px;"></button>` +
-    `<div class="panel" data-role="motion-capture-popover" hidden style="position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:20;max-height:240px;overflow:auto;padding:4px;"></div>` +
-    `</div>` +
-    `<button class="btn" data-role="motion-play" type="button"></button>` +
-    `<input type="range" data-role="motion-frame-range" min="0" max="0" step="1" value="0" style="flex:1;min-width:80px;" />` +
-    `<span data-role="motion-frame-label" class="mono" style="font-size:11px;opacity:0.7;"></span>` +
-    `</div>` +
-    `<div class="preview-zoom-bar" style="display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid rgba(0,0,0,var(--border-opacity));flex-wrap:wrap;">` +
-    `<input type="range" data-role="zoom-range" min="10" max="800" step="1" value="200" style="flex:1;min-width:80px;" />` +
-    `<input type="number" data-role="zoom-num" min="10" max="800" step="1" value="200" style="width:64px;" />` +
-    `<span class="mono" style="opacity:0.6;">%</span>` +
-    `<button class="btn" data-role="reset-view" type="button"></button>` +
-    `<label data-role="live-toggle" style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;user-select:none;">` +
-    `<input type="checkbox" data-role="live-cb" checked />` +
-    `<span data-role="live-label"></span>` +
-    `</label>` +
-    `<button class="btn cp-tool-btn" data-role="refresh-now" type="button" style="display:none;">${ICON_REFRESH}</button>` +
-    `</div>` +
-    `<div class="preview-stage" data-role="stage" style="flex:1;min-height:0;display:flex;align-items:stretch;padding:0;overflow:hidden;position:relative;">` +
-    `<div data-role="stage-main" style="flex:1;min-width:0;position:relative;display:flex;align-items:center;justify-content:center;padding:16px;overflow:hidden;">` +
-    `<div data-role="viewport" style="position:absolute;left:50%;top:50%;will-change:transform;">` +
-    `<canvas data-role="canvas" width="${COMPOSITE_W}" height="${COMPOSITE_H}" style="image-rendering:pixelated;display:none;"></canvas>` +
-    `</div>` +
-    `<div data-role="placeholder" style="opacity:0.6;"></div>` +
-    `</div>` +
-    `<aside data-role="motion-side" style="width:240px;display:none;align-self:stretch;border-left:1px solid rgba(0,0,0,var(--border-opacity));padding:8px;overflow:auto;background:rgba(0,0,0,0.03);">` +
-    `<div data-role="motion-side-title" style="font-size:12px;font-weight:600;margin-bottom:6px;"></div>` +
-    `<div data-role="motion-side-meta" class="mono" style="font-size:11px;opacity:0.7;white-space:pre-wrap;margin-bottom:8px;"></div>` +
-    `<div data-role="motion-parts" class="mono" style="font-size:11px;line-height:1.45;white-space:pre-wrap;"></div>` +
-    `</aside>` +
-    `</div>` +
-    `<div data-role="footer" style="flex:0 0 14%;height:14%;min-height:56px;display:flex;flex-direction:column;border-top:1px solid rgba(0,0,0,var(--border-opacity));overflow:hidden;">` +
-    `<div data-role="footer-resize" style="flex:0 0 8px;height:8px;cursor:ns-resize;position:relative;user-select:none;">` +
-    `<div style="position:absolute;left:0;right:0;top:0;height:1px;background:rgba(0,0,0,var(--border-opacity));"></div>` +
-    `</div>` +
-    `<div data-role="meta" class="mono" style="flex:0 0 45%;min-height:0;padding:6px 8px 2px;opacity:0.7;overflow:auto;"></div>` +
-    `<div data-role="hint" class="mono" style="flex:1 1 auto;min-height:0;padding:0 8px 6px;opacity:0.55;font-size:11px;overflow:auto;"></div>` +
-    `</div>`;
+  container.innerHTML = buildPreviewCanvasHtml();
 
   const orientationEl = container.querySelector<HTMLDivElement>('[data-role="orientation"]')!;
   const expressionEl = container.querySelector<HTMLDivElement>('[data-role="expression"]')!;
@@ -144,6 +75,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
   footerEl.style.boxSizing = "border-box";
 
   let viewFacing: ViewFacing = "left";
+  let currentMotionIsRight = false;
   let previewMode: PreviewMode = "assembly";
   const ZOOM_MIN_PCT = 10;
   const ZOOM_MAX_PCT = 800;
@@ -161,7 +93,12 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
   let dragPartCategory: PartCategory = "Body";
   let dragStartPartX = 0;
   let dragStartPartY = 0;
+
+  const basePartPositions = new Map<string, { x: number; y: number }>();
   const partOverridesCache = new Map<string, { x: number; y: number }>();
+  let overrideInflight = false;
+  let queuedOverride: SetAssemblyOverrideParams | null = null;
+
   let lastSkinName: string | null = sessionStore.getState().currentSkinName;
   let lastExpression: number = sessionStore.getState().expressionIndex;
   let lastHeadVariant: HeadVariant = sessionStore.getState().headVariant;
@@ -192,6 +129,22 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
   const FOOTER_MIN_PCT = 8;
   const FOOTER_MAX_PCT = 35;
 
+  function flushQueuedOverride(): void {
+    if (overrideInflight || !queuedOverride) return;
+    const params = queuedOverride;
+    queuedOverride = null;
+    overrideInflight = true;
+    setAssemblyOverride(params)
+      .then(() => {
+        if (previewMode === "assembly") refreshAssembly();
+      })
+      .catch((e) => console.warn("[previewCanvas] setAssemblyOverride failed", e))
+      .finally(() => {
+        overrideInflight = false;
+        if (queuedOverride) flushQueuedOverride();
+      });
+  }
+
   function applyFooterHeight(): void {
     footerHeightPct = Math.max(FOOTER_MIN_PCT, Math.min(FOOTER_MAX_PCT, footerHeightPct));
     footerEl.style.flex = `0 0 ${footerHeightPct}%`;
@@ -200,13 +153,16 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
 
   function applyTransform(): void {
     const z = zoomPct / 100;
-    const sx = viewFacing === "right" ? -z : z;
+    // 原始 100×100 合成画布（头在 X=+10）默认面朝右；朝左时通过负 X 缩放水平镜像（与游戏 Body.localScale.x=-1 一致）。
+    const mirror = previewMode === "motion" ? !currentMotionIsRight : viewFacing === "left";
+    const sx = mirror ? -z : z;
     viewportEl.style.transform = `translate(calc(-50% + ${offsetX}px), calc(-50% + ${offsetY}px)) scale(${sx}, ${z})`;
     zoomRange.value = String(zoomPct);
     zoomNum.value = String(zoomPct);
   }
 
   function setZoom(pct: number): void {
+    if (!Number.isFinite(pct)) return;
     zoomPct = Math.max(ZOOM_MIN_PCT, Math.min(ZOOM_MAX_PCT, Math.round(pct)));
     applyTransform();
   }
@@ -256,28 +212,8 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     }
   }
 
-  function renderMotionPartPanel(frame: MotionCaptureFrame | null): void {
-    motionSideTitleEl.textContent = t("previewCanvas.motionPanelTitle");
-    if (!frame || !motionData) {
-      motionSideMetaEl.textContent = "";
-      motionPartsEl.textContent = t("previewCanvas.motionNoFrame");
-      return;
-    }
-    motionSideMetaEl.textContent = `${motionData.playerName}\nt=${frame.t.toFixed(3)}s\ndir=${frame.isRight ? "right" : "left"}\nexp=${frame.expression}`;
-    const hasTail = frame.limbs.some((limb) => limb.name === "Tail" || limb.name === "experimentTail" || limb.limbNum === -1);
-    const rows = frame.limbs
-      .slice()
-      .sort((a, b) => a.limbNum - b.limbNum)
-      .map((limb) => {
-        const x = Math.round(limb.px * 8);
-        const y = Math.round(-limb.py * 8);
-        const sprite = limb.spriteName ? ` ${limb.spriteName}` : "";
-        return `${limb.name.padEnd(10)} x=${x.toString().padStart(3)} y=${y.toString().padStart(3)} rot=${Math.round(limb.rotZ).toString().padStart(3)} z=${limb.sortingOrder.toString().padStart(4)}${sprite}`;
-      });
-    if (!hasTail) {
-      rows.push(`Tail      ${t("previewCanvas.motionTailFallback")}`);
-    }
-    motionPartsEl.textContent = rows.join("\n");
+  function renderMotionPartPanel(frame: MotionCaptureResult["frames"][number] | null): void {
+    renderMotionDebugSection(motionSideTitleEl, motionSideMetaEl, motionPartsEl, motionData, frame);
   }
 
   function renderMotionToolbar(): void {
@@ -293,45 +229,32 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
         renderToolbar();
         renderMotionToolbar();
         updateRefreshBtn();
+        applyTransform();
         refresh();
       });
       previewModeEl.appendChild(btn);
     }
 
-    motionCaptureToggle.title = t("previewCanvas.motionCaptureLabel");
-    motionCaptureToggle.disabled = motionLoading || motionCaptures.length === 0;
-    const selectedCapture = motionCaptures.find((capture) => capture.path === motionCapturePath);
-    const captureLabel = motionLoading
-      ? t("previewCanvas.motionCaptureLoading")
-      : selectedCapture?.fileName ?? (motionCaptures.length === 0 ? t("previewCanvas.motionCaptureEmpty") : t("previewCanvas.motionCaptureLabel"));
-    motionCaptureToggle.innerHTML = `<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${captureLabel}</span><span aria-hidden="true" style="flex:none;opacity:0.7;">▾</span>`;
-    motionCapturePopover.innerHTML = "";
-    if (motionLoading || motionCaptures.length === 0) {
-      const empty = document.createElement("div");
-      empty.style.cssText = "padding:8px 10px;opacity:0.6;";
-      empty.textContent = motionLoading ? t("previewCanvas.motionCaptureLoading") : t("previewCanvas.motionCaptureEmpty");
-      motionCapturePopover.appendChild(empty);
-    } else {
-      for (const capture of motionCaptures) {
-        const item = document.createElement("button");
-        item.type = "button";
-        item.className = capture.path === motionCapturePath ? "btn btn-primary" : "btn";
-        item.style.cssText = "display:block;width:100%;margin:0 0 4px;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
-        item.textContent = capture.fileName;
-        item.title = capture.fileName;
-        item.addEventListener("click", () => {
-          motionCapturePopoverOpen = false;
-          motionCapturePopover.hidden = true;
-          void selectMotionCapture(capture.path);
-        });
-        motionCapturePopover.appendChild(item);
-      }
-    }
+    renderCaptureDropdown(
+      motionCaptureToggle,
+      motionCapturePopover,
+      motionCaptures,
+      motionCapturePath,
+      motionLoading,
+      (path) => {
+        motionCapturePopoverOpen = false;
+        motionCapturePopover.hidden = true;
+        void selectMotionCapture(path);
+      },
+    );
+
     motionPlayBtn.textContent = motionPlaying ? t("previewCanvas.motionPause") : t("previewCanvas.motionPlay");
     motionPlayBtn.disabled = !motionData || motionData.frames.length <= 1;
     motionFrameRange.disabled = !motionData || motionData.frames.length === 0;
     motionFrameRange.max = String(Math.max(0, (motionData?.frames.length ?? 1) - 1));
-    motionFrameRange.value = String(Math.min(motionFrameIndex, motionData?.frames.length ? motionData.frames.length - 1 : 0));
+    motionFrameRange.value = String(
+      Math.min(motionFrameIndex, motionData?.frames.length ? motionData.frames.length - 1 : 0),
+    );
     motionFrameLabel.textContent = motionData
       ? `${t("previewCanvas.motionFrameLabel")} ${motionFrameIndex + 1}/${motionData.frames.length}`
       : t("previewCanvas.motionCaptureEmpty");
@@ -339,7 +262,8 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     motionPlayBtn.style.display = previewMode === "motion" ? "" : "none";
     motionFrameRange.style.display = previewMode === "motion" ? "" : "none";
     motionFrameLabel.style.display = previewMode === "motion" ? "" : "none";
-    motionSideEl.style.display = previewMode === "motion" && sessionStore.getState().showMotionDebugPanel ? "block" : "none";
+    motionSideEl.style.display =
+      previewMode === "motion" && sessionStore.getState().showMotionDebugPanel ? "block" : "none";
     if (previewMode !== "motion") {
       motionCapturePopoverOpen = false;
       motionCapturePopover.hidden = true;
@@ -380,6 +304,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     try {
       motionData = await loadMotionCapture(path);
       motionFrameIndex = 0;
+      currentMotionIsRight = motionData.frames[0]?.isRight ?? false;
     } catch (e) {
       motionData = null;
       console.warn(`[previewCanvas] load motion capture failed: ${String(e)}`);
@@ -387,6 +312,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
       motionLoading = false;
       renderMotionToolbar();
       renderMotionPartPanel(motionData?.frames[0] ?? null);
+      applyTransform();
       if (previewMode === "motion") refresh();
     }
   }
@@ -443,6 +369,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
       const btn = document.createElement("button");
       btn.textContent = f === "left" ? t("previewCanvas.front") : t("previewCanvas.back");
       btn.className = f === viewFacing ? "btn btn-primary" : "btn";
+      btn.disabled = previewMode === "motion";
       btn.addEventListener("click", () => {
         if (viewFacing !== f) {
           viewFacing = f;
@@ -496,8 +423,16 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     const { expressionIndex, headVariant } = sessionStore.getState();
     metaEl.textContent = `${skinName} / ${viewFacing} / exp ${expressionIndex} / ${headVariant}`;
     const key = ++pendingAssemblyKey;
-    const isRight = viewFacing === "left";
-    getCompositeImage({ skinRoot, skinName, orientation: "front", expressionIndex, headVariant, timeSec: 0, isRight })
+    const isRight = viewFacing === "right";
+    getCompositeImage({
+      skinRoot,
+      skinName,
+      orientation: "front",
+      expressionIndex,
+      headVariant,
+      timeSec: 0,
+      isRight,
+    })
       .then((result) => {
         if (key !== pendingAssemblyKey || previewMode !== "assembly") return;
         drawPixels(result.width, result.height, result.pixels);
@@ -531,6 +466,10 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
       return;
     }
     const frame = motionData.frames[motionFrameIndex];
+    if (frame.isRight !== currentMotionIsRight) {
+      currentMotionIsRight = frame.isRight;
+      applyTransform();
+    }
     const { expressionIndex, headVariant } = sessionStore.getState();
     metaEl.textContent = `${skinName} / motion / ${motionData.fileName} / ${motionFrameIndex + 1}/${motionData.frames.length} / t ${frame.t.toFixed(3)}s / exp ${expressionIndex} / ${headVariant}`;
     const key = ++pendingMotionKey;
@@ -545,6 +484,10 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     })
       .then((result) => {
         if (key !== pendingMotionKey || previewMode !== "motion") return;
+        if (result.frame.isRight !== currentMotionIsRight) {
+          currentMotionIsRight = result.frame.isRight;
+          applyTransform();
+        }
         drawPixels(result.width, result.height, result.pixels);
         renderMotionPartPanel(result.frame);
       })
@@ -579,6 +522,11 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     const accVer = state.accessoriesVersion ?? 0;
     const accChanged = accVer !== lastAccessoriesVersion;
 
+    if (skinChanged) {
+      partOverridesCache.clear();
+      populateBasePartPositions(skinRoot, state.currentSkinName, basePartPositions);
+    }
+
     if (skinChanged || expressionChanged || headVariantChanged || selectedChanged || motionDebugChanged) {
       lastSkinName = state.currentSkinName;
       lastExpression = state.expressionIndex;
@@ -593,6 +541,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     lastLayerSnapshotVersion = layerVer;
     lastAssemblyOverrideVersion = overrideVer;
     lastAccessoriesVersion = accVer;
+
     if (previewMode === "motion") {
       if (skinChanged || expressionChanged || headVariantChanged) {
         stalePending = false;
@@ -611,7 +560,19 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
       updateRefreshBtn();
       return;
     }
-    if (!(skinChanged || expressionChanged || headVariantChanged || diffChanged || layerChanged || overrideChanged || accChanged)) return;
+    if (
+      !(
+        skinChanged ||
+        expressionChanged ||
+        headVariantChanged ||
+        diffChanged ||
+        layerChanged ||
+        overrideChanged ||
+        accChanged
+      )
+    ) {
+      return;
+    }
     if (!livePreviewEnabled && !skinChanged) {
       stalePending = true;
       updateRefreshBtn();
@@ -625,6 +586,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
   resetViewBtn.addEventListener("click", resetView);
   resetViewBtn.textContent = t("previewCanvas.resetViewBtn");
   resetViewBtn.title = t("previewCanvas.resetView");
+
   stageMainEl.addEventListener(
     "wheel",
     (e) => {
@@ -634,6 +596,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     },
     { passive: false },
   );
+
   footerResizeEl.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
     footerResizing = true;
@@ -642,6 +605,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     e.preventDefault();
     e.stopPropagation();
   });
+
   stageMainEl.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
     dragging = true;
@@ -650,15 +614,19 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     if (previewMode === "assembly" && e.shiftKey) {
       const { selectedPartName, selectedCategory } = sessionStore.getState();
       if (selectedPartName && selectedCategory) {
-        dragMode = "part";
-        dragPartName = selectedPartName;
-        dragPartCategory = selectedCategory;
-        const cached = partOverridesCache.get(`${dragPartCategory}::${dragPartName}`);
-        dragStartPartX = cached?.x ?? 0;
-        dragStartPartY = cached?.y ?? 0;
-        stageMainEl.style.cursor = "crosshair";
-        e.preventDefault();
-        return;
+        const entryName = toAssemblyEntryName(selectedCategory, selectedPartName);
+        if (entryName) {
+          dragMode = "part";
+          dragPartName = entryName;
+          dragPartCategory = selectedCategory;
+          const key = `${dragPartCategory}::${dragPartName}`;
+          const startPos = partOverridesCache.get(key) ?? basePartPositions.get(key) ?? { x: 0, y: 0 };
+          dragStartPartX = startPos.x;
+          dragStartPartY = startPos.y;
+          stageMainEl.style.cursor = "crosshair";
+          e.preventDefault();
+          return;
+        }
       }
     }
     dragMode = "viewport";
@@ -666,12 +634,14 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     dragStartOffY = offsetY;
     stageMainEl.style.cursor = "grabbing";
   });
-  document.addEventListener("mousemove", (e) => {
+
+  const onDocMouseMove = (e: MouseEvent): void => {
     if (footerResizing) {
       const rect = container.getBoundingClientRect();
-      const nextPct = ((rect.bottom - e.clientY) / rect.height) * 100;
-      footerHeightPct = nextPct;
-      applyFooterHeight();
+      if (rect.height > 0) {
+        footerHeightPct = ((rect.bottom - e.clientY) / rect.height) * 100;
+        applyFooterHeight();
+      }
       return;
     }
     if (!dragging) return;
@@ -684,28 +654,39 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     const z = zoomPct / 100;
     const dxScreen = e.clientX - dragStartX;
     const dyScreen = e.clientY - dragStartY;
-    const dxAssembly = Math.round(dxScreen / z) * (viewFacing === "right" ? -1 : 1);
+    const dxAssembly = Math.round(dxScreen / z) * (viewFacing === "left" ? -1 : 1);
     const dyAssembly = Math.round(dyScreen / z);
     const newX = dragStartPartX + dxAssembly;
     const newY = dragStartPartY + dyAssembly;
-    partOverridesCache.set(`${dragPartCategory}::${dragPartName}`, { x: newX, y: newY });
-    void setAssemblyOverride({
+    const key = `${dragPartCategory}::${dragPartName}`;
+    const prev = partOverridesCache.get(key);
+    if (prev && prev.x === newX && prev.y === newY) return;
+    partOverridesCache.set(key, { x: newX, y: newY });
+    queuedOverride = {
       partName: dragPartName,
       category: dragPartCategory,
       position: { x: newX, y: newY },
-    }).then(() => refreshAssembly());
-  });
-  document.addEventListener("mouseup", () => {
+    };
+    flushQueuedOverride();
+  };
+
+  const endInteraction = (): void => {
     if (footerResizing) {
       footerResizing = false;
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
     }
-    if (!dragging) return;
-    dragging = false;
-    stageMainEl.style.cursor = "";
-  });
+    if (dragging) {
+      dragging = false;
+      stageMainEl.style.cursor = "grab";
+    }
+  };
+
+  document.addEventListener("mousemove", onDocMouseMove);
+  document.addEventListener("mouseup", endInteraction);
+  window.addEventListener("blur", endInteraction);
   stageMainEl.style.cursor = "grab";
+
   liveCb.addEventListener("change", () => {
     livePreviewEnabled = liveCb.checked;
     if (livePreviewEnabled && stalePending) {
@@ -741,12 +722,14 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     if (previewMode === "motion") refreshMotionFrame();
   });
 
+  populateBasePartPositions(skinRoot, lastSkinName, basePartPositions);
   applyLiveTexts();
   renderToolbar();
   renderMotionToolbar();
   applyFooterHeight();
   applyTransform();
   renderMotionPartPanel(null);
+
   const unsubscribe = sessionStore.subscribe(onSessionChange);
   const unsubLang = subscribeLang(() => {
     renderToolbar();
@@ -759,6 +742,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
       placeholderEl.textContent = renderPlaceholderText(placeholderInfo);
     }
   });
+
   const onDocMouseDown = (event: MouseEvent): void => {
     if (motionCapturePopover.hidden) return;
     const target = event.target as Node;
@@ -777,6 +761,10 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     unsubscribe();
     unsubLang();
     document.removeEventListener("mousedown", onDocMouseDown);
+    document.removeEventListener("mousemove", onDocMouseMove);
+    document.removeEventListener("mouseup", endInteraction);
+    window.removeEventListener("blur", endInteraction);
+    endInteraction();
     stopMotionPlayback();
     pendingAssemblyKey = -1;
     pendingMotionKey = -1;

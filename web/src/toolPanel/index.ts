@@ -1,43 +1,46 @@
-// 顶部工具栏：工具切换、画笔尺寸、撤销重做、历史 popover、保存、导入导出、
-// 设置、重置布局、语言主题入口。toolPanel 不可分离，始终内嵌。
-//
-// undo / redo 调 apiClient.undo / redo，把返回的 PixelDiff 通过 sessionStore
-// .lastAppliedDiff 广播给 editorCanvas，由其单点重绘（与 brush/eraser 共用一条路径）。
+// 顶部工具栏：工具切换、笔刷尺寸、撤销/重做、历史记录、保存、皮肤包导入导出、语言/主题/设置与重置布局。
 
-import { redo as apiRedo, undo as apiUndo, type ApiError } from "../apiClient";
 import {
   exportSkinPack,
   importSkinPack,
   pickOpenFile,
   pickSavePath,
+  redo as apiRedo,
   resetLayout,
-  saveWorkspace,
+  savePart,
+  undo as apiUndo,
+  type ApiError,
 } from "../apiClient";
 import { getRuntimeMode } from "../runtimeMode";
-import { sessionStore, pushHistoryRecord, markPartDirty, markPartClean } from "../stateStore";
+import {
+  getPartDirtyRevision,
+  markPartClean,
+  markPartDirty,
+  parsePartId,
+  partIdToTargetPath,
+  pushHistoryRecord,
+  sessionStore,
+} from "../stateStore";
+import { flushWorkspace, replaceWorkspaceCache } from "../stateStore/workspacePersist";
+import { guardUnsavedCurrentPart } from "../partPanel/partSwitchGuard";
 import { mountThemeButton } from "../themeSettings";
 import { mountLangButton } from "../langSettings";
 import { showToast } from "../toast";
 import { subscribeLang, t } from "../i18n";
-import { savePart } from "../apiClient";
 import {
-  TOOL_ICONS,
-  ICON_UNDO,
-  ICON_REDO,
+  ICON_EXPORT,
   ICON_HISTORY,
   ICON_IMPORT,
-  ICON_EXPORT,
+  ICON_REDO,
   ICON_RESET_LAYOUT,
-  ICON_SETTINGS,
   ICON_SAVE,
+  ICON_SETTINGS,
+  ICON_UNDO,
+  TOOL_ICONS,
 } from "./toolIcons";
 import { mountSettingsPopover } from "../settingsPanel";
 import { openSoftBrushDialog } from "./softBrushDialog";
-import {
-  attachGlobalShortcuts,
-  registerAction,
-  setShortcutContext,
-} from "../shortcuts";
+import { attachGlobalShortcuts, registerAction, setShortcutContext } from "../shortcuts";
 
 const BRUSH_MIN = 1;
 const BRUSH_MAX = 32;
@@ -99,28 +102,27 @@ export function mountToolPanel(
   const importBtn = container.querySelector<HTMLButtonElement>('[data-role="import-pack"]')!;
   const saveBtn = container.querySelector<HTMLButtonElement>('[data-role="save-part"]')!;
   const settingsBtn = container.querySelector<HTMLButtonElement>('[data-role="settings-toggle"]')!;
-  const resetLayoutBtn = container.querySelector<HTMLButtonElement>(
-    '[data-role="reset-layout"]',
-  )!;
+  const resetLayoutBtn = container.querySelector<HTMLButtonElement>('[data-role="reset-layout"]')!;
   const langHost = container.querySelector<HTMLSpanElement>('[data-role="lang-host"]')!;
   const themeHost = container.querySelector<HTMLSpanElement>('[data-role="theme-host"]')!;
   const langUnsubscribe = mountLangButton(langHost);
   const themeUnsubscribe = mountThemeButton(themeHost, workspacePath);
 
+  let savingNow = false;
+
   function applyTexts(): void {
-    // 工具按钮内容是 SVG 图标，不能 textContent 覆盖；只设 title 提示。
     brushBtn.title = t("toolPanel.brush");
     softBrushBtn.title = `${t("toolPanel.softBrush")} · ${t("softBrush.dblclickHint")}`;
     const eraserMode = sessionStore.getState().eraserMode ?? "part";
-    eraserBtn.title = eraserMode === "zone"
-      ? `${t("toolPanel.eraser")} · ${t("toolPanel.eraserModeZone")}`
-      : `${t("toolPanel.eraser")} · ${t("toolPanel.eraserModePart")}`;
+    eraserBtn.title =
+      eraserMode === "zone"
+        ? `${t("toolPanel.eraser")} · ${t("toolPanel.eraserModeZone")}`
+        : `${t("toolPanel.eraser")} · ${t("toolPanel.eraserModePart")}`;
     panBtn.title = t("toolPanel.pan");
     gradientBtn.title = t("toolPanel.gradient");
     fillBtn.title = t("toolPanel.fill");
     zoneBrushBtn.title = t("toolPanel.zoneBrush");
     sizeLabelEl.textContent = t("toolPanel.size");
-    // undo/redo/history/import/export/resetLayout 全部改为图标按钮，仅设 title。
     undoBtn.title = t("toolPanel.undo");
     redoBtn.title = t("toolPanel.redo");
     historyToggleBtn.title = t("toolPanel.history");
@@ -147,6 +149,7 @@ export function mountToolPanel(
     sizeIncBtn.disabled = brushSize >= BRUSH_MAX;
     undoBtn.disabled = currentPartId === null;
     redoBtn.disabled = currentPartId === null;
+    saveBtn.disabled = savingNow || currentPartId === null;
     applyTexts();
   }
 
@@ -158,7 +161,6 @@ export function mountToolPanel(
     if (state.activeTool !== "eraser") {
       sessionStore.setState({ activeTool: "eraser" });
     } else {
-      // 当前已是橡皮，再次点击在 part / zone 模式间循环。
       const next = state.eraserMode === "zone" ? "part" : "zone";
       sessionStore.setState({ eraserMode: next });
       applyTexts();
@@ -193,10 +195,7 @@ export function mountToolPanel(
             phase: kind === "undo" ? "before" : "after",
           },
         });
-        // undo / redo 都视作产生未保存修改——即便回到磁盘已存的快照，
-        // 后端 PartSession 仍处于内存状态，不与原 PNG 自动同步。
         markPartDirty(currentPartId);
-        // 撤销 / 重做也作为历史条目展示，不与原始 brush 合并。
         pushHistoryRecord({
           partId: currentPartId,
           tool: kind,
@@ -205,7 +204,6 @@ export function mountToolPanel(
         });
       })
       .catch((e: ApiError) => {
-        // 栈空（nothing_to_undo / nothing_to_redo）属预期失败，仅 console 留痕，不打断会话。
         console.warn(`[toolPanel] ${kind} failed: ${e?.message ?? String(e)}`);
       });
   }
@@ -213,38 +211,36 @@ export function mountToolPanel(
   undoBtn.addEventListener("click", () => runHistory("undo"));
   redoBtn.addEventListener("click", () => runHistory("redo"));
 
-  // 历史 popover：列出 sessionStore.history 最新在前，仅展示元数据。
-  // 撤销 / 重做仍走工具栏按钮，不在 popover 中跳跃 N 步。
   const historyPopover = mountHistoryPopover(historyToggleBtn);
-
-  // 设置 popover（快捷键编辑）。
   const settingsPopover = mountSettingsPopover(settingsBtn, workspacePath);
   settingsBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     settingsPopover.toggle();
   });
 
-  // 保存当前部件 PNG（覆盖原文件）。partId 编码 = "skinName::Category::partName"，
-  // 解码后拼回 skinRoot 下的目标路径。
   function runSave(): void {
+    if (savingNow) return;
     const { currentPartId } = sessionStore.getState();
     if (!currentPartId) return;
-    const parts = currentPartId.split("::");
-    if (parts.length !== 3) return;
-    const [skinName, categoryDir, partName] = parts;
-    const target = `${skinRoot}/${skinName}/${categoryDir}/${partName}.png`;
-    saveBtn.disabled = true;
+    const parsed = parsePartId(currentPartId);
+    const target = partIdToTargetPath(skinRoot, currentPartId);
+    if (!parsed || !target) return;
+    const rev = getPartDirtyRevision(currentPartId);
+    savingNow = true;
+    renderFromState();
     savePart(currentPartId, target)
       .then(() => {
-        markPartClean(currentPartId);
-        showToast(`✓ ${partName}.png`, "info");
+        markPartClean(currentPartId, rev);
+        showToast(`✓ ${parsed.partName}.png`, "info");
       })
       .catch((e: ApiError) => showToast(e?.message ?? String(e), "error"))
-      .finally(() => { saveBtn.disabled = false; });
+      .finally(() => {
+        savingNow = false;
+        renderFromState();
+      });
   }
   saveBtn.addEventListener("click", runSave);
 
-  // 把所有动作注册到 shortcuts，全局 keydown 监听按需触发。
   const unregActions: Array<() => void> = [
     registerAction("undo", () => runHistory("undo")),
     registerAction("redo", () => runHistory("redo")),
@@ -270,16 +266,13 @@ export function mountToolPanel(
   });
   const detachShortcuts = attachGlobalShortcuts();
 
-  // zip 导入 / 导出。Tauri 模式调系统文件对话框，Web / fallback 模式 prompt 输入绝对路径。
   const zipFilters = [{ name: "Zip", extensions: ["zip"] }];
   exportBtn.addEventListener("click", async () => {
-    // 仅导出当前角色（skinName 子目录），不全量打包。
     const skinName = sessionStore.getState().currentSkinName;
     if (!skinName) {
       showToast(t("toolPanel.exportNoSkin"), "warn");
       return;
     }
-    // 先弹格式 modal 选 layout / includeBlood，再弹系统保存对话框选路径，最后落盘。
     const opts = await pickExportOptions();
     if (opts === null) return;
     const skinDir = `${skinRoot}/${skinName}`;
@@ -293,8 +286,6 @@ export function mountToolPanel(
       return;
     }
     if (path === null) {
-      // pickSavePath 返回 null：可能是用户取消（Tauri）或 Web 模式不支持。
-      // Web 模式直接走 prompt 兜底；Tauri 模式用户取消即结束（再 prompt 反复打扰）。
       if (getRuntimeMode() === "tauri") return;
       path = window.prompt(t("toolPanel.exportPrompt"), def);
     }
@@ -310,7 +301,13 @@ export function mountToolPanel(
       });
   });
 
-  importBtn.addEventListener("click", async () => {
+  importBtn.addEventListener("click", () => {
+    guardUnsavedCurrentPart(skinRoot, () => {
+      void runImportFlow();
+    });
+  });
+
+  async function runImportFlow(): Promise<void> {
     let path: string | null = null;
     try {
       path = await pickOpenFile(zipFilters);
@@ -326,15 +323,12 @@ export function mountToolPanel(
     if (!path) return;
     const zipPath =
       typeof path === "string" ? path : (path as { path?: string }).path ?? String(path);
-    // 以 zip 文件名（去扩展名）作为新皮肤名，落到 <skinRoot>/<newSkinName>/...；
-    // 不再覆盖当前选中皮肤。新皮肤目录由后端 importSkinPack 在写入时自动 mkdir。
     const baseName = zipPath.split(/[\\/]/).pop() ?? "";
     const newSkinName = baseName.replace(/\.zip$/i, "") || "imported";
     const skinDir = `${skinRoot}/${newSkinName}`;
     importBtn.disabled = true;
     importSkinPack(skinDir, zipPath, true)
       .then((r) => {
-        // imported=0 时给用户更明确的提示，避免误判"成功了但没生效"。
         const kind: "info" | "warn" = r.imported === 0 ? "warn" : "info";
         showToast(
           `${newSkinName}: ${t("toolPanel.importSuccess")
@@ -352,23 +346,25 @@ export function mountToolPanel(
       .finally(() => {
         importBtn.disabled = false;
       });
-  });
+  }
 
-  // 拿后端默认 layout/theme → 写回 workspace.json → reload。
-  // dock 状态分散在 dockHost 内部，整页刷新是回到默认布局最直接的路径。
-  // catch 里 toast.error 暴露真实错误；setTimeout 让 toast 有时间渲染再 reload。
   resetLayoutBtn.addEventListener("click", () => {
-    resetLayoutBtn.disabled = true;
-    resetLayout()
-      .then((ws) => saveWorkspace(workspacePath, ws.layout, ws.theme))
-      .then(() => {
-        window.setTimeout(() => window.location.reload(), 200);
-      })
-      .catch((e: ApiError) => {
-        console.warn(`[toolPanel] resetLayout failed: ${e?.message ?? String(e)}`);
-        showToast(e?.message ?? String(e), "error");
-        resetLayoutBtn.disabled = false;
-      });
+    guardUnsavedCurrentPart(skinRoot, () => {
+      resetLayoutBtn.disabled = true;
+      resetLayout()
+        .then((ws) => {
+          replaceWorkspaceCache(ws.layout, ws.theme);
+          return flushWorkspace(workspacePath);
+        })
+        .then(() => {
+          window.setTimeout(() => window.location.reload(), 200);
+        })
+        .catch((e: ApiError) => {
+          console.warn(`[toolPanel] resetLayout failed: ${e?.message ?? String(e)}`);
+          showToast(e?.message ?? String(e), "error");
+          resetLayoutBtn.disabled = false;
+        });
+    });
   });
 
   const unsubscribe = sessionStore.subscribe(renderFromState);
@@ -386,47 +382,58 @@ export function mountToolPanel(
   };
 }
 
-// 历史 popover：position:fixed 浮层，挂在 history 按钮下方。
-// outside click + Esc 关闭，列表从最新到最旧；条目仅展示元数据
-// （工具图标 + 区域 + 时间），不可"点击跳转到该状态"——撤销/重做仍走 toolbar
-// 上的 undo/redo 按钮，避免一次跳跃 N 步带来的栈语义混乱。
 function mountHistoryPopover(triggerBtn: HTMLElement): () => void {
   const popover = document.createElement("div");
   popover.className = "panel history-popover";
   popover.hidden = true;
   popover.style.cssText =
-    "position:fixed;z-index:1200;min-width:240px;max-height:320px;overflow:auto;" +
-    "padding:6px 0;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,0.15);";
+    "position:fixed;z-index:1200;min-width:260px;max-height:320px;overflow:auto;" +
+    "padding:6px 0;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,0.2);";
   document.body.appendChild(popover);
 
   function render(): void {
-    const list = sessionStore.getState().history;
-    if (list.length === 0) {
-      popover.innerHTML = `<div style="padding:8px 12px;opacity:0.6;">${t("toolPanel.historyEmpty")}</div>`;
+    const { history, currentPartId } = sessionStore.getState();
+    const filtered = currentPartId ? history.filter((h) => h.partId === currentPartId) : history;
+    popover.innerHTML = "";
+    if (filtered.length === 0) {
+      const empty = document.createElement("div");
+      empty.style.cssText = "padding:8px 12px;opacity:0.6;";
+      empty.textContent = t("toolPanel.historyEmpty");
+      popover.appendChild(empty);
       return;
     }
-    popover.innerHTML = "";
-    // 倒序：最新在最上方
-    for (let i = list.length - 1; i >= 0; i--) {
-      const r = list[i];
+    for (let i = filtered.length - 1; i >= 0; i--) {
+      const r = filtered[i];
       const row = document.createElement("div");
       row.style.cssText = "padding:4px 12px;display:flex;gap:8px;align-items:center;";
       const time = new Date(r.timestamp);
       const hh = String(time.getHours()).padStart(2, "0");
       const mm = String(time.getMinutes()).padStart(2, "0");
       const ss = String(time.getSeconds()).padStart(2, "0");
-      const labelKey = `toolPanel.historyTool_${r.tool}`;
-      row.innerHTML =
-        `<span class="mono" style="opacity:0.6;min-width:6ch;">${hh}:${mm}:${ss}</span>` +
-        `<span style="flex:1;">${t(labelKey)}</span>` +
-        `<span class="mono" style="opacity:0.5;font-size:11px;">${r.rectW}×${r.rectH}</span>`;
+      const timeSpan = document.createElement("span");
+      timeSpan.className = "mono";
+      timeSpan.style.cssText = "opacity:0.6;min-width:6ch;";
+      timeSpan.textContent = `${hh}:${mm}:${ss}`;
+
+      const toolSpan = document.createElement("span");
+      toolSpan.style.flex = "1";
+      const parsed = parsePartId(r.partId);
+      const suffix = !currentPartId && parsed ? ` (${parsed.partName})` : "";
+      toolSpan.textContent = `${t(`toolPanel.historyTool_${r.tool}`)}${suffix}`;
+
+      const rectSpan = document.createElement("span");
+      rectSpan.className = "mono";
+      rectSpan.style.cssText = "opacity:0.5;font-size:11px;";
+      rectSpan.textContent = `${r.rectW}×${r.rectH}`;
+
+      row.append(timeSpan, toolSpan, rectSpan);
       popover.appendChild(row);
     }
   }
 
   function position(): void {
     const rect = triggerBtn.getBoundingClientRect();
-    popover.style.right = `${window.innerWidth - rect.right}px`;
+    popover.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
     popover.style.top = `${rect.bottom + 4}px`;
     popover.style.left = "auto";
   }
@@ -454,7 +461,6 @@ function mountHistoryPopover(triggerBtn: HTMLElement): () => void {
   document.addEventListener("mousedown", onDocClick);
   document.addEventListener("keydown", onKey);
 
-  // 历史更新时若 popover 打开，自动重渲染。
   const unsub = sessionStore.subscribe(() => {
     if (!popover.hidden) render();
   });
@@ -467,17 +473,17 @@ function mountHistoryPopover(triggerBtn: HTMLElement): () => void {
   };
 }
 
-// 弹 inline modal 让用户选 layout（radio）+ includeBlood（checkbox），返回选项或 null（取消）。
 function pickExportOptions(): Promise<{ layout: "flat" | "categorized"; includeBlood: boolean } | null> {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
+    overlay.dataset.modalOpen = "true";
     overlay.style.cssText =
       "position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:10000;display:flex;align-items:center;justify-content:center;";
 
     const card = document.createElement("div");
+    card.className = "panel";
     card.style.cssText =
-      "min-width:320px;max-width:480px;background:var(--surface,#fff);color:var(--on-background,#222);" +
-      "padding:16px 20px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);font-size:13px;";
+      "min-width:320px;max-width:480px;padding:16px 20px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);font-size:13px;";
     overlay.appendChild(card);
 
     const title = document.createElement("div");
@@ -501,8 +507,7 @@ function pickExportOptions(): Promise<{ layout: "flat" | "categorized"; includeB
       if (val === "categorized") radio.checked = true;
       const span = document.createElement("span");
       span.textContent = t(labelKey);
-      row.appendChild(radio);
-      row.appendChild(span);
+      row.append(radio, span);
       radioGroup.appendChild(row);
     }
     card.appendChild(radioGroup);
@@ -513,8 +518,7 @@ function pickExportOptions(): Promise<{ layout: "flat" | "categorized"; includeB
     bloodCb.type = "checkbox";
     const bloodSpan = document.createElement("span");
     bloodSpan.textContent = t("toolPanel.exportIncludeBloodPrompt");
-    bloodRow.appendChild(bloodCb);
-    bloodRow.appendChild(bloodSpan);
+    bloodRow.append(bloodCb, bloodSpan);
     card.appendChild(bloodRow);
 
     const btnRow = document.createElement("div");
@@ -527,28 +531,33 @@ function pickExportOptions(): Promise<{ layout: "flat" | "categorized"; includeB
     confirmBtn.type = "button";
     confirmBtn.className = "btn btn-primary";
     confirmBtn.textContent = t("toolPanel.exportConfirmBtn");
-    btnRow.appendChild(cancelBtn);
-    btnRow.appendChild(confirmBtn);
+    btnRow.append(cancelBtn, confirmBtn);
     card.appendChild(btnRow);
 
     function close(result: { layout: "flat" | "categorized"; includeBlood: boolean } | null): void {
-      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
       overlay.remove();
       resolve(result);
     }
     function onKey(e: KeyboardEvent): void {
-      if (e.key === "Escape") close(null);
-      else if (e.key === "Enter") confirmBtn.click();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close(null);
+      } else if (e.key === "Enter") {
+        confirmBtn.click();
+      }
     }
     cancelBtn.addEventListener("click", () => close(null));
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(null); });
+    overlay.addEventListener("mousedown", (e) => {
+      if (e.target === overlay) close(null);
+    });
     confirmBtn.addEventListener("click", () => {
       const checkedRadio = card.querySelector<HTMLInputElement>('input[type="radio"]:checked');
       const picked: "flat" | "categorized" =
         checkedRadio?.value === "flat" ? "flat" : "categorized";
       close({ layout: picked, includeBlood: bloodCb.checked });
     });
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
     document.body.appendChild(overlay);
     confirmBtn.focus();
   });

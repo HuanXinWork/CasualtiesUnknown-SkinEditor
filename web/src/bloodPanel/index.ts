@@ -1,4 +1,4 @@
-// 血液粒子面板：编辑当前皮肤的 blood.json，切皮肤拉新值，改值 300ms debounce 写盘。
+// 血液粒子面板：编辑当前皮肤的 `blood.json`，切换皮肤前自动刷出待落盘配置。
 
 import { sessionStore } from "../stateStore";
 import { subscribeLang, t } from "../i18n";
@@ -6,16 +6,13 @@ import { loadBloodConfig, saveBloodConfig } from "../apiClient";
 import type { BloodConfig } from "../stateStore/types";
 
 type SaveStatus = "idle" | "saving" | "saved" | "failed";
-
 type Rgba = [number, number, number, number];
 
 const DEFAULT_RGBA: Rgba = [200, 30, 30, 255];
 
 function rgbToHex(r: number, g: number, b: number): string {
-  const h = (n: number): string => {
-    const v = Math.max(0, Math.min(255, Math.round(n))).toString(16);
-    return v.length === 1 ? `0${v}` : v;
-  };
+  const h = (n: number): string =>
+    Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0");
   return `#${h(r)}${h(g)}${h(b)}`;
 }
 
@@ -30,11 +27,11 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
   container.classList.add("panel");
   let config: BloodConfig = {};
   let currentSkin: string | null = null;
-  // suspendSave：reload 回填时阻止 render 触发的"刚读回又立即写回"循环。
   let suspendSave = false;
   let saveStatus: SaveStatus = "idle";
   let saveTimer: number | null = null;
   let statusTimer: number | null = null;
+  let loadSeq = 0;
 
   const root = document.createElement("div");
   root.style.cssText =
@@ -48,7 +45,6 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
       statusTimer = null;
     }
     if (next === "saved" || next === "failed") {
-      // saved/failed 是瞬态：1.5s 后回 idle 让"已保存"标签自然消退。
       statusTimer = window.setTimeout(() => {
         saveStatus = "idle";
         statusTimer = null;
@@ -58,12 +54,8 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
     renderStatus();
   }
 
-  function statusEl(): HTMLElement | null {
-    return root.querySelector<HTMLElement>("[data-role='blood-status']");
-  }
-
   function renderStatus(): void {
-    const el = statusEl();
+    const el = root.querySelector<HTMLElement>("[data-role='blood-status']");
     if (!el) return;
     if (currentSkin === null) {
       el.textContent = t("bloodPanel.notSelected");
@@ -89,27 +81,44 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
     }
   }
 
+  function flushPendingSave(): void {
+    if (saveTimer === null) return;
+    window.clearTimeout(saveTimer);
+    saveTimer = null;
+    if (!currentSkin) return;
+    const skin = currentSkin;
+    const snapshot = structuredClone(config);
+    void saveBloodConfig(skinRoot, skin, snapshot).catch((e) =>
+      console.warn("[bloodPanel] flush saveBloodConfig failed", e),
+    );
+  }
+
   function scheduleSave(): void {
-    if (suspendSave) return;
-    if (currentSkin === null) return;
+    if (suspendSave || currentSkin === null) return;
     if (saveTimer !== null) window.clearTimeout(saveTimer);
+    const targetSkin = currentSkin;
     saveTimer = window.setTimeout(() => {
       saveTimer = null;
-      const skin = currentSkin;
-      if (!skin) return;
+      if (currentSkin !== targetSkin) return;
+      const snapshot = structuredClone(config);
       setStatus("saving");
-      saveBloodConfig(skinRoot, skin, config)
-        .then(() => setStatus("saved"))
+      saveBloodConfig(skinRoot, targetSkin, snapshot)
+        .then(() => {
+          if (currentSkin === targetSkin) setStatus("saved");
+        })
         .catch((e) => {
           console.warn("[bloodPanel] saveBloodConfig failed", e);
-          setStatus("failed");
+          if (currentSkin === targetSkin) setStatus("failed");
         });
     }, 300);
   }
 
   async function reloadForSkin(skinName: string | null): Promise<void> {
+    flushPendingSave();
+    const seq = ++loadSeq;
     suspendSave = true;
     currentSkin = skinName;
+    saveStatus = "idle";
     if (skinName === null) {
       config = {};
       render();
@@ -117,8 +126,11 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
       return;
     }
     try {
-      config = await loadBloodConfig(skinRoot, skinName);
+      const loaded = await loadBloodConfig(skinRoot, skinName);
+      if (seq !== loadSeq) return;
+      config = loaded;
     } catch (e) {
+      if (seq !== loadSeq) return;
       console.warn("[bloodPanel] loadBloodConfig failed", e);
       config = {};
     }
@@ -145,98 +157,130 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
     root.appendChild(status);
     renderStatus();
 
-    if (currentSkin === null) {
-      // 没选皮肤时不渲染控件，避免误以为可改全局默认。
-      return;
-    }
+    if (currentSkin === null) return;
 
-    // 粒子起止色
     const secParticle = buildSection(t("bloodPanel.sectionParticle"));
-    secParticle.appendChild(buildColorField(
-      t("bloodPanel.particleStartColor"),
-      () => config.particleStartColor ?? null,
-      (v) => { config.particleStartColor = v; },
-    ));
-    secParticle.appendChild(buildColorField(
-      t("bloodPanel.particleEndColor"),
-      () => config.particleEndColor ?? null,
-      (v) => { config.particleEndColor = v; },
-    ));
-    secParticle.appendChild(buildNumberField(
-      t("bloodPanel.particleSize"),
-      0.05, 5, 0.05, 0.5,
-      () => config.particleSize ?? null,
-      (v) => { config.particleSize = v; },
-    ));
-    secParticle.appendChild(buildNumberField(
-      t("bloodPanel.particleLifetime"),
-      0.05, 5, 0.05, 0.5,
-      () => config.particleLifetime ?? null,
-      (v) => { config.particleLifetime = v; },
-    ));
-    secParticle.appendChild(buildSelectField(
-      t("bloodPanel.fadeCurve"),
-      [
-        ["linear", t("bloodPanel.fadeCurveLinear")],
-        ["easeOut", t("bloodPanel.fadeCurveEaseOut")],
-        ["blink", t("bloodPanel.fadeCurveBlink")],
-        ["constant", t("bloodPanel.fadeCurveConstant")],
-      ],
-      "linear",
-      () => config.fadeCurve ?? null,
-      (v) => { config.fadeCurve = v; },
-    ));
+    secParticle.appendChild(
+      buildColorField(
+        t("bloodPanel.particleStartColor"),
+        () => config.particleStartColor ?? null,
+        (v) => { config.particleStartColor = v; },
+      ),
+    );
+    secParticle.appendChild(
+      buildColorField(
+        t("bloodPanel.particleEndColor"),
+        () => config.particleEndColor ?? null,
+        (v) => { config.particleEndColor = v; },
+      ),
+    );
+    secParticle.appendChild(
+      buildNumberField(
+        t("bloodPanel.particleSize"),
+        0.05,
+        5,
+        0.05,
+        0.5,
+        () => config.particleSize ?? null,
+        (v) => { config.particleSize = v; },
+      ),
+    );
+    secParticle.appendChild(
+      buildNumberField(
+        t("bloodPanel.particleLifetime"),
+        0.05,
+        5,
+        0.05,
+        0.5,
+        () => config.particleLifetime ?? null,
+        (v) => { config.particleLifetime = v; },
+      ),
+    );
+    secParticle.appendChild(
+      buildSelectField(
+        t("bloodPanel.fadeCurve"),
+        [
+          ["linear", t("bloodPanel.fadeCurveLinear")],
+          ["easeOut", t("bloodPanel.fadeCurveEaseOut")],
+          ["blink", t("bloodPanel.fadeCurveBlink")],
+          ["constant", t("bloodPanel.fadeCurveConstant")],
+        ],
+        "linear",
+        () => config.fadeCurve ?? null,
+        (v) => { config.fadeCurve = v; },
+      ),
+    );
     root.appendChild(secParticle);
 
-    // Limb shader 暗 / 亮血色
     const secShader = buildSection(t("bloodPanel.sectionLimbShader"));
-    secShader.appendChild(buildColorField(
-      t("bloodPanel.bloodDark"),
-      () => config.bloodDark ?? null,
-      (v) => { config.bloodDark = v; },
-    ));
-    secShader.appendChild(buildColorField(
-      t("bloodPanel.bloodLight"),
-      () => config.bloodLight ?? null,
-      (v) => { config.bloodLight = v; },
-    ));
+    secShader.appendChild(
+      buildColorField(
+        t("bloodPanel.bloodDark"),
+        () => config.bloodDark ?? null,
+        (v) => { config.bloodDark = v; },
+      ),
+    );
+    secShader.appendChild(
+      buildColorField(
+        t("bloodPanel.bloodLight"),
+        () => config.bloodLight ?? null,
+        (v) => { config.bloodLight = v; },
+      ),
+    );
     root.appendChild(secShader);
 
-    // 光影 + 帧动画
     const secVisual = buildSection(t("bloodPanel.sectionVisual"));
-    secVisual.appendChild(buildBooleanField(
-      t("bloodPanel.glow"),
-      () => config.glow ?? null,
-      (v) => { config.glow = v; },
-    ));
-    secVisual.appendChild(buildNumberField(
-      t("bloodPanel.glowIntensity"),
-      0, 4, 0.1, 1.5,
-      () => config.glowIntensity ?? null,
-      (v) => { config.glowIntensity = v; },
-    ));
-    secVisual.appendChild(buildBooleanField(
-      t("bloodPanel.animated"),
-      () => config.animated ?? null,
-      (v) => { config.animated = v; },
-    ));
-    secVisual.appendChild(buildNumberField(
-      t("bloodPanel.animFrames"),
-      1, 64, 1, 4,
-      () => config.animFrames ?? null,
-      (v) => { config.animFrames = v; },
-      true,
-    ));
-    secVisual.appendChild(buildNumberField(
-      t("bloodPanel.animFps"),
-      1, 60, 1, 12,
-      () => config.animFps ?? null,
-      (v) => { config.animFps = v; },
-      true,
-    ));
+    secVisual.appendChild(
+      buildBooleanField(
+        t("bloodPanel.glow"),
+        () => config.glow ?? null,
+        (v) => { config.glow = v; },
+      ),
+    );
+    secVisual.appendChild(
+      buildNumberField(
+        t("bloodPanel.glowIntensity"),
+        0,
+        4,
+        0.1,
+        1.5,
+        () => config.glowIntensity ?? null,
+        (v) => { config.glowIntensity = v; },
+      ),
+    );
+    secVisual.appendChild(
+      buildBooleanField(
+        t("bloodPanel.animated"),
+        () => config.animated ?? null,
+        (v) => { config.animated = v; },
+      ),
+    );
+    secVisual.appendChild(
+      buildNumberField(
+        t("bloodPanel.animFrames"),
+        1,
+        64,
+        1,
+        4,
+        () => config.animFrames ?? null,
+        (v) => { config.animFrames = v; },
+        true,
+      ),
+    );
+    secVisual.appendChild(
+      buildNumberField(
+        t("bloodPanel.animFps"),
+        1,
+        60,
+        1,
+        12,
+        () => config.animFps ?? null,
+        (v) => { config.animFps = v; },
+        true,
+      ),
+    );
     root.appendChild(secVisual);
 
-    // 随机配色列表：非空时 mod 端走 ParticleSystemGradientMode.RandomColor。
     root.appendChild(buildRandomColorsSection());
 
     const resetBtn = document.createElement("button");
@@ -254,7 +298,7 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
   function buildSection(titleText: string): HTMLElement {
     const sec = document.createElement("section");
     sec.style.cssText =
-      "border-top:1px solid var(--border-soft, rgba(0,0,0,0.12));padding:6px 0 4px;display:flex;flex-direction:column;gap:6px;";
+      "border-top:1px solid rgba(var(--border-rgb),0.15);padding:6px 0 4px;display:flex;flex-direction:column;gap:6px;";
     const h = document.createElement("h4");
     h.textContent = titleText;
     h.style.cssText = "margin:0;font-size:12px;opacity:0.85;";
@@ -262,7 +306,6 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
     return sec;
   }
 
-  // 颜色字段：override 三态 + color picker + alpha slider；未覆盖时控件 disabled。
   function buildColorField(
     labelText: string,
     getter: () => Rgba | null,
@@ -279,8 +322,7 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
 
     const cur = getter();
     const overridden = cur !== null && cur !== undefined;
-    // 编辑控件初值：override on 用当前值；off 用默认色让用户一眼就能看到点开后是什么。
-    const editing: Rgba = overridden ? [...cur] as Rgba : [...DEFAULT_RGBA];
+    const editing: Rgba = overridden ? ([...cur] as Rgba) : ([...DEFAULT_RGBA] as Rgba);
 
     const toggleBtn = document.createElement("button");
     toggleBtn.type = "button";
@@ -290,11 +332,8 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
     toggleBtn.style.cssText = "font-size:10px;padding:2px 6px;";
     if (overridden) toggleBtn.classList.add("btn-primary");
     toggleBtn.addEventListener("click", () => {
-      if (getter() !== null && getter() !== undefined) {
-        setter(null);
-      } else {
-        setter([...editing] as Rgba);
-      }
+      if (getter() !== null && getter() !== undefined) setter(null);
+      else setter([...editing] as Rgba);
       scheduleSave();
       render();
     });
@@ -340,7 +379,6 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
     return row;
   }
 
-  // 数值字段：integer 控件用 step=1 + Math.round；其余按 step。
   function buildNumberField(
     labelText: string,
     min: number,
@@ -383,7 +421,6 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
     return row.el;
   }
 
-  // 选择字段（如 fadeCurve）：第一项为默认值，override on 时写选中值。
   function buildSelectField(
     labelText: string,
     options: Array<[string, string]>,
@@ -423,7 +460,6 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
     return row.el;
   }
 
-  // 布尔字段：override 启用后用 checkbox 选 true/false。
   function buildBooleanField(
     labelText: string,
     getter: () => boolean | null,
@@ -456,8 +492,6 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
     return row.el;
   }
 
-  // 通用三列 grid 头：label + override 切换按钮 + 子控件占余下列；
-  // 数值/选择/布尔字段共享，避免重复布局代码。
   function makeOverrideRow(labelText: string): { el: HTMLElement; toggle: HTMLButtonElement } {
     const el = document.createElement("div");
     el.style.cssText =
@@ -487,8 +521,6 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
     });
   }
 
-  // 随机配色列表：每行 1 个 RGBA + 删除按钮；尾部"添加颜色"按钮 push 一个深红到列表。
-  // 整组用 override 三态：列表为 null/undefined 时显示"启用"按钮一键创建空数组。
   function buildRandomColorsSection(): HTMLElement {
     const sec = buildSection(t("bloodPanel.sectionRandomColors"));
 
@@ -508,8 +540,7 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
     sec.appendChild(headerRow.el);
 
     if (overridden && Array.isArray(config.randomColors)) {
-      const arr = config.randomColors;
-      arr.forEach((color, idx) => {
+      config.randomColors.forEach((color, idx) => {
         sec.appendChild(buildRandomColorRow(idx, color));
       });
 
@@ -539,10 +570,7 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
     idxLabel.textContent = `#${idx + 1}`;
     idxLabel.style.cssText = "font-size:11px;opacity:0.7;";
     row.appendChild(idxLabel);
-
-    // 站位让网格左侧与其他 override 行视觉对齐：第 2 列空占位。
-    const spacer = document.createElement("span");
-    row.appendChild(spacer);
+    row.appendChild(document.createElement("span"));
 
     const colorInput = document.createElement("input");
     colorInput.type = "color";
@@ -593,8 +621,8 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
   }
 
   render();
-
   void reloadForSkin(sessionStore.getState().currentSkinName);
+
   let lastSkin = sessionStore.getState().currentSkinName;
   const unsubSession = sessionStore.subscribe((s) => {
     if (s.currentSkinName !== lastSkin) {
@@ -602,13 +630,12 @@ export function mountBloodPanel(container: HTMLElement, skinRoot: string): () =>
       void reloadForSkin(s.currentSkinName);
     }
   });
-
   const unsubLang = subscribeLang(() => render());
 
   return () => {
+    flushPendingSave();
     unsubLang();
     unsubSession();
-    if (saveTimer !== null) window.clearTimeout(saveTimer);
     if (statusTimer !== null) window.clearTimeout(statusTimer);
     container.innerHTML = "";
   };

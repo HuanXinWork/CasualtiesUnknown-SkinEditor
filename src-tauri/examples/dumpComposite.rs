@@ -1,19 +1,10 @@
-// 临时工具：把 huanxin 皮肤的合成预览输出为 PNG，便于核对翼位置。
-// 运行：cargo run --example dumpComposite --manifest-path src-tauri/Cargo.toml
+// 导出指定皮肤合成预览 PNG 的本地调试示例。
 #![allow(non_snake_case)]
-
-use std::path::PathBuf;
 
 use skin_preview_editor::apiLayer::{ApiLayer, CompositeParams, CoreApi};
 use skin_preview_editor::assemblyTable::Orientation;
 
 fn main() {
-    let exeDir = std::env::current_exe()
-        .expect("current_exe")
-        .parent()
-        .expect("parent")
-        .to_path_buf();
-    // examples 编 binary 放到 target/debug/examples/，data 在 src-tauri/target/release/data
     let projectRoot = std::env::current_dir().expect("cwd");
     let skinRoot = projectRoot
         .join("src-tauri")
@@ -48,6 +39,4 @@ fn main() {
     )
     .expect("save png");
     println!("[dump] wrote {} ({}x{})", outPath.display(), r.width, r.height);
-    let _ = exeDir;
 }
-

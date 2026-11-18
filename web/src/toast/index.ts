@@ -1,5 +1,4 @@
-// 底部居中临时通知。
-// info/warn 自动 3s 消失，error 5s。多条同时触发直接堆叠，不做队列。
+// 底部居中轻量提示条（info/warn 3 秒自动消失，error 5 秒自动消失）。
 
 export type ToastKind = "info" | "warn" | "error";
 

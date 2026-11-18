@@ -1,5 +1,4 @@
-// 部件分类清单 + per-skin 标准尺寸表（合成预览按尺寸表 nearest-neighbor 缩回）。
-
+// 标准部件分类表与单皮肤基准尺寸表（`<skin>/baseSizes.json`，与 SkinSync `BaseSizesLoader` 契约一致）。
 #![allow(non_snake_case)]
 
 use std::collections::{BTreeMap, HashMap};
@@ -7,31 +6,31 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use crate::apiLayer::ApiError;
+use crate::dataPaths;
 
 pub const BASE_SIZES_FILE: &str = "baseSizes.json";
 
-/// 标准分类清单：每个分类下游戏内的部件名集合。仅用于按文件名归类，不再带尺寸。
 pub fn standardParts(category: &str) -> Option<&'static [&'static str]> {
     static TABLE: OnceLock<HashMap<&'static str, Vec<&'static str>>> = OnceLock::new();
     let table = TABLE.get_or_init(buildPartsTable);
     table.get(category).map(|v| v.as_slice())
 }
 
-/// `<categoryDir>/<partName>` 形式的查表 key。
 pub fn keyFor(categoryDir: &str, partName: &str) -> String {
     format!("{}/{}", categoryDir, partName)
 }
 
-/// 按部件名反查所属分类目录；F/B 后缀副本剥后缀回查 base 名，未命中返回 None。
+/// 按部件名反查标准分类目录；自动剥离 `R_` 朝右前缀与 `F`/`B` 前后侧后缀。
 pub fn categoryFor(partName: &str) -> Option<&'static str> {
-    for cat in ["Body", "Head", "Wings", "Accessories"] {
-        if isStandardPart(cat, partName) {
+    let base = partName.strip_prefix("R_").unwrap_or(partName);
+    for cat in ["Body", "Head", "Wings", "Accessories", "Blood"] {
+        if isStandardPart(cat, base) {
             return Some(cat);
         }
     }
-    let stripped = stripSideSuffix(partName);
-    if stripped != partName {
-        for cat in ["Body", "Head", "Wings", "Accessories"] {
+    let stripped = stripSideSuffix(base);
+    if stripped != base {
+        for cat in ["Body", "Head", "Wings", "Accessories", "Blood"] {
             if isStandardPart(cat, stripped) {
                 return Some(cat);
             }
@@ -58,19 +57,19 @@ fn stripSideSuffix(name: &str) -> &str {
     }
 }
 
-/// `stripSideSuffix` 的 crate 内可见包装，供 importSkinPack 等扫盘生成时复用。
 pub(crate) fn stripSideSuffixForLookup(name: &str) -> &str {
-    stripSideSuffix(name)
+    stripSideSuffix(name.strip_prefix("R_").unwrap_or(name))
 }
 
-/// 标准尺寸表容器。空表（无 baseSizes.json）合法，合成时跳过缩回。
 pub struct BaseSizes {
     entries: HashMap<String, (u32, u32)>,
 }
 
 impl BaseSizes {
     pub fn empty() -> Self {
-        BaseSizes { entries: HashMap::new() }
+        BaseSizes {
+            entries: HashMap::new(),
+        }
     }
 
     pub fn get(&self, key: &str) -> Option<(u32, u32)> {
@@ -86,12 +85,10 @@ impl BaseSizes {
     }
 }
 
-/// 读 `<skinDir>/baseSizes.json`；缺文件 / 解析失败返回空表（不报错）。
 pub fn load(skinDir: &Path) -> BaseSizes {
     let path = skinDir.join(BASE_SIZES_FILE);
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(_) => return BaseSizes::empty(),
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return BaseSizes::empty();
     };
     match parse(&raw) {
         Some(map) => BaseSizes { entries: map },
@@ -99,26 +96,19 @@ pub fn load(skinDir: &Path) -> BaseSizes {
     }
 }
 
-/// 把尺寸表写到 `<skinDir>/baseSizes.json`（已存在则覆盖）。空表不写盘。
+/// 写入 `<skinDir>/baseSizes.json`（空表跳过写盘）。
 pub fn write(skinDir: &Path, map: &HashMap<String, (u32, u32)>) -> Result<(), ApiError> {
     if map.is_empty() {
         return Ok(());
     }
     let path = skinDir.join(BASE_SIZES_FILE);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| ApiError {
-            code: "io_failed".into(),
-            message: format!("mkdir {} failed: {}", parent.display(), e),
-        })?;
-    }
     let json = serialize(map);
-    std::fs::write(&path, json).map_err(|e| ApiError {
+    dataPaths::atomicWrite(&path, json.as_bytes()).map_err(|e| ApiError {
         code: "io_failed".into(),
         message: format!("write {} failed: {}", path.display(), e),
     })
 }
 
-/// 读 `<skinDir>/baseSizes.json` 后插入 / 更新一条 key→(w,h) 并写回。
 pub fn upsert(skinDir: &Path, key: &str, w: u32, h: u32) -> Result<(), ApiError> {
     let path = skinDir.join(BASE_SIZES_FILE);
     let mut map = match std::fs::read_to_string(&path) {
@@ -129,7 +119,7 @@ pub fn upsert(skinDir: &Path, key: &str, w: u32, h: u32) -> Result<(), ApiError>
     write(skinDir, &map)
 }
 
-/// 删除 baseSizes.json 中的一条 key 并写回；key 不存在或文件缺失时无操作。
+/// 移除单条基准尺寸记录；删空最后一条时同步移除 `baseSizes.json` 文件。
 pub fn remove(skinDir: &Path, key: &str) -> Result<(), ApiError> {
     let path = skinDir.join(BASE_SIZES_FILE);
     let mut map = match std::fs::read_to_string(&path) {
@@ -139,41 +129,61 @@ pub fn remove(skinDir: &Path, key: &str) -> Result<(), ApiError> {
     if map.remove(key).is_none() {
         return Ok(());
     }
+    if map.is_empty() {
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| ApiError {
+                code: "io_failed".into(),
+                message: format!("remove {} failed: {}", path.display(), e),
+            })?;
+        }
+        return Ok(());
+    }
     write(skinDir, &map)
 }
 
+/// 兼容 SkinSync 标准 `{ "entries": { ... } }` 结构与旧版扁平顶层键值对象。
 fn parse(raw: &str) -> Option<HashMap<String, (u32, u32)>> {
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
-    let obj = value.as_object()?;
+    let rootObj = value.as_object()?;
+    let targetObj = rootObj
+        .get("entries")
+        .and_then(|v| v.as_object())
+        .unwrap_or(rootObj);
     let mut map = HashMap::new();
-    for (k, v) in obj {
-        let arr = v.as_array()?;
+    for (k, v) in targetObj {
+        let Some(arr) = v.as_array() else {
+            continue;
+        };
         if arr.len() != 2 {
             continue;
         }
-        let w = arr[0].as_u64()? as u32;
-        let h = arr[1].as_u64()? as u32;
-        map.insert(k.clone(), (w, h));
+        let (Some(w), Some(h)) = (arr[0].as_u64(), arr[1].as_u64()) else {
+            continue;
+        };
+        if let (Ok(wu), Ok(hu)) = (u32::try_from(w), u32::try_from(h)) {
+            if wu > 0 && hu > 0 {
+                map.insert(k.clone(), (wu, hu));
+            }
+        }
     }
     Some(map)
 }
 
+/// 输出 `{ "entries": { "<Cat>/<part>": [w, h] } }`，对齐 SkinSync `BaseSizesLoader.Parse`。
 fn serialize(map: &HashMap<String, (u32, u32)>) -> String {
     let sorted: BTreeMap<&String, &(u32, u32)> = map.iter().collect();
-    let mut out = String::from("{\n");
-    let mut first = true;
-    for (k, (w, h)) in sorted {
-        if !first {
+    let mut out = String::from("{\n  \"entries\": {\n");
+    for (idx, (k, (w, h))) in sorted.into_iter().enumerate() {
+        if idx > 0 {
             out.push_str(",\n");
         }
-        first = false;
-        out.push_str(&format!("  \"{}\": [{}, {}]", k, w, h));
+        let escapedKey = serde_json::to_string(k).unwrap_or_else(|_| format!("\"{}\"", k));
+        out.push_str(&format!("    {}: [{}, {}]", escapedKey, w, h));
     }
-    out.push_str("\n}\n");
+    out.push_str("\n  }\n}\n");
     out
 }
 
-/// 标准部件的默认黑块尺寸（取自标准皮肤实测值）。剥 R_ 前缀与 F/B 后缀后查表；未登记返回 None。
 pub fn defaultSize(partName: &str) -> Option<(u32, u32)> {
     static TABLE: OnceLock<HashMap<&'static str, (u32, u32)>> = OnceLock::new();
     let table = TABLE.get_or_init(buildSizeTable);
@@ -221,6 +231,8 @@ fn buildSizeTable() -> HashMap<&'static str, (u32, u32)> {
     m.insert("experimentEyeSadBack", (26, 12));
     m.insert("experimentEyeScared", (26, 12));
     m.insert("experimentEyeScaredBack", (26, 12));
+    m.insert("experimentEyeLockedIn", (26, 12));
+    m.insert("experimentEyeLockedInBack", (26, 12));
     m.insert("wingUL", (32, 32));
     m.insert("wingUR", (32, 32));
     m.insert("wingDL", (32, 32));
@@ -230,53 +242,173 @@ fn buildSizeTable() -> HashMap<&'static str, (u32, u32)> {
 
 fn buildPartsTable() -> HashMap<&'static str, Vec<&'static str>> {
     let mut m: HashMap<&'static str, Vec<&'static str>> = HashMap::new();
-    m.insert("Body", vec![
-        "experimentCrus",
-        "experimentDownArm",
-        "experimentDownTorso",
-        "experimentFoot",
-        "experimentHandB",
-        "experimentHandF",
-        "experimentTail",
-        "experimentThigh",
-        "experimentUpArm",
-        "experimentUpTorso",
-    ]);
-    m.insert("Head", vec![
-        "experimentHead",
-        "experimentHeadBack",
-        "experimentHeadBackMouth",
-        "experimentHeadBackMouthMini",
-        "experimentHeadDisfigured1",
-        "experimentHeadDisfigured1Healed",
-        "experimentHeadDisfigured2",
-        "experimentHeadDisfigured2Healed",
-        "experimentHeadDisfigured3",
-        "experimentHeadDisfigured3Healed",
-        "experimentNosebleed",
-        "experimentEyeClosed",
-        "experimentEyeGone",
-        "experimentEyeGoneHealed",
-        "experimentEyeHalfClosed",
-        "experimentEyeHalfClosedBack",
-        "experimentEyeHappy",
-        "experimentEyeLookBack",
-        "experimentEyeOpen",
-        "experimentEyePanic",
-        "experimentEyeSad",
-        "experimentEyeSadBack",
-        "experimentEyeScared",
-        "experimentEyeScaredBack",
-    ]);
+    m.insert(
+        "Body",
+        vec![
+            "experimentCrus",
+            "experimentDownArm",
+            "experimentDownTorso",
+            "experimentFoot",
+            "experimentHandB",
+            "experimentHandF",
+            "experimentTail",
+            "experimentThigh",
+            "experimentUpArm",
+            "experimentUpTorso",
+            "milkytorso",
+            "milkydowntorso",
+            "milkyuparm",
+            "mildownarm",
+            "milkyhandf",
+            "milkyhandb",
+            "milkythigh",
+            "milkycrus",
+            "milkyfoot",
+            "milkytail",
+            "duneUpTorso",
+            "duneDownTorso",
+            "duneUpArm",
+            "duneUpArmAlt",
+            "duneDownArm",
+            "duneDownArmAlt",
+            "duneHand",
+            "duneHandAlt",
+            "duneThigh",
+            "duneThighAlt",
+            "duneCrus",
+            "duneFoot",
+            "duneTail",
+        ],
+    );
+    m.insert(
+        "Head",
+        vec![
+            "experimentHead",
+            "experimentHeadBack",
+            "experimentHeadBackMouth",
+            "experimentHeadBackMouthMini",
+            "experimentHeadDisfigured1",
+            "experimentHeadDisfigured1Healed",
+            "experimentHeadDisfigured2",
+            "experimentHeadDisfigured2Healed",
+            "experimentHeadDisfigured3",
+            "experimentHeadDisfigured3Healed",
+            "experimentNosebleed",
+            "experimentEyeClosed",
+            "experimentEyeGone",
+            "experimentEyeGoneHealed",
+            "experimentEyeHalfClosed",
+            "experimentEyeHalfClosedBack",
+            "experimentEyeHappy",
+            "experimentEyeLookBack",
+            "experimentEyeOpen",
+            "experimentEyePanic",
+            "experimentEyeSad",
+            "experimentEyeSadBack",
+            "experimentEyeScared",
+            "experimentEyeScaredBack",
+            "experimentEyeLockedIn",
+            "experimentEyeLockedInBack",
+            "milkyheadback",
+            "milkyheadbackmouthopen",
+            "milkyheadbackmouthhalfopen",
+            "milkydisfigure1",
+            "milkydisfigure1healed",
+            "milkydisfigure2",
+            "milkydisfigure2healed",
+            "milkyeyeopen",
+            "milkyeyeopenback",
+            "milkyeyehalfclosed",
+            "milkyeyehalfclosedback",
+            "milkyeyeclosed",
+            "milkyeyegone",
+            "milkyeyegonehealed",
+            "milkyeyehappy",
+            "milkyeyehappyback",
+            "milkyeyelockedin",
+            "milkyeyelockedinback",
+            "milkyeyepanic",
+            "milkyeyesad",
+            "milkyeyesadback",
+            "milkyeyescared",
+            "milkyeyescaredback",
+            "duneHeadBack",
+            "duneHeadMouth",
+            "duneHeadMouthHalf",
+            "duneDisfigured",
+            "duneDisfiguredHealed",
+            "duneeyelockedin",
+            "dunetradereyes",
+            "dunetradereyesangry",
+            "dunetradereyessleep",
+        ],
+    );
     m.insert("Wings", vec!["wingUL", "wingUR", "wingDL", "wingDR"]);
-    m.insert("Accessories", vec![
-        "autopump", "autozoomgoggles", "balaclava", "bellyarmor", "belt",
-        "bigpack", "bikehelmet", "blindfold", "carapace", "climbingclaws",
-        "duffelbag", "dustmask", "fannypack", "headlamp", "holidayhat",
-        "jetpack", "latexgloves", "legpouch", "makeshiftheadlamp", "makeshifthelmet",
-        "materialpouch", "safetyglasses", "scarf", "slingbag", "smallpack",
-        "sneakers", "woodsandals",
-    ]);
+    m.insert(
+        "Accessories",
+        vec![
+            "autopump",
+            "autozoomgoggles",
+            "balaclava",
+            "bellyarmor",
+            "belt",
+            "bigpack",
+            "bikehelmet",
+            "blindfold",
+            "carapace",
+            "climbingclaws",
+            "duffelbag",
+            "dustmask",
+            "fannypack",
+            "headlamp",
+            "holidayhat",
+            "jetpack",
+            "latexgloves",
+            "legpouch",
+            "makeshiftheadlamp",
+            "makeshifthelmet",
+            "materialpouch",
+            "safetyglasses",
+            "scarf",
+            "slingbag",
+            "smallpack",
+            "sneakers",
+            "woodsandals",
+            "liquidpouch",
+            "waterpouch1",
+            "riothelmet",
+            "earmuffs",
+            "mercscarf",
+            "tacticalgloves",
+            "armwarmers",
+            "warmerdown",
+            "limbwraps",
+            "limbwrapsarm",
+            "tornshirt",
+            "tornshirttop",
+            "scubadivinggear",
+            "scubatorso",
+            "tacticalboots",
+            "hoodie",
+            "hoodieup",
+            "striderpelt",
+            "striderpeltup",
+            "bandolier",
+            "bandolierup",
+            "kneepads",
+            "kneepad",
+            "traumarig",
+        ],
+    );
+    m.insert(
+        "Blood",
+        vec![
+            "BloodParticle",
+            "BloodParticle_splat",
+            "limbBlood",
+            "nosebleed",
+        ],
+    );
     m
 }
 
@@ -290,16 +422,20 @@ mod tests {
         assert!(standardParts("Head").unwrap().contains(&"experimentEyeOpen"));
         assert!(standardParts("Wings").unwrap().contains(&"wingUL"));
         assert!(standardParts("Accessories").unwrap().contains(&"autopump"));
+        assert!(standardParts("Blood").unwrap().contains(&"nosebleed"));
         assert!(standardParts("Unknown").is_none());
     }
 
     #[test]
-    fn categoryForLooksUpAcrossCats() {
+    fn categoryForLooksUpAcrossCatsAndPrefixes() {
         assert_eq!(categoryFor("experimentUpTorso"), Some("Body"));
+        assert_eq!(categoryFor("R_experimentUpArmF"), Some("Body"));
         assert_eq!(categoryFor("experimentHead"), Some("Head"));
+        assert_eq!(categoryFor("experimentNosebleed"), Some("Head"));
+        assert_eq!(categoryFor("nosebleed"), Some("Blood"));
         assert_eq!(categoryFor("wingUL"), Some("Wings"));
         assert_eq!(categoryFor("autopump"), Some("Accessories"));
-        assert!(categoryFor("unknownCustomPart").is_none());
+        assert_eq!(categoryFor("unknownCustomPart"), None);
     }
 
     #[test]
@@ -319,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn writeAndReloadRoundTrip() {
+    fn writeEntriesEnvelopeAndLegacyFallback() {
         let dir = std::env::temp_dir().join(format!("baseSizes_rw_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -327,9 +463,20 @@ mod tests {
         m.insert("Body/experimentCrus".to_string(), (8, 10));
         m.insert("Wings/wingUL".to_string(), (32, 32));
         write(&dir, &m).unwrap();
+        let raw = std::fs::read_to_string(dir.join(BASE_SIZES_FILE)).unwrap();
+        assert!(raw.contains("\"entries\""));
         let loaded = load(&dir);
         assert_eq!(loaded.get("Body/experimentCrus"), Some((8, 10)));
         assert_eq!(loaded.get("Wings/wingUL"), Some((32, 32)));
+
+        // 旧版无 entries 外壳的扁平 JSON 仍可解析
+        std::fs::write(dir.join(BASE_SIZES_FILE), "{\"Body/old\": [12, 18]}").unwrap();
+        let legacy = load(&dir);
+        assert_eq!(legacy.get("Body/old"), Some((12, 18)));
+
+        // 删除最后一条记录后文件应被移除
+        remove(&dir, "Body/old").unwrap();
+        assert!(!dir.join(BASE_SIZES_FILE).exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

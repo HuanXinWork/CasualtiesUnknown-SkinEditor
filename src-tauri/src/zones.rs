@@ -1,8 +1,7 @@
-// 部件区块（mask + 配置）IO 层。
-// mask PNG：RGBA8，R 通道存区块 ID（1~255），A 通道镜像（0=无、255=有）。
-// zones.json：每个区块的可选 light / particle / animation 配置，复用 accessories 模块的同款 struct。
+// 部件特效区块遮罩（`<part>.zones.png`，R 通道存 1..=255 区块 ID）与配置（`<part>.zones.json`）读写。
 #![allow(non_snake_case)]
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,16 +9,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::accessories::{AnimationConfig, LightConfig, ParticleConfig};
 use crate::apiLayer::ApiError;
-/// 单个区块条目。pixels 字段不存储——区块所属像素由 mask PNG 的 R 通道决定。
+use crate::dataPaths;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ZoneEntry {
-    /// 1~255 之间的区块 ID，与 mask PNG 的 R 通道值对齐。0 保留为"无区块"。
     pub id: u8,
-    /// 用户可选展示名。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// 编辑器画布上 overlay 的填充色（RGB 0~255）；缺失时回退到自动 hue 调色板。
-    /// 仅影响编辑器视觉，不参与 mod 渲染逻辑。
+    /// 仅用于编辑器画布区块覆盖层着色，不参与游戏端渲染。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub displayColor: Option<[u8; 3]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -35,7 +32,6 @@ pub struct ZonesConfig {
     pub zones: Vec<ZoneEntry>,
 }
 
-/// 同一 part 的 mask 与 config 一对：相邻同名 + 不同后缀（.zones.png / .zones.json）。
 pub fn maskPath(skinRoot: &Path, skinName: &str, categoryDir: &str, partName: &str) -> PathBuf {
     skinRoot
         .join(skinName)
@@ -50,11 +46,13 @@ pub fn configPath(skinRoot: &Path, skinName: &str, categoryDir: &str, partName: 
         .join(format!("{}.zones.json", partName))
 }
 
-/// 读 mask PNG：返回 (width, height, ids) 三元组；ids[i] = R 通道值（A=0 时强制为 0）。
-/// 文件缺失或解码失败均返回 None（非致命）。
+/// 读取遮罩 PNG 并还原单字节区块 ID 数组（`A == 0` 视为无区块 `0`）。
 pub fn loadMask(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
     let decoded = crate::skinLoader::decodePart(path).ok()?;
-    let total = (decoded.width * decoded.height) as usize;
+    let total = (decoded.width as usize).checked_mul(decoded.height as usize)?;
+    if decoded.pixels.len() < total.checked_mul(4)? {
+        return None;
+    }
     let mut ids = Vec::with_capacity(total);
     for i in 0..total {
         let r = decoded.pixels[i * 4];
@@ -64,31 +62,26 @@ pub fn loadMask(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
     Some((decoded.width, decoded.height, ids))
 }
 
-/// 写 mask PNG：把 ids（与原 part 像素同形）的非零值写入 R 通道，对应 A=255；零值写全 0 透明像素。
 pub fn saveMask(path: &Path, width: u32, height: u32, ids: &[u8]) -> Result<(), ApiError> {
-    if ids.len() != (width * height) as usize {
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| ApiError {
+            code: "shape_mismatch".into(),
+            message: format!("dimensions overflow: {}x{}", width, height),
+        })?;
+    if ids.len() != expected {
         return Err(ApiError {
             code: "shape_mismatch".into(),
-            message: format!(
-                "ids len {} != {}*{}={}",
-                ids.len(),
-                width,
-                height,
-                width * height
-            ),
+            message: format!("ids len {} != {}*{}={}", ids.len(), width, height, expected),
         });
     }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| ApiError {
-            code: "io_error".into(),
-            message: format!("mkdir {} failed: {}", parent.display(), e),
-        })?;
-    }
-    let mut rgba = vec![0u8; ids.len() * 4];
+    let rgbaLen = expected.checked_mul(4).ok_or_else(|| ApiError {
+        code: "shape_mismatch".into(),
+        message: "rgba buffer overflow".into(),
+    })?;
+    let mut rgba = vec![0u8; rgbaLen];
     for (i, &id) in ids.iter().enumerate() {
-        if id == 0 {
-            // 保持 0,0,0,0
-        } else {
+        if id != 0 {
             rgba[i * 4] = id;
             rgba[i * 4 + 3] = 255;
         }
@@ -96,19 +89,59 @@ pub fn saveMask(path: &Path, width: u32, height: u32, ids: &[u8]) -> Result<(), 
     crate::imageOps::savePng(path, width, height, &rgba)
 }
 
-/// 取区块在 mask 中的几何：返回 [(id, cx, cy, halfDiagonal)]，坐标在 mask 像素空间。
+/// 最近邻缩放区块遮罩 ID 数组，保持离散区块编号不被线性插值破坏。
+pub fn scaleMaskNearest(ids: &[u8], oldW: u32, oldH: u32, newW: u32, newH: u32) -> Vec<u8> {
+    let Some(outLen) = (newW as usize).checked_mul(newH as usize) else {
+        return Vec::new();
+    };
+    let mut out = vec![0u8; outLen];
+    if oldW == 0 || oldH == 0 || newW == 0 || newH == 0 {
+        return out;
+    }
+    let Some(inLen) = (oldW as usize).checked_mul(oldH as usize) else {
+        return out;
+    };
+    if ids.len() != inLen {
+        return out;
+    }
+    for ny in 0..newH {
+        let sy = ((ny as u64) * (oldH as u64) / (newH as u64)) as u32;
+        for nx in 0..newW {
+            let sx = ((nx as u64) * (oldW as u64) / (newW as u64)) as u32;
+            out[(ny * newW + nx) as usize] = ids[(sy * oldW + sx) as usize];
+        }
+    }
+    out
+}
+
+/// 计算各非零区块在遮罩像素空间中的包围盒中心与半对角线 `(id, cx, cy, halfDiagonal)`。
 pub fn computeGeometry(width: u32, height: u32, ids: &[u8]) -> Vec<(u8, f32, f32, f32)> {
-    use std::collections::HashMap;
+    let Some(expected) = (width as usize).checked_mul(height as usize) else {
+        return Vec::new();
+    };
+    if ids.len() < expected {
+        return Vec::new();
+    }
     let mut bounds: HashMap<u8, (u32, u32, u32, u32)> = HashMap::new();
     for y in 0..height {
         for x in 0..width {
-            let id = ids[(y * width + x) as usize];
-            if id == 0 { continue; }
+            let id = ids[(y as usize) * (width as usize) + (x as usize)];
+            if id == 0 {
+                continue;
+            }
             let entry = bounds.entry(id).or_insert((x, x, y, y));
-            if x < entry.0 { entry.0 = x; }
-            if x > entry.1 { entry.1 = x; }
-            if y < entry.2 { entry.2 = y; }
-            if y > entry.3 { entry.3 = y; }
+            if x < entry.0 {
+                entry.0 = x;
+            }
+            if x > entry.1 {
+                entry.1 = x;
+            }
+            if y < entry.2 {
+                entry.2 = y;
+            }
+            if y > entry.3 {
+                entry.3 = y;
+            }
         }
     }
     let mut out = Vec::with_capacity(bounds.len());
@@ -117,33 +150,25 @@ pub fn computeGeometry(width: u32, height: u32, ids: &[u8]) -> Vec<(u8, f32, f32
         let cy = (y0 + y1) as f32 * 0.5;
         let dx = (x1 - x0) as f32 * 0.5;
         let dy = (y1 - y0) as f32 * 0.5;
-        let radius = (dx * dx + dy * dy).sqrt();
-        out.push((id, cx, cy, radius));
+        out.push((id, cx, cy, (dx * dx + dy * dy).sqrt()));
     }
     out
 }
 
 pub fn loadConfig(path: &Path) -> ZonesConfig {
-    let bytes = match fs::read(path) {
-        Ok(b) => b,
-        Err(_) => return ZonesConfig::default(),
+    let Ok(bytes) = fs::read(path) else {
+        return ZonesConfig::default();
     };
     serde_json::from_slice::<ZonesConfig>(&bytes).unwrap_or_default()
 }
 
 pub fn saveConfig(path: &Path, cfg: &ZonesConfig) -> Result<(), ApiError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| ApiError {
-            code: "io_error".into(),
-            message: format!("mkdir {} failed: {}", parent.display(), e),
-        })?;
-    }
     let json = serde_json::to_string_pretty(cfg).map_err(|e| ApiError {
-        code: "serialize_failed".into(),
+        code: "encode_failed".into(),
         message: format!("serialize zones failed: {}", e),
     })?;
-    fs::write(path, json).map_err(|e| ApiError {
-        code: "io_error".into(),
+    dataPaths::atomicWrite(path, json.as_bytes()).map_err(|e| ApiError {
+        code: "io_failed".into(),
         message: format!("write {} failed: {}", path.display(), e),
     })
 }
@@ -165,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn maskRoundTrip() {
+    fn maskRoundTripAndNearestScale() {
         let dir = tmp("maskRt");
         let path = dir.join("Body").join("a.zones.png");
         let ids = vec![0u8, 1, 0, 2, 3, 0, 0, 1];
@@ -173,6 +198,12 @@ mod tests {
         let (w, h, loaded) = loadMask(&path).unwrap();
         assert_eq!((w, h), (4, 2));
         assert_eq!(loaded, ids);
+
+        let scaled = scaleMaskNearest(&[1u8, 2, 3, 4], 2, 2, 4, 4);
+        assert_eq!(scaled[0], 1);
+        assert_eq!(scaled[1], 1);
+        assert_eq!(scaled[2], 2);
+        assert_eq!(scaled[15], 4);
         let _ = fs::remove_dir_all(&dir);
     }
 

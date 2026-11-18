@@ -1,26 +1,19 @@
-// 前端会话级状态容器。仅在内存中维护当前 skin、选中 part、当前工具、画笔参数、
-// 主题等；刷新页面即重置，持久化交给 workspace.json。
+// 前端内存会话状态容器；持久化配置通过 workspacePersist 同步至 workspace.json。
 
 import type { Orientation, PartCategory, ThemeConfig } from "./types";
 import type { HeadVariant, PixelDiff } from "../apiClient";
 import { defaultTheme } from "./theme";
 
-/// 编辑工具：brush / eraser / pan / gradient / zoneBrush。
 export type Tool = "brush" | "eraser" | "pan" | "gradient" | "zoneBrush" | "fill" | "softBrush";
 
-/// i18n 语言；会话级，刷新页面回到默认 zh，不写盘。
 export type Lang = "zh" | "en";
 
-/// 广播给订阅方的"刚刚应用到 active 图层的 PixelDiff"。
-/// phase=after 贴 diff.after（brush/eraser/redo），phase=before 贴 diff.before（undo）。
 export interface AppliedDiff {
   partId: string;
   diff: PixelDiff;
   phase: "before" | "after";
 }
 
-/// 历史 popover 用的元数据。撤销 / 重做语义由后端 historyManager 维护，
-/// 前端历史只是 UI 可视化，不存 PixelDiff 字节。
 export interface HistoryRecord {
   id: number;
   partId: string;
@@ -30,8 +23,6 @@ export interface HistoryRecord {
   timestamp: number;
 }
 
-/// 会话级状态。currentPartId 由 editorCanvas 在 loadPartImage 后写入；
-/// lastAppliedDiff 由编辑发起方广播，editorCanvas 单点订阅做 putImageData。
 export interface SessionState {
   currentSkinName: string | null;
   selectedPartName: string | null;
@@ -43,46 +34,29 @@ export interface SessionState {
   alpha: number;
   theme: ThemeConfig;
   lastAppliedDiff: AppliedDiff | null;
-  /// layerPanel 增删改图层后递增；editorCanvas 监听变化重拉 flatten 刷新画布。
   layerSnapshotVersion: number;
-  /// wingDebugPanel 改 override 后递增；previewCanvas 监听变化重拉合成预览。
   assemblyOverrideVersion: number;
-  /// 创建 F/B 前后侧副本等改动 part 列表后递增；partPanel 监听后重拉 listParts。
   partListVersion: number;
-  /// accessories.json 改动后递增；previewCanvas / partPanel 监听重拉合成预览与列表。
   accessoriesVersion: number;
-  /// 当前活跃区块 ID（zoneBrush 工具下笔刷写入的目标 ID，1~255）；
-  /// editorCanvas 在 onload zones 时按已存在区块或 1 设置。
   activeZoneId: number;
-  /// 橡皮模式：part 清部件像素；zone 清当前部件区块 mask。
   eraserMode: "part" | "zone";
-  /// 历史环形缓冲，最多 50 条。
   history: HistoryRecord[];
-  /// previewCanvas 合成预览的过滤参数。
   orientation: Orientation;
   expressionIndex: number;
   headVariant: HeadVariant;
   lang: Lang;
-  /// 用户自定义快捷键覆盖；缺失字段走 DEFAULT_SHORTCUTS。
   shortcuts?: Record<string, string>;
-  /// Motion 预览右侧当前帧部件调试面板显隐。
   showMotionDebugPanel: boolean;
-  /// 翼装配调试面板显隐；默认关闭，需要时去设置勾选。
   showWingDebugPanel: boolean;
-  /// 血液粒子配置面板显隐；默认关闭，需要时去设置勾选。
   showBloodPanel: boolean;
-  /// 定时自动保存开关与间隔（秒）；会话级镜像，持久化在 workspace.settings。
   autoSaveEnabled: boolean;
   autoSaveIntervalSec: number;
-  /// 切部件未保存处理；"" 表示尚未记住（首次切换弹框）。持久化在 workspace.settings。
+  /** `""` 表示尚未记住选择，切换脏部件时弹框询问。 */
   switchSaveBehavior: "ask" | "auto" | "save" | "";
-  /// 柔和笔刷硬度 0~255（中心实心半径占比）；持久化在 workspace.settings。
   softBrushHardness: number;
-  /// 未保存改动追踪：brush/eraser/gradient/undo/redo 后置脏；savePart 成功后清脏。
   dirtyPartIds: string[];
 }
 
-/// 最小订阅式容器：读、浅 merge 写、订阅。
 export interface Store<T> {
   getState(): T;
   setState(partial: Partial<T>): void;
@@ -109,7 +83,6 @@ export function createStore<T extends object>(initial: T): Store<T> {
   };
 }
 
-// 默认初值：未选中 skin / part；画笔 8px、纯黑、不透明；浅色主题。
 function buildInitialState(): SessionState {
   return {
     currentSkinName: null,
@@ -146,10 +119,9 @@ function buildInitialState(): SessionState {
 
 export const sessionStore: Store<SessionState> = createStore(buildInitialState());
 
-// 把一次操作 push 到历史环形缓冲。最多 HISTORY_MAX 条，超过丢弃最早；
-// id 单调递增不复用，便于历史面板用作稳定 key。
 const HISTORY_MAX = 50;
 let historyIdSeq = 0;
+
 export function pushHistoryRecord(record: Omit<HistoryRecord, "id" | "timestamp">): void {
   const cur = sessionStore.getState().history;
   const next: HistoryRecord = {
@@ -163,14 +135,49 @@ export function pushHistoryRecord(record: Omit<HistoryRecord, "id" | "timestamp"
   sessionStore.setState({ history: trimmed });
 }
 
-// 脏标记：编辑后调 markPartDirty，savePart 成功后调 markPartClean。
+export interface ParsedPartId {
+  skinName: string;
+  category: PartCategory;
+  partName: string;
+}
+
+const VALID_CATEGORIES = new Set<string>(["Body", "Head", "Wings", "Accessories", "Blood"]);
+
+/** 解析 `skinName::Category::partName` 会话键。 */
+export function parsePartId(partId: string): ParsedPartId | null {
+  const parts = partId.split("::");
+  if (parts.length !== 3) return null;
+  const [skinName, category, partName] = parts;
+  if (!skinName || !partName || !VALID_CATEGORIES.has(category)) return null;
+  return { skinName, category: category as PartCategory, partName };
+}
+
+export function partIdToTargetPath(skinRoot: string, partId: string): string | null {
+  const parsed = parsePartId(partId);
+  if (!parsed) return null;
+  return `${skinRoot}/${parsed.skinName}/${parsed.category}/${parsed.partName}.png`;
+}
+
+// 每个部件维护单调脏版本号，防止异步保存返回时清掉保存期间新产生的改动。
+const dirtyRevisions = new Map<string, number>();
+
+export function getPartDirtyRevision(partId: string): number {
+  return dirtyRevisions.get(partId) ?? 0;
+}
+
 export function markPartDirty(partId: string): void {
+  if (!partId) return;
+  dirtyRevisions.set(partId, (dirtyRevisions.get(partId) ?? 0) + 1);
   const list = sessionStore.getState().dirtyPartIds;
   if (list.includes(partId)) return;
   sessionStore.setState({ dirtyPartIds: [...list, partId] });
 }
 
-export function markPartClean(partId: string): void {
+/** 清除部件脏标记；若传入 `expectedRevision` 且期间产生新编辑则保留脏态。 */
+export function markPartClean(partId: string, expectedRevision?: number): void {
+  if (expectedRevision !== undefined && getPartDirtyRevision(partId) !== expectedRevision) {
+    return;
+  }
   const list = sessionStore.getState().dirtyPartIds;
   if (!list.includes(partId)) return;
   sessionStore.setState({ dirtyPartIds: list.filter((id) => id !== partId) });
@@ -181,14 +188,22 @@ export function isPartDirty(partId: string | null): boolean {
   return sessionStore.getState().dirtyPartIds.includes(partId);
 }
 
-/// 调试面板改装配 override 后调一次，让 previewCanvas 重拉合成预览。
+export function bumpLayerSnapshotVersion(): void {
+  const v = sessionStore.getState().layerSnapshotVersion ?? 0;
+  sessionStore.setState({ layerSnapshotVersion: v + 1 });
+}
+
 export function bumpAssemblyOverrideVersion(): void {
   const v = sessionStore.getState().assemblyOverrideVersion ?? 0;
   sessionStore.setState({ assemblyOverrideVersion: v + 1 });
 }
 
-/// 部件列表发生增删（如创建 F/B 前后侧副本）后调一次，让 partPanel 重拉 listParts。
 export function bumpPartListVersion(): void {
   const v = sessionStore.getState().partListVersion ?? 0;
   sessionStore.setState({ partListVersion: v + 1 });
+}
+
+export function bumpAccessoriesVersion(): void {
+  const v = sessionStore.getState().accessoriesVersion ?? 0;
+  sessionStore.setState({ accessoriesVersion: v + 1 });
 }

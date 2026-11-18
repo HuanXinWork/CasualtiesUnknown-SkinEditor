@@ -1,16 +1,16 @@
-// 部件列表与皮肤切换；分组（身体 / 头部 / 翅膀 / 表情 / 配件）支持折叠。
+// 角色选择与六类部件分组列表（身体 / 头部 / 表情 / 翅膀 / 配件 / 血液贴图）。
 
-import { listSkins, listParts, type ApiError } from "../apiClient";
-import { getWorkspace, saveWorkspace } from "../apiClient";
-import { sessionStore } from "../stateStore";
+import { getWorkspace, listParts, listSkins, type ApiError } from "../apiClient";
+import { bumpPartListVersion, sessionStore } from "../stateStore";
+import { updateWorkspace, updateWorkspaceSettings } from "../stateStore/workspacePersist";
 import type { PartCategory, PartInfo, Skin } from "../stateStore/types";
 import { subscribeLang, t } from "../i18n";
 import { localizePartName } from "../i18n/partNames";
-import { categorySupportsCreate, categoryFullyCreated } from "../editorCanvas/partCatalog";
+import { categoryFullyCreated, categorySupportsCreate } from "../editorCanvas/partCatalog";
 import { openAddPartDialog } from "../editorCanvas/addPartDialog";
-import { requestSwitchPart } from "./partSwitchGuard";
+import { guardUnsavedCurrentPart, requestSwitchPart } from "./partSwitchGuard";
 import { showContextMenu } from "../contextMenu";
-import { openCopyPartDialog, deletePartWithConfirm } from "./partClipboard";
+import { deletePartWithConfirm, openCopyPartDialog } from "./partClipboard";
 
 interface GroupSpec {
   key: string;
@@ -27,7 +27,6 @@ const GROUPS: GroupSpec[] = [
   { key: "blood", cat: "Blood", titleKey: "partPanel.bloodGroup" },
 ];
 
-// 分组折叠态保留在本模块作用域：lang 切换 / 选 part / 切皮肤都不重置。
 const collapsed: Record<string, boolean> = {
   body: false,
   head: false,
@@ -37,26 +36,32 @@ const collapsed: Record<string, boolean> = {
   blood: true,
 };
 
+const WORKSPACE_PATH = "data/workspace.json";
+
 export function mountPartPanel(container: HTMLElement, skinRoot: string): () => void {
   let cachedSkinNames: string[] = [];
   let cachedSkins: Skin[] = [];
   let lastSkinName = sessionStore.getState().currentSkinName;
   let lastSelectedPart = sessionStore.getState().selectedPartName;
   let lastSelectedCat = sessionStore.getState().selectedCategory;
+  let loadSeq = 0;
 
   container.classList.add("panel");
   container.innerHTML =
+    `<div class="part-panel-error" hidden style="margin:8px 8px 0;padding:6px 8px;border-radius:4px;background:rgba(220,53,69,0.12);color:#dc3545;font-size:12px;"></div>` +
     `<div class="part-panel-skins" style="display:flex;gap:4px;flex-wrap:wrap;padding:8px;"></div>` +
-    GROUPS.map((g) =>
-      `<section data-group="${g.key}" style="padding:0 8px 8px;">` +
+    GROUPS.map(
+      (g) =>
+        `<section data-group="${g.key}" style="padding:0 8px 8px;">` +
         `<h4 data-role="title" style="margin:8px 0 4px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px;">` +
-          `<span data-role="caret" style="display:inline-block;width:10px;text-align:center;">▶</span>` +
-          `<span data-role="text"></span>` +
+        `<span data-role="caret" style="display:inline-block;width:10px;text-align:center;">▶</span>` +
+        `<span data-role="text"></span>` +
         `</h4>` +
         `<ul style="list-style:none;padding:0;margin:0;"></ul>` +
-      `</section>`,
+        `</section>`,
     ).join("");
 
+  const errorEl = container.querySelector<HTMLDivElement>(".part-panel-error")!;
   const skinsEl = container.querySelector<HTMLDivElement>(".part-panel-skins")!;
   const sections = new Map<string, { ul: HTMLUListElement; titleText: HTMLSpanElement; caret: HTMLSpanElement }>();
   for (const g of GROUPS) {
@@ -68,46 +73,24 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
     title.addEventListener("click", () => {
       collapsed[g.key] = !collapsed[g.key];
       applyCollapse(g.key);
-      schedulePersistCollapsed();
+      updateWorkspaceSettings(WORKSPACE_PATH, { partGroupsCollapsed: { ...collapsed } }, 300);
     });
     sections.set(g.key, { ul, titleText, caret });
   }
 
-  // 启动时从 workspace 加载；与 main.ts 的 DEFAULT_WORKSPACE_PATH 保持一致。
-  const WORKSPACE_PATH = "data/workspace.json";
-  void getWorkspace(WORKSPACE_PATH).then((ws) => {
-    const stored = ws.layout.settings?.partGroupsCollapsed;
-    if (stored && typeof stored === "object") {
-      for (const g of GROUPS) {
-        if (typeof stored[g.key] === "boolean") collapsed[g.key] = stored[g.key];
+  let preferredActiveSkin: string | undefined;
+  void getWorkspace(WORKSPACE_PATH)
+    .then((ws) => {
+      preferredActiveSkin = ws.layout.activeSkin;
+      const stored = ws.layout.settings?.partGroupsCollapsed;
+      if (stored && typeof stored === "object") {
+        for (const g of GROUPS) {
+          if (typeof stored[g.key] === "boolean") collapsed[g.key] = stored[g.key];
+        }
+        for (const g of GROUPS) applyCollapse(g.key);
       }
-      for (const g of GROUPS) applyCollapse(g.key);
-    }
-  }).catch((e) => console.warn("[partPanel] load partGroupsCollapsed failed", e));
-
-  // 折叠状态变化 300ms debounce 写盘。
-  let saveTimer: number | null = null;
-  function schedulePersistCollapsed(): void {
-    if (saveTimer !== null) window.clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(() => {
-      saveTimer = null;
-      void getWorkspace(WORKSPACE_PATH).then((ws) => {
-        const settings = ws.layout.settings ?? {
-          showMotionDebugPanel: true,
-          showWingDebugPanel: false,
-          showBloodPanel: false,
-        };
-        const next = {
-          ...ws.layout,
-          settings: {
-            ...settings,
-            partGroupsCollapsed: { ...collapsed },
-          },
-        };
-        return saveWorkspace(WORKSPACE_PATH, next, ws.theme);
-      }).catch((e) => console.warn("[partPanel] persist partGroupsCollapsed failed", e));
-    }, 300);
-  }
+    })
+    .catch((e) => console.warn("[partPanel] load workspace preferences failed", e));
 
   function applyCollapse(key: string): void {
     const s = sections.get(key);
@@ -125,10 +108,25 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
   applyTexts();
   for (const g of GROUPS) applyCollapse(g.key);
 
+  function showError(msg: string | null): void {
+    if (!msg) {
+      errorEl.hidden = true;
+      errorEl.textContent = "";
+      return;
+    }
+    errorEl.hidden = false;
+    errorEl.textContent = `${t("partPanel.loadFailed")}：${msg}`;
+  }
+
   function isSkinEmpty(name: string): boolean {
     const s = cachedSkins.find((x) => x.name === name);
     if (!s) return true;
-    const total = s.body.length + s.head.length + (s.wings?.length ?? 0) + (s.accessories?.length ?? 0) + (s.blood?.length ?? 0);
+    const total =
+      s.body.length +
+      s.head.length +
+      (s.wings?.length ?? 0) +
+      (s.accessories?.length ?? 0) +
+      (s.blood?.length ?? 0);
     return total === 0;
   }
 
@@ -148,14 +146,14 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
       btn.textContent = name;
       btn.className = name === currentName ? "btn btn-primary" : "btn";
       if (isSkinEmpty(name)) btn.style.opacity = "0.5";
-      btn.addEventListener("click", () => onSelectSkin(name));
+      btn.addEventListener("click", () => requestSelectSkin(name));
       skinsEl.appendChild(btn);
     }
   }
 
-  // 表情判定：Head 目录里以 Eye / Mouth / Nose 开头或包含这些词的部件。
   function isExpressionPart(name: string): boolean {
-    return /^(Eye|Mouth|Nose)/i.test(name) || /(Eye|Mouth|Nose)/i.test(name.replace(/^[a-z]+/, ""));
+    const clean = name.replace(/^R_/, "");
+    return /^(eye|mouth|nose)/i.test(clean) || /^(experiment|milky|dune)(eye|nose)/i.test(clean);
   }
 
   function renderParts(): void {
@@ -192,20 +190,22 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
     for (const p of parts) {
       const li = document.createElement("li");
       const isSel = selCat === cat && selPart === p.name;
-      li.style.cssText = `padding:2px 6px;cursor:pointer;border-radius:4px;${isSel ? "background:rgba(0,0,0,0.08);" : ""}`;
+      li.style.cssText = `padding:2px 6px;cursor:pointer;border-radius:4px;${
+        isSel ? "background:rgba(var(--border-rgb),0.12);" : ""
+      }`;
       li.textContent = `${localizePartName(p.name)} ${p.width}×${p.height}`;
-      // 配件分组在名称后追加 enabled 状态点：● 已启用 / ○ 未启用。
       if (groupKey === "accessories" && skin) {
-        const cfg = skin.accessoryConfigs.find((c) => c.id === p.name || c.sprite === p.name);
+        const stripped = p.name.replace(/^R_/, "");
+        const cfg = skin.accessoryConfigs.find((c) => c.id === stripped || c.sprite === stripped);
         const dot = document.createElement("span");
         dot.textContent = cfg?.enabled ? "  ●" : "  ○";
-        dot.style.color = cfg?.enabled ? "#0a0" : "#999";
+        dot.style.color = cfg?.enabled ? "#2ea043" : "#999";
         li.appendChild(dot);
       }
       if (p.corrupted) {
         const tag = document.createElement("span");
         tag.textContent = ` ${t("partPanel.corruptedTag")}`;
-        tag.style.color = "#c00";
+        tag.style.color = "#dc3545";
         li.appendChild(tag);
       }
       li.addEventListener("click", () => {
@@ -215,14 +215,21 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
         e.preventDefault();
         const skinName = sessionStore.getState().currentSkinName;
         if (!skinName) return;
+        const allCatNames = listCategoryNames(skin, cat);
         showContextMenu(e.clientX, e.clientY, [
-          { label: t("partClipboard.copy"), action: () => openCopyPartDialog(skinRoot, skinName, cat, p.name, parts.map((x) => x.name)) },
-          { label: t("partClipboard.delete"), action: () => deletePartWithConfirm(skinRoot, skinName, cat, p.name) },
+          {
+            label: t("partClipboard.copy"),
+            action: () => openCopyPartDialog(skinRoot, skinName, cat, p.name, allCatNames),
+          },
+          {
+            label: t("partClipboard.delete"),
+            action: () => deletePartWithConfirm(skinRoot, skinName, cat, p.name),
+          },
         ]);
       });
       ul.appendChild(li);
     }
-    if (categorySupportsCreate(cat)) {
+    if (groupKey !== "expression" && categorySupportsCreate(cat)) {
       const skinName = sessionStore.getState().currentSkinName;
       const existingNames = listCategoryNames(skin, cat);
       if (skinName && !categoryFullyCreated(cat, existingNames)) {
@@ -238,10 +245,7 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
             skinName,
             category: cat,
             existingNames,
-            onCreated: () => {
-              const cur = sessionStore.getState().partListVersion ?? 0;
-              sessionStore.setState({ partListVersion: cur + 1 });
-            },
+            onCreated: () => bumpPartListVersion(),
           });
         });
         addLi.appendChild(addBtn);
@@ -266,37 +270,55 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
     }
   }
 
-  function showError(msg: string): void {
-    container.innerHTML = `<div style="padding:8px;color:#c00;">${t("partPanel.loadFailed")}：${msg}</div>`;
-  }
-
-  function onSelectSkin(skinName: string): void {
+  function applySelectSkin(skinName: string, persistActive = true): void {
+    const seq = ++loadSeq;
+    showError(null);
     sessionStore.setState({
       currentSkinName: skinName,
       selectedPartName: null,
       selectedCategory: null,
     });
+    if (persistActive) {
+      updateWorkspace(WORKSPACE_PATH, (draft) => {
+        draft.layout.activeSkin = skinName;
+      });
+    }
     listParts(skinRoot, skinName)
       .then((skin) => {
+        if (seq !== loadSeq) return;
         const idx = cachedSkins.findIndex((s) => s.name === skin.name);
         if (idx >= 0) cachedSkins[idx] = skin;
         else cachedSkins.push(skin);
         renderSkins();
         renderParts();
       })
-      .catch((e: ApiError) => showError(e.message ?? String(e)));
+      .catch((e: ApiError) => {
+        if (seq !== loadSeq) return;
+        showError(e.message ?? String(e));
+      });
   }
 
-  /// 仅刷新当前皮肤的部件列表数据，不清选中态、不切皮肤；用于 partListVersion / accessoriesVersion bump 后的刷新。
+  function requestSelectSkin(skinName: string): void {
+    if (sessionStore.getState().currentSkinName === skinName) return;
+    guardUnsavedCurrentPart(skinRoot, () => applySelectSkin(skinName, true));
+  }
+
   function refreshCurrentSkinList(skinName: string): void {
+    const seq = ++loadSeq;
     listParts(skinRoot, skinName)
       .then((skin) => {
+        if (seq !== loadSeq) return;
+        showError(null);
         const idx = cachedSkins.findIndex((s) => s.name === skin.name);
         if (idx >= 0) cachedSkins[idx] = skin;
         else cachedSkins.push(skin);
+        renderSkins();
         renderParts();
       })
-      .catch((e: ApiError) => showError(e.message ?? String(e)));
+      .catch((e: ApiError) => {
+        if (seq !== loadSeq) return;
+        showError(e.message ?? String(e));
+      });
   }
 
   let lastPartListVersion = sessionStore.getState().partListVersion ?? 0;
@@ -327,19 +349,26 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
   });
 
   listSkins(skinRoot)
-    .then((names) => {
+    .then(async (names) => {
       cachedSkinNames = names;
-      cachedSkins = names.map((name) => ({
-        name,
-        body: [],
-        head: [],
-        wings: [],
-        accessories: [],
-        accessoryConfigs: [],
-        blood: [],
-      }));
-      if (sessionStore.getState().currentSkinName === null && names.length > 0) {
-        onSelectSkin(names[0]);
+      cachedSkins = await Promise.all(
+        names.map((n) =>
+          listParts(skinRoot, n).catch(() => ({
+            name: n,
+            body: [],
+            head: [],
+            wings: [],
+            accessories: [],
+            accessoryConfigs: [],
+            blood: [],
+          })),
+        ),
+      );
+      const cur = sessionStore.getState().currentSkinName;
+      if (cur === null && names.length > 0) {
+        const initial =
+          preferredActiveSkin && names.includes(preferredActiveSkin) ? preferredActiveSkin : names[0];
+        applySelectSkin(initial, false);
       } else {
         renderSkins();
         renderParts();

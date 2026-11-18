@@ -1,9 +1,15 @@
-// 工作区布局与主题持久化（仅桌面模式有原生窗口语义）。
+// 工作区布局、用户设置与主题的持久化（`workspace.json`）。
 #![allow(non_snake_case)]
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+
+use crate::apiLayer::ApiError;
+use crate::dataPaths;
+
+pub const WORKSPACE_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PanelLayout {
@@ -23,7 +29,6 @@ pub struct PanelSize {
     pub height: u32,
 }
 
-/// detached 时的屏幕坐标。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowPosition {
     pub x: i32,
@@ -54,41 +59,60 @@ pub enum DockPosition {
     Center,
 }
 
-/// 工作区根结构。`sizes` / `activeSkin` 由 `#[serde(default)]` 兼容旧文件。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceLayout {
     pub version: u32,
     pub panels: Vec<PanelLayout>,
     pub splitRatios: HashMap<String, f32>,
-    /// 容器 key → 像素尺寸；key 形如 `mainPane.left` / `dockable.<panel>.height`。
     #[serde(default)]
     pub sizes: HashMap<String, f64>,
-    /// 当前皮肤名；缺失时由前端按字典序回落到第一个皮肤目录。
     #[serde(default)]
     pub activeSkin: Option<String>,
-    /// 工作区级 UI 设置；缺失时回退默认值，兼容旧 workspace.json。
     #[serde(default = "defaultWorkspaceSettings")]
     pub settings: WorkspaceSettings,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+fn defaultTrue() -> bool {
+    true
+}
+
+fn defaultAutoSaveIntervalSec() -> u32 {
+    60
+}
+
+fn defaultSwitchSaveBehavior() -> String {
+    "ask".into()
+}
+
+fn defaultSoftBrushHardness() -> f32 {
+    0.5
+}
+
+/// 工作区用户偏好，字段与前端 `WorkspaceSettings` 对齐。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkspaceSettings {
+    #[serde(default = "defaultTrue")]
     pub showMotionDebugPanel: bool,
-    /// 翼装配调试面板显隐；默认关闭。
     #[serde(default)]
     pub showWingDebugPanel: bool,
-    /// 血液粒子配置面板显隐；默认关闭。
     #[serde(default)]
     pub showBloodPanel: bool,
-    /// 调色盘最近使用色 FIFO（最多 12 项）。
     #[serde(default)]
     pub colorPaletteRecent: Vec<[u8; 3]>,
-    /// 用户自定义色卡槽：固定 24 项（3 排 × 8）；None 表示空槽。
     #[serde(default)]
     pub colorPaletteCustom: Vec<Option<[u8; 3]>>,
-    /// partPanel 各分组折叠态（key = body/head/wings/expression/accessories）。
     #[serde(default)]
     pub partGroupsCollapsed: HashMap<String, bool>,
+    #[serde(default)]
+    pub autoSaveEnabled: bool,
+    #[serde(default = "defaultAutoSaveIntervalSec")]
+    pub autoSaveIntervalSec: u32,
+    #[serde(default = "defaultSwitchSaveBehavior")]
+    pub switchSaveBehavior: String,
+    #[serde(default = "defaultSoftBrushHardness")]
+    pub softBrushHardness: f32,
+    #[serde(default)]
+    pub shortcuts: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,15 +125,6 @@ pub struct ThemeConfig {
     pub borderOpacity: f32,
 }
 
-use std::path::Path;
-
-use crate::apiLayer::ApiError;
-use crate::dataPaths;
-
-/// `workspace.json` 当前版本号。version 不匹配的旧文件回退默认并备份。
-pub const WORKSPACE_VERSION: u32 = 1;
-
-/// 磁盘文件根结构，layout 与 theme 合并到同一 JSON。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceFile {
     pub version: u32,
@@ -117,7 +132,6 @@ pub struct WorkspaceFile {
     pub theme: ThemeConfig,
 }
 
-/// loadWorkspace 返回的来源，让上层 UI 区分用户文件与回退默认。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceSource {
     #[serde(rename = "file")]
@@ -126,7 +140,7 @@ pub enum WorkspaceSource {
     Fallback,
 }
 
-/// 内置默认主题。与前端 `stateStore/theme.ts::defaultTheme` 必须一一对应，避免双端默认值漂移。
+/// 内置浅色主题，与前端 `stateStore/theme.ts::defaultTheme` 保持一致。
 pub fn defaultTheme() -> ThemeConfig {
     ThemeConfig {
         primary: "#000000".into(),
@@ -146,10 +160,14 @@ pub fn defaultWorkspaceSettings() -> WorkspaceSettings {
         colorPaletteRecent: Vec::new(),
         colorPaletteCustom: Vec::new(),
         partGroupsCollapsed: HashMap::new(),
+        autoSaveEnabled: false,
+        autoSaveIntervalSec: defaultAutoSaveIntervalSec(),
+        switchSaveBehavior: defaultSwitchSaveBehavior(),
+        softBrushHardness: defaultSoftBrushHardness(),
+        shortcuts: HashMap::new(),
     }
 }
 
-/// 内置默认布局。仅包含可分离面板，editorCanvas 与 toolPanel 不持久化。
 pub fn defaultWorkspace() -> WorkspaceLayout {
     let docked = |id: &str, dock: DockPosition, width: u32, height: u32| PanelLayout {
         id: id.into(),
@@ -176,7 +194,7 @@ pub fn defaultWorkspace() -> WorkspaceLayout {
     }
 }
 
-/// 内置默认布局尺寸表。键值与前端 `main.ts::DEFAULT_LAYOUT_SIZES` 一一对应。
+/// 默认主窗格像素尺寸，与前端 `DEFAULT_LAYOUT_SIZES` 对应。
 pub fn defaultLayoutSizes() -> HashMap<String, f64> {
     let mut m = HashMap::new();
     m.insert("mainPane.left".into(), 220.0);
@@ -186,16 +204,14 @@ pub fn defaultLayoutSizes() -> HashMap<String, f64> {
     m
 }
 
-/// 读 workspace.json。文件不存在 / 解析失败 / 版本不兼容时回退默认，
-/// 把原字节备份到同目录 `<file>.bak` 便于排查；备份失败不阻塞回退。
+/// 读取 `workspace.json`；缺失时回退默认，损坏或版本不兼容时备份 `.json.bak` 后回退。
 pub fn loadWorkspace(path: &Path) -> (WorkspaceLayout, ThemeConfig, WorkspaceSource) {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(_) => return (defaultWorkspace(), defaultTheme(), WorkspaceSource::Fallback),
     };
-    let parsed = serde_json::from_slice::<WorkspaceFile>(&bytes).ok();
-    match parsed {
-        Some(file) if file.version == WORKSPACE_VERSION => {
+    match serde_json::from_slice::<WorkspaceFile>(&bytes) {
+        Ok(file) if file.version == WORKSPACE_VERSION => {
             (file.layout, file.theme, WorkspaceSource::File)
         }
         _ => {
@@ -206,7 +222,6 @@ pub fn loadWorkspace(path: &Path) -> (WorkspaceLayout, ThemeConfig, WorkspaceSou
     }
 }
 
-/// 写 workspace.json。父目录不存在时自动递归创建。
 pub fn saveWorkspace(
     path: &Path,
     layout: &WorkspaceLayout,
@@ -221,35 +236,19 @@ pub fn saveWorkspace(
         code: "encode_failed".into(),
         message: format!("serialize workspace failed: {}", e),
     })?;
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| ApiError {
-                code: "io_failed".into(),
-                message: format!("create dir {} failed: {}", parent.display(), e),
-            })?;
-        }
-    }
-    std::fs::write(path, bytes).map_err(|e| ApiError {
+    dataPaths::atomicWrite(path, &bytes).map_err(|e| ApiError {
         code: "io_failed".into(),
         message: format!("write {} failed: {}", path.display(), e),
     })
 }
 
-/// 写盘到 `dataPaths::workspaceFile()`，调用前递归创建 `dataDir()`。
 pub fn saveDefaultWorkspace(layout: &WorkspaceLayout, theme: &ThemeConfig) -> Result<(), ApiError> {
-    let dir = dataPaths::dataDir();
-    std::fs::create_dir_all(&dir).map_err(|e| ApiError {
-        code: "io_failed".into(),
-        message: format!("create dir {} failed: {}", dir.display(), e),
-    })?;
     saveWorkspace(&dataPaths::workspaceFile(), layout, theme)
 }
 
-/// 读 `dataPaths::workspaceFile()`，缺失或损坏走默认回落。
 pub fn loadDefaultWorkspace() -> (WorkspaceLayout, ThemeConfig, WorkspaceSource) {
     loadWorkspace(&dataPaths::workspaceFile())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -260,7 +259,6 @@ mod tests {
     use std::sync::MutexGuard;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    /// 自管 RAII 临时目录。
     struct TempDir(PathBuf);
 
     impl TempDir {
@@ -271,8 +269,12 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
-            let path = std::env::temp_dir()
-                .join(format!("spe_windowManager_{}_{}_{}", std::process::id(), nanos, seq));
+            let path = std::env::temp_dir().join(format!(
+                "spe_windowManager_{}_{}_{}",
+                std::process::id(),
+                nanos,
+                seq
+            ));
             fs::create_dir_all(&path).expect("create temp dir");
             TempDir(path)
         }
@@ -327,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn roundTripPreservesLayoutAndTheme() {
+    fn roundTripPreservesLayoutThemeAndExtendedSettings() {
         let tmp = TempDir::new();
         let path = tmp.path().join("workspace.json");
         let mut layout = defaultWorkspace();
@@ -337,6 +339,11 @@ mod tests {
         layout.panels[1].windowPosition = Some(WindowPosition { x: 100, y: 50 });
         layout.panels[1].alwaysOnTop = Some(true);
         layout.settings.showMotionDebugPanel = false;
+        layout.settings.autoSaveEnabled = true;
+        layout.settings.autoSaveIntervalSec = 120;
+        layout.settings.switchSaveBehavior = "save".into();
+        layout.settings.softBrushHardness = 0.75;
+        layout.settings.shortcuts.insert("tool.brush".into(), "KeyQ".into());
         let theme = ThemeConfig {
             primary: "#112233".into(),
             background: "#FFEEDD".into(),
@@ -354,13 +361,17 @@ mod tests {
         assert_eq!(loaded.panels[1].state, PanelState::Detached);
         assert_eq!(loaded.panels[1].alwaysOnTop, Some(true));
         assert!(!loaded.settings.showMotionDebugPanel);
+        assert!(loaded.settings.autoSaveEnabled);
+        assert_eq!(loaded.settings.autoSaveIntervalSec, 120);
+        assert_eq!(loaded.settings.switchSaveBehavior, "save");
+        assert!((loaded.settings.softBrushHardness - 0.75).abs() < f32::EPSILON);
+        assert_eq!(loaded.settings.shortcuts.get("tool.brush").map(String::as_str), Some("KeyQ"));
         let pos = loaded.panels[1].windowPosition.as_ref().unwrap();
         assert_eq!((pos.x, pos.y), (100, 50));
         assert_eq!(loadedTheme.primary, "#112233");
         assert!((loadedTheme.borderOpacity - 0.32).abs() < f32::EPSILON);
     }
 
-    /// workspace.json 缺失时 loadDefaultWorkspace 返回内置默认布局。
     #[test]
     fn missingFileFallsBackToDefaultLayout() {
         let _lock = envLock();
@@ -375,7 +386,6 @@ mod tests {
         assert!(!dataPaths::workspaceFile().exists());
     }
 
-    /// 写盘 → 读回，sizes 与 activeSkin 字段一致。
     #[test]
     fn saveAndLoadDefaultWorkspaceRoundTrip() {
         let _lock = envLock();
@@ -396,7 +406,6 @@ mod tests {
         assert!(!loaded.settings.showMotionDebugPanel);
     }
 
-    /// dataDir 不存在时 saveDefaultWorkspace 必须递归创建。
     #[test]
     fn saveDefaultWorkspaceCreatesDataDir() {
         let _lock = envLock();
@@ -408,7 +417,6 @@ mod tests {
         assert!(dataPaths::workspaceFile().is_file());
     }
 
-    /// 串行化访问 SKIN_EDITOR_APP_ROOT，避免与其他测试竞争同一进程级 env。
     fn envLock() -> MutexGuard<'static, ()> {
         crate::dataPaths::appRootEnvLock()
     }

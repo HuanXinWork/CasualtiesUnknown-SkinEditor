@@ -1,16 +1,12 @@
-// 调色盘预设色组（仿 SAI2 配色）。
-// 每组 8 色覆盖某一主题用色范围，i18n key 见 swatchGroupKey。
-// 数值是 sRGB 8bit hex；运行时 hexToRgb 解析后写入 sessionStore.color。
+// 调色盘预设主题色组（key 对应 `colorPalette.swatchGroup_<key>`）。
 
 import type { Rgb } from "./colorMath";
 
 export interface SwatchGroup {
-  /** i18n key 后缀，对齐 colorPalette.swatchGroup_<key> */
   key: string;
   colors: Rgb[];
 }
 
-// 标准 12 色（基础色相轮采样 + 黑白）
 const standard: Rgb[] = [
   [0, 0, 0],
   [255, 255, 255],
@@ -24,7 +20,6 @@ const standard: Rgb[] = [
   [230, 0, 180],
 ];
 
-// 灰阶 8 色
 const gray: Rgb[] = [
   [0, 0, 0],
   [40, 40, 40],
@@ -36,7 +31,6 @@ const gray: Rgb[] = [
   [255, 255, 255],
 ];
 
-// 肤色（亚洲/欧美中性）
 const skin: Rgb[] = [
   [255, 224, 196],
   [255, 205, 170],
@@ -48,7 +42,6 @@ const skin: Rgb[] = [
   [85, 50, 35],
 ];
 
-// 头发/毛发常用
 const hair: Rgb[] = [
   [40, 30, 25],
   [80, 50, 35],
@@ -60,7 +53,6 @@ const hair: Rgb[] = [
   [60, 50, 80],
 ];
 
-// 服装基础（衣物面料常用色）
 const cloth: Rgb[] = [
   [240, 70, 75],
   [240, 130, 60],
@@ -72,7 +64,6 @@ const cloth: Rgb[] = [
   [50, 50, 60],
 ];
 
-// 阴影/高光（不同色温）
 const shadow: Rgb[] = [
   [55, 70, 110],
   [80, 50, 90],
@@ -84,7 +75,6 @@ const shadow: Rgb[] = [
   [225, 240, 220],
 ];
 
-// 自然环境（草/树/天/水）
 const nature: Rgb[] = [
   [100, 170, 70],
   [60, 120, 50],
@@ -96,7 +86,6 @@ const nature: Rgb[] = [
   [200, 230, 255],
 ];
 
-// 警示/血液
 const blood: Rgb[] = [
   [200, 30, 30],
   [150, 20, 25],
@@ -108,7 +97,6 @@ const blood: Rgb[] = [
   [80, 30, 20],
 ];
 
-// 复古/做旧
 const vintage: Rgb[] = [
   [225, 195, 145],
   [195, 150, 110],

@@ -1,7 +1,14 @@
+// 前端主入口：根据 URL 查询参数分派主工作台、独立面板子窗口或参考图片子窗口。
+
 import "./styles/theme.css";
 import "./styles/motion.css";
 import { applyTheme, defaultTheme } from "./stateStore/theme";
 import { sessionStore } from "./stateStore";
+import {
+  initWorkspaceCache,
+  updateWorkspace,
+  upsertPanelCollapsed,
+} from "./stateStore/workspacePersist";
 import { mountPartPanel } from "./partPanel";
 import { mountEditorCanvas } from "./editorCanvas";
 import { mountLayerPanel } from "./layerPanel";
@@ -11,28 +18,21 @@ import { mountPreviewCanvas } from "./previewCanvas";
 import { mountWingDebugPanel } from "./wingDebugPanel";
 import { mountBloodPanel } from "./bloodPanel";
 import { createDockable, registerDockHost, type DockableHandle } from "./dockHost";
-import { getWorkspace } from "./apiClient";
-import { saveWorkspace } from "./apiClient";
-import { hydrateFromWorkspace, makeDragHandle, getSize, setPersistContext } from "./layoutEngine";
+import { getWorkspace, releaseImage, storeImage } from "./apiClient";
+import { getSize, hydrateFromWorkspace, makeDragHandle, setPersistContext } from "./layoutEngine";
 import type { PanelLayout } from "./stateStore/types";
 import { subscribeLang, t } from "./i18n";
 import { attachCloseGuard } from "./closeGuard";
 import { mountImageWindow } from "./imageWindow";
-import { storeImage, releaseImage } from "./apiClient";
 import { startUpdateChecker } from "./updateChecker";
 import { mountAutoSave } from "./autoSave";
+import { showToast } from "./toast";
+import { ICON_CLOSE, ICON_PIN, ICON_PIN_OFF, ICON_REATTACH } from "./toolPanel/toolIcons";
 
-// 与 src-tauri/Cargo.toml `version` / settingsPanel APP_META.version 保持一致。
 const APP_VERSION = "1.0.7";
-import {
-  ICON_PIN,
-  ICON_PIN_OFF,
-  ICON_REATTACH,
-  ICON_CLOSE,
-} from "./toolPanel/toolIcons";
+const DEFAULT_SKIN_ROOT = "data/skin";
+export const DEFAULT_WORKSPACE_PATH = "data/workspace.json";
 
-// 全局错误兜底：万一 mountApp 抛异常或异步 reject，把错误显示在 #app 内而非
-// 留下空白窗口让用户误判为"加载失败"。Tauri 桌面壳与 Web 模式都生效。
 window.addEventListener("error", (e) => reportError(e.message, e.error));
 window.addEventListener("unhandledrejection", (e) => {
   const r = (e as PromiseRejectionEvent).reason;
@@ -52,29 +52,15 @@ function reportError(msg: string, err: unknown): void {
   root.appendChild(banner);
 }
 
-const DEFAULT_SKIN_ROOT = "data/skin";
-// workspace.json 默认与 assembly.json 同级，便于皮肤目录整体迁移。
-export const DEFAULT_WORKSPACE_PATH = "data/workspace.json";
-
 applyTheme(defaultTheme());
 
-// 子窗口启动时通过 URL `?panel=<id>` 仅渲染单个面板，独占整个 webview。
-// 每个 webview 独立 JS heap，子窗口的 sessionStore 与主窗口不共享。
 const panelIdParam = new URLSearchParams(location.search).get("panel");
 const imageTokenParam = new URLSearchParams(location.search).get("image");
 
-// 启动时拉 workspace.json，按 panelId 把持久化 size 覆盖到下面的 dockable initialSize；
-// theme 同步写到 CSS 变量。失败 / fallback 都用默认值，不阻塞挂载。
-// vite build 默认目标不支持 top-level await，挂载逻辑包在 async 函数内。
 const workspaceSizeByPanelId = new Map<string, { width: number; height: number }>();
 const workspaceCollapsedByPanelId = new Map<string, boolean>();
-// 4 个 mainPane.* size 持久化到 workspace.json 的 sizes 字段。
 let lastLoadedPanels: PanelLayout[] = [];
 
-// panelId → 挂载函数 + 标题 i18n key。
-// SINGLE_PANEL_CONFIG 必须在 mountSinglePanel 同步调用之前声明：const 表只提升声明
-// 不提升初始化，子窗口入口 `?panel=xxx` 同步走 mountSinglePanel，进入 await 之前
-// 就读取 SINGLE_PANEL_CONFIG[id]，否则触发 TDZ。
 const SINGLE_PANEL_CONFIG: Record<
   string,
   { titleKey: string; mount: (el: HTMLElement) => unknown }
@@ -91,18 +77,18 @@ const SINGLE_PANEL_CONFIG: Record<
 if (panelIdParam) {
   void mountSinglePanel(panelIdParam);
 } else if (imageTokenParam) {
-  mountImageWindow(imageTokenParam);
+  void mountImageWindow(imageTokenParam);
 } else {
   void mountMainWindow();
 }
 
 async function mountMainWindow(): Promise<void> {
   try {
-    const ws = await getWorkspace(DEFAULT_WORKSPACE_PATH);
+    const ws = await initWorkspaceCache(DEFAULT_WORKSPACE_PATH);
     applyTheme(ws.theme);
-    // 同步到 sessionStore，让主题 popover 在刷新后能回显持久化颜色。
     sessionStore.setState({
       theme: ws.theme,
+      shortcuts: ws.layout.settings?.shortcuts,
       showMotionDebugPanel: ws.layout.settings?.showMotionDebugPanel ?? true,
       showWingDebugPanel: ws.layout.settings?.showWingDebugPanel ?? false,
       showBloodPanel: ws.layout.settings?.showBloodPanel ?? false,
@@ -117,11 +103,10 @@ async function mountMainWindow(): Promise<void> {
         workspaceSizeByPanelId.set(p.id, { width: p.size.width, height: p.size.height });
         workspaceCollapsedByPanelId.set(p.id, p.collapsed === true);
       }
-      // 列宽 / 行高交给 layoutEngine 反序列化（含 splitRatios → sizes 兼容）。
       hydrateFromWorkspace(ws.layout);
     }
   } catch (e) {
-    console.warn("[main] getWorkspace failed, fallback to defaults", e);
+    console.warn("[main] initWorkspaceCache failed, fallback to defaults", e);
   }
   mountApp();
   startUpdateChecker(APP_VERSION);
@@ -135,17 +120,15 @@ async function mountSinglePanel(id: string): Promise<void> {
     root.textContent = `Unknown panel: ${id}`;
     return;
   }
-  // 子窗口尺寸自适应：viewport 占满，根容器 flex column 撑开整个面板。
   document.documentElement.style.height = "100%";
   document.body.style.height = "100%";
   root.style.cssText = "display:flex;flex-direction:column;height:100vh;width:100vw;overflow:hidden;";
-  // 子窗口顶部自渲染工具栏：置顶 / 嵌回主窗口 / 关闭。
-  // 系统标题栏仍由 Tauri 默认 decorations 提供。
+
   const toolbar = document.createElement("div");
   toolbar.className = "subwindow-toolbar";
   toolbar.style.cssText =
     "flex:none;display:flex;justify-content:flex-end;gap:4px;padding:4px 8px;" +
-    "border-bottom:1px solid rgba(0,0,0,var(--border-opacity));";
+    "border-bottom:1px solid rgba(var(--border-rgb),var(--border-opacity));";
   const pinBtn = document.createElement("button");
   pinBtn.className = "btn cp-tool-btn";
   pinBtn.type = "button";
@@ -158,26 +141,25 @@ async function mountSinglePanel(id: string): Promise<void> {
   closeBtn.className = "btn cp-tool-btn";
   closeBtn.type = "button";
   closeBtn.innerHTML = ICON_CLOSE;
-  toolbar.appendChild(pinBtn);
-  toolbar.appendChild(reattachBtn);
-  toolbar.appendChild(closeBtn);
+  toolbar.append(pinBtn, reattachBtn, closeBtn);
+
   const panelHost = document.createElement("div");
   panelHost.style.cssText = "flex:1;min-height:0;display:flex;flex-direction:column;overflow:auto;";
-  root.appendChild(toolbar);
-  root.appendChild(panelHost);
-  // i18n tooltip 跟主窗口的 dockable 工具栏一致。
+  root.append(toolbar, panelHost);
+
   const applyToolbarText = (): void => {
     pinBtn.title = t("common.alwaysOnTop");
     reattachBtn.title = t("common.reattachToMain");
     closeBtn.title = t("common.close");
   };
   applyToolbarText();
-  // 子窗口主题尽量与主窗口一致：拉 workspace 失败则保留 defaultTheme()，不阻塞渲染。
+
   try {
     const ws = await getWorkspace(DEFAULT_WORKSPACE_PATH);
     applyTheme(ws.theme);
     sessionStore.setState({
       theme: ws.theme,
+      shortcuts: ws.layout.settings?.shortcuts,
       showMotionDebugPanel: ws.layout.settings?.showMotionDebugPanel ?? true,
       showWingDebugPanel: ws.layout.settings?.showWingDebugPanel ?? false,
       showBloodPanel: ws.layout.settings?.showBloodPanel ?? false,
@@ -192,7 +174,6 @@ async function mountSinglePanel(id: string): Promise<void> {
     applyToolbarText();
   });
 
-  // 三个按钮统一通过 Tauri invoke 落地；非 Tauri（dev 浏览器单开页）下仅前端 close。
   const tauri = (window as unknown as {
     __TAURI_INTERNALS__?: { invoke?: (cmd: string, args?: unknown) => Promise<unknown> };
   }).__TAURI_INTERNALS__;
@@ -206,15 +187,13 @@ async function mountSinglePanel(id: string): Promise<void> {
     if (typeof invoke === "function") {
       invoke("plugin:window|set_always_on_top", { value: alwaysOnTop }).catch((e) => {
         console.warn("[subwindow] set_always_on_top failed", e);
-        // 失败回退按钮态，避免 UI 误判
         alwaysOnTop = !alwaysOnTop;
         pinBtn.classList.toggle("btn-primary", alwaysOnTop);
         pinBtn.innerHTML = alwaysOnTop ? ICON_PIN_OFF : ICON_PIN;
       });
     }
   });
-  // "嵌回主窗口"与关闭等价——主窗口的 watchPanelClosed 探测到子窗口消失会
-  // 自动 dockTo 原 host。比让前端跨窗口 emit 复杂事件简单得多。
+
   const closeSelf = (): void => {
     if (typeof invoke === "function") {
       invoke("plugin:window|close").catch(() => window.close());
@@ -225,29 +204,24 @@ async function mountSinglePanel(id: string): Promise<void> {
   reattachBtn.addEventListener("click", closeSelf);
   closeBtn.addEventListener("click", closeSelf);
 
-  // 拖到主窗口顶栏自动嵌回：工具栏空白区作拖拽热区，mousedown 立刻调
-  // plugin:window|start_dragging 让 OS 接管窗口拖动；主窗口端轮询子窗口位置，
-  // 命中顶栏 dock zone 即关闭子窗口。
-  // 子窗口侧只需触发 OS 拖拽，无需自己跟踪坐标。
+  toolbar.style.cursor = "grab";
   toolbar.addEventListener("mousedown", (e) => {
-    // 按钮区按下不拖：用 closest 过滤 button。
     if ((e.target as HTMLElement).closest("button")) return;
+    toolbar.style.cursor = "grabbing";
     if (typeof invoke === "function") {
       invoke("plugin:window|start_dragging").catch((err) => {
         console.warn("[subwindow] start_dragging failed", err);
       });
     }
   });
-  toolbar.style.cursor = "grab";
-  toolbar.addEventListener("mousedown", () => { toolbar.style.cursor = "grabbing"; });
-  document.addEventListener("mouseup", () => { toolbar.style.cursor = "grab"; });
+  document.addEventListener("mouseup", () => {
+    toolbar.style.cursor = "grab";
+  });
 }
 
 function mountApp(): void {
   const root = document.getElementById("app");
   if (!root) return;
-  // 自适应布局：所有 sidebar host 用 flex basis 分配；canvas 中列弹性；
-  // dockable 在 host 内按自身 width/height 渲染，画布与其他容器互不遮挡。
   root.innerHTML =
     `<div id="app-shell" style="display:flex;flex-direction:column;height:100vh;box-sizing:border-box;overflow:hidden;">` +
     `<header id="app-tool-panel" style="flex:none;height:48px;margin:8px 8px 0;"></header>` +
@@ -262,7 +236,7 @@ function mountApp(): void {
     `<div class="layout-divider layout-divider-v" data-role="divider-preview"></div>` +
     `<section id="app-sidebar-preview" style="flex:0 0 ${getSize("mainPane.preview") ?? 320}px;min-width:0;display:flex;"></section>` +
     `<div class="layout-divider layout-divider-v" data-role="divider-right"></div>` +
-    `<aside id="app-sidebar-right" style="flex:0 0 ${getSize("mainPane.right") ?? 280}px;min-width:0;display:flex;"></aside>` +
+    `<aside id="app-sidebar-right" style="flex:0 0 ${getSize("mainPane.right") ?? 280}px;min-width:0;display:flex;flex-direction:column;gap:8px;overflow-y:auto;overflow-x:hidden;"></aside>` +
     `</div>` +
     `</div>`;
 
@@ -272,16 +246,14 @@ function mountApp(): void {
     DEFAULT_WORKSPACE_PATH,
   );
 
-  // 收集 DockableHandle 备用。app-shell 是单例 SPA，不会重新挂载，无需主动 destroy。
-  const dockables: DockableHandle[] = [];
   const panels: Array<{
     host: string;
     titleKey: string;
     panelId: string;
     initialSize: { width: number; height: number };
     mount: (el: HTMLElement, dock: DockableHandle) => unknown;
-    // previewCanvas 内部依赖外层 flex column 才能让 stage 区占据剩余空间。
     flexContent?: boolean;
+    fillHostHeight?: boolean;
   }> = [
     {
       host: "app-sidebar-left",
@@ -289,6 +261,7 @@ function mountApp(): void {
       panelId: "partPanel",
       initialSize: { width: 240, height: 600 },
       mount: (el) => mountPartPanel(el, DEFAULT_SKIN_ROOT),
+      fillHostHeight: true,
     },
     {
       host: "app-editor-canvas",
@@ -297,6 +270,7 @@ function mountApp(): void {
       initialSize: { width: 480, height: 480 },
       mount: (el, dock) => mountEditorCanvas(el, DEFAULT_SKIN_ROOT, dock),
       flexContent: true,
+      fillHostHeight: true,
     },
     {
       host: "app-sidebar-preview",
@@ -305,6 +279,7 @@ function mountApp(): void {
       initialSize: { width: 320, height: 360 },
       mount: (el) => mountPreviewCanvas(el, DEFAULT_SKIN_ROOT),
       flexContent: true,
+      fillHostHeight: true,
     },
     {
       host: "app-bottom-layers",
@@ -312,49 +287,35 @@ function mountApp(): void {
       panelId: "layerPanel",
       initialSize: { width: 480, height: 200 },
       mount: (el) => mountLayerPanel(el, DEFAULT_SKIN_ROOT),
+      fillHostHeight: true,
     },
     {
       host: "app-sidebar-right",
       titleKey: "colorPalette.title",
       panelId: "colorPalette",
-      initialSize: { width: 280, height: 600 },
+      initialSize: { width: 280, height: 520 },
       mount: (el) => mountColorPalette(el),
     },
     {
       host: "app-sidebar-right",
       titleKey: "wingDebugPanel.title",
       panelId: "wingDebugPanel",
-      initialSize: { width: 280, height: 600 },
+      initialSize: { width: 280, height: 360 },
       mount: (el) => mountWingDebugPanel(el, DEFAULT_SKIN_ROOT),
     },
     {
       host: "app-sidebar-right",
       titleKey: "bloodPanel.title",
       panelId: "bloodPanel",
-      initialSize: { width: 280, height: 600 },
+      initialSize: { width: 280, height: 420 },
       mount: (el) => mountBloodPanel(el, DEFAULT_SKIN_ROOT),
     },
   ];
-  // dock 与 titleKey 映射：lang 切换时遍历重写每个 dockable 的标题。
+
   const dockTitleKeys: Array<{ dock: DockableHandle; titleKey: string }> = [];
   let wingDebugDock: DockableHandle | null = null;
   let bloodPanelDock: DockableHandle | null = null;
 
-  // dock 折叠状态写盘：300ms debounce，按 collapsed map 覆盖现有 panels 整体写回。
-  let collapsedSaveTimer: number | null = null;
-  function schedulePersistCollapsed(): void {
-    if (collapsedSaveTimer !== null) window.clearTimeout(collapsedSaveTimer);
-    collapsedSaveTimer = window.setTimeout(() => {
-      collapsedSaveTimer = null;
-      void getWorkspace(DEFAULT_WORKSPACE_PATH).then((ws) => {
-        const panels = ws.layout.panels.map((p) => {
-          const c = workspaceCollapsedByPanelId.get(p.id);
-          return c === undefined ? p : { ...p, collapsed: c };
-        });
-        return saveWorkspace(DEFAULT_WORKSPACE_PATH, { ...ws.layout, panels }, ws.theme);
-      }).catch((e) => console.warn("[main] persist collapsed failed", e));
-    }, 300);
-  }
   for (const cfg of panels) {
     const host = document.getElementById(cfg.host) as HTMLElement;
     const persisted = workspaceSizeByPanelId.get(cfg.panelId);
@@ -362,9 +323,10 @@ function mountApp(): void {
       title: t(cfg.titleKey),
       panelId: cfg.panelId,
       initialSize: persisted ?? cfg.initialSize,
-      // dockable 不再强制 fill 100%——按自身 width/height 渲染让边把手能自由 resize；
-      // CSS 上加 max-width/max-height: 100% 防溢出遮挡邻居 host。
     });
+    if (cfg.host === "app-sidebar-right") {
+      dock.rootEl.style.flex = "0 0 auto";
+    }
     if (cfg.flexContent) {
       dock.contentEl.style.display = "flex";
       dock.contentEl.style.flexDirection = "column";
@@ -372,7 +334,6 @@ function mountApp(): void {
     host.appendChild(dock.rootEl);
     registerDockHost(host, t(cfg.titleKey));
     cfg.mount(dock.contentEl, dock);
-    dockables.push(dock);
     dockTitleKeys.push({ dock, titleKey: cfg.titleKey });
     if (cfg.panelId === "wingDebugPanel") wingDebugDock = dock;
     if (cfg.panelId === "bloodPanel") bloodPanelDock = dock;
@@ -381,17 +342,31 @@ function mountApp(): void {
     }
     dock.onCollapsedChange((collapsed) => {
       workspaceCollapsedByPanelId.set(cfg.panelId, collapsed);
-      schedulePersistCollapsed();
+      updateWorkspace(
+        DEFAULT_WORKSPACE_PATH,
+        (draft) => {
+          draft.layout.panels = upsertPanelCollapsed(
+            draft.layout.panels,
+            cfg.panelId,
+            collapsed,
+            cfg.initialSize,
+          );
+          lastLoadedPanels = draft.layout.panels;
+        },
+        300,
+      );
     });
-    // 启动时让 dockable 视觉填满 host：取 host 实际尺寸塞回 dockable 自身 width/height，
-    // 后续用户拖边把手按数值自由调节，max-width/max-height: 100% 防溢出邻居。
     queueMicrotask(() => {
       const r = host.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) dock.setSize(Math.round(r.width), Math.round(r.height));
+      if (r.width <= 0) return;
+      if (cfg.fillHostHeight && r.height > 0) {
+        dock.setSize(Math.round(r.width), Math.round(r.height));
+      } else {
+        dock.setSize(Math.round(r.width), (persisted ?? cfg.initialSize).height);
+      }
     });
   }
 
-  // 翼调试面板默认隐藏；订阅 sessionStore.showWingDebugPanel 切 display。
   function applyWingDebugVisible(): void {
     if (!wingDebugDock) return;
     wingDebugDock.rootEl.style.display = sessionStore.getState().showWingDebugPanel ? "" : "none";
@@ -405,7 +380,6 @@ function mountApp(): void {
     }
   });
 
-  // 血液粒子面板默认隐藏；与 wing debug 同模式。
   function applyBloodPanelVisible(): void {
     if (!bloodPanelDock) return;
     bloodPanelDock.rootEl.style.display = sessionStore.getState().showBloodPanel ? "" : "none";
@@ -419,16 +393,16 @@ function mountApp(): void {
     }
   });
 
-  // lang 切换时仅刷新 dockable 标题，不重新挂载面板，保留交互状态。
   subscribeLang(() => {
     for (const { dock, titleKey } of dockTitleKeys) dock.setTitle(t(titleKey));
   });
-  // 4 个 layout-divider 由 layoutEngine 接管：拖动改 flex-basis + debounce 写盘。
+
   setPersistContext({
     workspacePath: DEFAULT_WORKSPACE_PATH,
     getPanels: () => lastLoadedPanels,
     getTheme: () => sessionStore.getState().theme,
   });
+
   const sidebarLeft = document.getElementById("app-sidebar-left") as HTMLElement;
   const sidebarPreview = document.getElementById("app-sidebar-preview") as HTMLElement;
   const sidebarRight = document.getElementById("app-sidebar-right") as HTMLElement;
@@ -444,21 +418,15 @@ function mountApp(): void {
     if (placeholder) placeholder.replaceWith(element);
   }
 
-  // 主窗口启动后挂关闭守卫：未保存退出确认。
   attachCloseGuard({ skinRoot: DEFAULT_SKIN_ROOT });
-
-  // 定时自动保存：按设置间隔把未保存部件写回。
   mountAutoSave(DEFAULT_SKIN_ROOT);
-
-  // 图片拖入：HTML5 dragover/drop 监听，常见格式 → dataURL → localStorage → 子窗口。
   attachImageDropHandler();
 }
 
 const IMAGE_MIME_RE = /^image\/(png|jpe?g|gif|webp|bmp|svg\+xml)$/i;
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8MB；dataURL 编码后约 10.7MB，留 localStorage 配额余量
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
 function attachImageDropHandler(): void {
-  // dragover 必须 preventDefault 才能触发 drop。监听 window 全局，覆盖任何子区域。
   window.addEventListener("dragover", (e) => {
     if (e.dataTransfer && Array.from(e.dataTransfer.items).some((it) => it.kind === "file")) {
       e.preventDefault();
@@ -471,18 +439,17 @@ function attachImageDropHandler(): void {
     if (files.length === 0) return;
     for (const file of files) {
       if (file.size > MAX_IMAGE_BYTES) {
-        showDropToast(`${file.name}: ${t("imageWindow.tooLarge")}`, "error");
+        showToast(`${file.name}: ${t("imageWindow.tooLarge")}`, "error");
         continue;
       }
       try {
         const base64 = await readAsBase64(file);
         const token = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        // 把字节存到 Rust 端进程内存，子窗口通过同 token 取回，主窗口取色也用 token 找像素。
         await storeImage(token, base64);
         await openImageWindow(token, file.name);
       } catch (err) {
         console.warn("[main] image drop failed", err);
-        showDropToast(`${file.name}: ${(err as Error)?.message ?? String(err)}`, "error");
+        showToast(`${file.name}: ${(err as Error)?.message ?? String(err)}`, "error");
       }
     }
   });
@@ -491,11 +458,7 @@ function attachImageDropHandler(): void {
 function readAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result);
-      // dataURL 形如 "data:image/png;base64,..."；后端会自己识别前缀。
-      resolve(result);
-    };
+    reader.onload = () => resolve(String(reader.result));
     reader.onerror = () => reject(reader.error ?? new Error("read failed"));
     reader.readAsDataURL(file);
   });
@@ -507,7 +470,6 @@ async function openImageWindow(token: string, fileName: string): Promise<void> {
   }).__TAURI_INTERNALS__;
   const invoke = internals?.invoke;
   if (typeof invoke !== "function") {
-    // Web 模式无法开真窗口：降级为新标签页。
     window.open(`?image=${encodeURIComponent(token)}`, "_blank");
     return;
   }
@@ -521,18 +483,11 @@ async function openImageWindow(token: string, fileName: string): Promise<void> {
         height: 480,
         decorations: true,
         alwaysOnTop: false,
-        // parent 让子窗口与主窗口建立 OS 级 owner 关系：主窗口最小化时子窗口跟随。
         parent: "main",
       },
     });
   } catch (e) {
     console.warn("[main] create image window failed", e);
-    // 创建失败回收 token 释放内存
     void releaseImage(token);
   }
-}
-
-function showDropToast(message: string, kind: "info" | "warn" | "error"): void {
-  // 内联 toast 避免 main.ts 反向依赖 toolPanel。复用 .toast 样式族。
-  import("./toast").then(({ showToast }) => showToast(message, kind));
 }

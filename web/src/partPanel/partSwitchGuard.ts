@@ -1,6 +1,16 @@
-// 切换部件守卫：当前部件有未保存改动时，按配置自动切换 / 先保存 / 弹框询问。
-import { savePart, getWorkspace, saveWorkspace, type ApiError } from "../apiClient";
-import { sessionStore, markPartClean, isPartDirty } from "../stateStore";
+// 未保存改动守卫：供切换部件、切换皮肤、导入皮肤包等操作统一拦截未落盘编辑。
+
+import { discardPart, savePart, type ApiError } from "../apiClient";
+import {
+  bumpAssemblyOverrideVersion,
+  getPartDirtyRevision,
+  isPartDirty,
+  markPartClean,
+  partIdToTargetPath,
+  sessionStore,
+} from "../stateStore";
+import { updateWorkspaceSettings } from "../stateStore/workspacePersist";
+import type { PartCategory } from "../stateStore/types";
 import { showToast } from "../toast";
 import { t } from "../i18n";
 
@@ -8,64 +18,67 @@ const WORKSPACE_PATH = "data/workspace.json";
 
 type Behavior = "auto" | "save";
 
-interface SwitchTarget {
+export interface SwitchTarget {
   partName: string;
-  category: import("../stateStore/types").PartCategory;
-}
-
-function applySwitch(target: SwitchTarget): void {
-  sessionStore.setState({ selectedPartName: target.partName, selectedCategory: target.category });
-}
-
-function partIdToTarget(skinRoot: string, partId: string): string | null {
-  const parts = partId.split("::");
-  if (parts.length !== 3) return null;
-  const [skinName, categoryDir, partName] = parts;
-  return `${skinRoot}/${skinName}/${categoryDir}/${partName}.png`;
+  category: PartCategory;
 }
 
 async function saveCurrent(skinRoot: string, partId: string): Promise<void> {
-  const target = partIdToTarget(skinRoot, partId);
+  const target = partIdToTargetPath(skinRoot, partId);
   if (!target) return;
+  const rev = getPartDirtyRevision(partId);
   await savePart(partId, target);
+  markPartClean(partId, rev);
+}
+
+async function discardCurrent(partId: string): Promise<void> {
+  try {
+    await discardPart(partId);
+  } catch (e) {
+    console.warn(`[partSwitchGuard] discardPart ${partId} failed`, e);
+  }
   markPartClean(partId);
+  bumpAssemblyOverrideVersion();
 }
 
 function persistBehavior(behavior: Behavior): void {
   sessionStore.setState({ switchSaveBehavior: behavior });
-  void getWorkspace(WORKSPACE_PATH)
-    .then((ws) => saveWorkspace(WORKSPACE_PATH, {
-      ...ws.layout,
-      settings: {
-        ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false, showBloodPanel: false }),
-        switchSaveBehavior: behavior,
-      },
-    }, ws.theme))
-    .catch((e) => console.warn(`[partSwitchGuard] persist behavior failed: ${String(e)}`));
+  updateWorkspaceSettings(WORKSPACE_PATH, { switchSaveBehavior: behavior });
 }
 
-/// 请求切换到目标部件；当前部件脏则按配置处理，未记住时弹框询问。
-export function requestSwitchPart(skinRoot: string, target: SwitchTarget): void {
+/** 拦截当前部件的未保存改动；干净或用户确认保存/丢弃后执行 `onProceed`。 */
+export function guardUnsavedCurrentPart(skinRoot: string, onProceed: () => void): void {
   const { currentPartId, switchSaveBehavior } = sessionStore.getState();
   if (!currentPartId || !isPartDirty(currentPartId)) {
-    applySwitch(target);
+    onProceed();
     return;
   }
   if (switchSaveBehavior === "auto") {
-    applySwitch(target);
+    void discardCurrent(currentPartId).finally(() => onProceed());
     return;
   }
   if (switchSaveBehavior === "save") {
     void saveCurrent(skinRoot, currentPartId)
-      .catch((e: ApiError) => showToast(e?.message ?? String(e), "error"))
-      .finally(() => applySwitch(target));
+      .then(() => onProceed())
+      .catch((e: ApiError) => showToast(e?.message ?? String(e), "error"));
     return;
   }
-  openSwitchDialog(skinRoot, currentPartId, target);
+  openSwitchDialog(skinRoot, currentPartId, onProceed);
 }
 
-function openSwitchDialog(skinRoot: string, currentPartId: string, target: SwitchTarget): void {
+export function requestSwitchPart(skinRoot: string, target: SwitchTarget): void {
+  const cur = sessionStore.getState();
+  if (cur.selectedPartName === target.partName && cur.selectedCategory === target.category) {
+    return;
+  }
+  guardUnsavedCurrentPart(skinRoot, () => {
+    sessionStore.setState({ selectedPartName: target.partName, selectedCategory: target.category });
+  });
+}
+
+function openSwitchDialog(skinRoot: string, currentPartId: string, onProceed: () => void): void {
   const overlay = document.createElement("div");
+  overlay.dataset.modalOpen = "true";
   overlay.style.cssText =
     "position:fixed;inset:0;z-index:2100;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;";
   const dialog = document.createElement("div");
@@ -94,37 +107,43 @@ function openSwitchDialog(skinRoot: string, currentPartId: string, target: Switc
   const cancelBtn = document.createElement("button");
   cancelBtn.className = "btn";
   cancelBtn.textContent = t("switchSave.cancel");
-  const autoBtn = document.createElement("button");
-  autoBtn.className = "btn";
-  autoBtn.textContent = t("switchSave.discard");
+  const discardBtn = document.createElement("button");
+  discardBtn.className = "btn";
+  discardBtn.textContent = t("switchSave.discard");
   const saveBtn = document.createElement("button");
   saveBtn.className = "btn btn-primary";
   saveBtn.textContent = t("switchSave.save");
-  btnRow.append(cancelBtn, autoBtn, saveBtn);
+  btnRow.append(cancelBtn, discardBtn, saveBtn);
 
   dialog.append(title, desc, rememberRow, btnRow);
   document.body.appendChild(overlay);
 
   function close(): void {
-    document.removeEventListener("keydown", onKey);
+    document.removeEventListener("keydown", onKey, true);
     overlay.remove();
   }
   function onKey(e: KeyboardEvent): void {
-    if (e.key === "Escape") close();
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    }
   }
   cancelBtn.addEventListener("click", close);
-  overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
-  autoBtn.addEventListener("click", () => {
+  overlay.addEventListener("mousedown", (e) => {
+    if (e.target === overlay) close();
+  });
+  discardBtn.addEventListener("click", () => {
     if (rememberCb.checked) persistBehavior("auto");
     close();
-    applySwitch(target);
+    void discardCurrent(currentPartId).finally(() => onProceed());
   });
   saveBtn.addEventListener("click", () => {
     if (rememberCb.checked) persistBehavior("save");
     close();
     void saveCurrent(skinRoot, currentPartId)
-      .catch((e: ApiError) => showToast(e?.message ?? String(e), "error"))
-      .finally(() => applySwitch(target));
+      .then(() => onProceed())
+      .catch((e: ApiError) => showToast(e?.message ?? String(e), "error"));
   });
-  document.addEventListener("keydown", onKey);
+  document.addEventListener("keydown", onKey, true);
 }

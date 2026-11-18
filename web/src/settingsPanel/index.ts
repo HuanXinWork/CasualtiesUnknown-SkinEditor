@@ -1,9 +1,8 @@
-// settingsPanel：toolbar 上"设置"按钮的弹出面板。当前承载快捷键编辑 + 关于弹窗。
-// 设计上独立于 toolPanel，避免那个文件继续膨胀；与 themeSettings popover 同范式。
+// 工具栏设置弹出面板（调试面板开关、自动保存、切部件策略、快捷键录制与关于弹窗）。
 
 import { sessionStore } from "../stateStore";
+import { updateWorkspaceSettings } from "../stateStore/workspacePersist";
 import { subscribeLang, t } from "../i18n";
-import { getWorkspace, saveWorkspace } from "../apiClient";
 import {
   ACTION_IDS,
   DEFAULT_SHORTCUTS,
@@ -11,10 +10,9 @@ import {
   encodeKeyCombo,
   type ActionId,
 } from "../shortcuts";
+import { showToast } from "../toast";
 
-// 关于面板的元数据。version 与 src-tauri/Cargo.toml / tauri.conf.json 保持一致。
 const APP_META = {
-  // 与 src-tauri/Cargo.toml `version` 保持一致；版权字符串与 tauri.conf.json bundle.copyright 同步。
   name: "CasualtiesUnknown-SkinEditor",
   version: "1.0.7",
   authorName: "huanxin886",
@@ -23,21 +21,20 @@ const APP_META = {
   copyright: "Copyright (c) 2026 huanxin886",
 };
 
-/** 把 popover 挂到 trigger 按钮下方。返回控制句柄：toggle / close / destroy。 */
 export interface SettingsPopoverHandle {
   toggle(): void;
   close(): void;
   destroy(): void;
 }
 
-// 关于弹窗。半透明遮罩 + 居中卡片，含版本 / 作者 / 仓库链接 / 免责声明。
-// 复用 panel 样式，按 Esc 或点遮罩关闭；同一时刻只允许一个实例。
 let activeAboutModal: HTMLElement | null = null;
+
 function showAboutModal(): void {
   if (activeAboutModal) return;
   const overlay = document.createElement("div");
+  overlay.dataset.modalOpen = "true";
   overlay.style.cssText =
-    "position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:1500;" +
+    "position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:1500;" +
     "display:flex;align-items:center;justify-content:center;";
   const card = document.createElement("div");
   card.className = "panel";
@@ -51,11 +48,14 @@ function showAboutModal(): void {
   const meta = document.createElement("div");
   meta.style.cssText = "display:flex;flex-direction:column;gap:4px;margin-bottom:12px;";
   const verRow = document.createElement("div");
-  verRow.innerHTML = `<span style="opacity:0.6;">${t("settings.aboutVersion")}：</span><span class="mono">${APP_META.version}</span>`;
+  const verLabel = document.createElement("span");
+  verLabel.style.opacity = "0.6";
+  verLabel.textContent = `${t("settings.aboutVersion")}：`;
+  const verVal = document.createElement("span");
+  verVal.className = "mono";
+  verVal.textContent = APP_META.version;
+  verRow.append(verLabel, verVal);
 
-  // 作者名做成可点击元素调 tauri-plugin-opener 唤起系统浏览器；
-  // Tauri webview 内 `<a target="_blank">` 默认不会跳系统浏览器（会被吞）。
-  // Web 模式下回落到 window.open。
   const authorRow = document.createElement("div");
   const authorLabel = document.createElement("span");
   authorLabel.style.opacity = "0.6";
@@ -68,8 +68,7 @@ function showAboutModal(): void {
     e.preventDefault();
     openExternalUrl(APP_META.authorUrl);
   });
-  authorRow.appendChild(authorLabel);
-  authorRow.appendChild(authorLink);
+  authorRow.append(authorLabel, authorLink);
 
   const repoRow = document.createElement("div");
   const repoLabel = document.createElement("span");
@@ -83,11 +82,9 @@ function showAboutModal(): void {
     e.preventDefault();
     openExternalUrl(APP_META.repo);
   });
-  repoRow.appendChild(repoLabel);
-  repoRow.appendChild(repoLink);
-  meta.appendChild(verRow);
-  meta.appendChild(authorRow);
-  meta.appendChild(repoRow);
+  repoRow.append(repoLabel, repoLink);
+  meta.append(verRow, authorRow, repoRow);
+
   const copyrightRow = document.createElement("div");
   copyrightRow.style.cssText = "opacity:0.55;font-size:12px;margin-top:2px;";
   copyrightRow.textContent = APP_META.copyright;
@@ -95,18 +92,17 @@ function showAboutModal(): void {
   card.appendChild(meta);
 
   const disclaimer = document.createElement("div");
-  disclaimer.style.cssText = "padding:8px 10px;background:rgba(0,0,0,0.04);border-radius:4px;font-size:12px;opacity:0.85;margin-bottom:12px;";
+  disclaimer.style.cssText =
+    "padding:8px 10px;background:rgba(var(--border-rgb),0.06);border-radius:4px;font-size:12px;opacity:0.85;margin-bottom:12px;";
   disclaimer.textContent = t("settings.aboutDisclaimer");
   card.appendChild(disclaimer);
 
-  // Star 求好评条：点击跳仓库。
   const starPlea = document.createElement("div");
-  starPlea.style.cssText = "padding:8px 10px;background:rgba(255,196,0,0.10);border:1px solid rgba(255,196,0,0.35);border-radius:4px;font-size:12px;margin-bottom:12px;cursor:pointer;line-height:1.5;";
+  starPlea.style.cssText =
+    "padding:8px 10px;background:rgba(255,196,0,0.12);border:1px solid rgba(255,196,0,0.4);border-radius:4px;font-size:12px;margin-bottom:12px;cursor:pointer;line-height:1.5;";
   starPlea.title = APP_META.repo;
   starPlea.textContent = t("settings.aboutStarPlea");
-  starPlea.addEventListener("click", () => {
-    openExternalUrl(APP_META.repo);
-  });
+  starPlea.addEventListener("click", () => openExternalUrl(APP_META.repo));
   card.appendChild(starPlea);
 
   const footer = document.createElement("div");
@@ -137,12 +133,10 @@ function showAboutModal(): void {
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) close();
   });
-  // 卡片内点击不冒泡到 overlay 关闭；不阻止链接默认行为。
   card.addEventListener("click", (e) => e.stopPropagation());
   document.addEventListener("keydown", onKey, true);
 }
 
-// 调系统默认浏览器打开 URL。Tauri 走 plugin:opener；Web / fallback 走 window.open。
 function openExternalUrl(url: string): void {
   if (!url) return;
   const internals = (window as unknown as {
@@ -152,7 +146,6 @@ function openExternalUrl(url: string): void {
   if (typeof invoke === "function") {
     invoke("plugin:opener|open_url", { url }).catch((e) => {
       console.warn(`[settingsPanel] open_url failed: ${String(e)}`);
-      // Tauri 调用失败时退回浏览器 window.open，至少给用户一次机会。
       window.open(url, "_blank", "noopener,noreferrer");
     });
     return;
@@ -166,52 +159,39 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
   popover.hidden = true;
   popover.style.cssText =
     "position:fixed;z-index:1200;min-width:280px;max-width:360px;max-height:60vh;" +
-    "overflow:auto;padding:8px 0;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,0.15);";
+    "overflow:auto;padding:8px 0;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,0.2);";
   document.body.appendChild(popover);
 
-  // 当前正在录制快捷键的 action id；null 表示未在录制。
   let recordingId: ActionId | null = null;
 
-  // 把自动保存设置同步到 sessionStore 并持久化到 workspace.settings。
+  function persistShortcuts(overrides: Record<string, string>): void {
+    sessionStore.setState({ shortcuts: overrides });
+    updateWorkspaceSettings(workspacePath, { shortcuts: { ...overrides } });
+  }
+
   function persistAutoSave(patch: { autoSaveEnabled?: boolean; autoSaveIntervalSec?: number }): void {
     sessionStore.setState(patch);
     const st = sessionStore.getState();
-    void getWorkspace(workspacePath)
-      .then((ws) => saveWorkspace(workspacePath, {
-        ...ws.layout,
-        settings: {
-          ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false, showBloodPanel: false }),
-          autoSaveEnabled: st.autoSaveEnabled,
-          autoSaveIntervalSec: st.autoSaveIntervalSec,
-        },
-      }, ws.theme))
-      .catch((e) => {
-        console.warn(`[settingsPanel] persist autoSave failed: ${String(e)}`);
-      });
+    updateWorkspaceSettings(workspacePath, {
+      autoSaveEnabled: st.autoSaveEnabled,
+      autoSaveIntervalSec: st.autoSaveIntervalSec,
+    });
   }
 
-  // 把切部件保存行为同步到 sessionStore 并持久化。
   function persistSwitchBehavior(behavior: "ask" | "save" | "auto"): void {
-    // "ask" 在 sessionStore 中以 "" 表示首次弹框语义。
     sessionStore.setState({ switchSaveBehavior: behavior === "ask" ? "" : behavior });
-    void getWorkspace(workspacePath)
-      .then((ws) => saveWorkspace(workspacePath, {
-        ...ws.layout,
-        settings: {
-          ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false, showBloodPanel: false }),
-          switchSaveBehavior: behavior,
-        },
-      }, ws.theme))
-      .catch((e) => {
-        console.warn(`[settingsPanel] persist switchSaveBehavior failed: ${String(e)}`);
-      });
+    updateWorkspaceSettings(workspacePath, { switchSaveBehavior: behavior });
   }
 
   function position(): void {
     const rect = triggerBtn.getBoundingClientRect();
-    popover.style.right = `${window.innerWidth - rect.right}px`;
+    popover.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
     popover.style.top = `${rect.bottom + 4}px`;
     popover.style.left = "auto";
+  }
+
+  function actionLabel(id: ActionId): string {
+    return t(`settings.action_${id.replace(".", "_")}`);
   }
 
   function render(): void {
@@ -219,108 +199,53 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
     popover.innerHTML = "";
 
     const debugHeader = document.createElement("div");
-    debugHeader.style.cssText = "padding:6px 12px;font-weight:600;border-bottom:1px solid rgba(0,0,0,var(--border-opacity));margin-bottom:4px;";
+    debugHeader.style.cssText =
+      "padding:6px 12px;font-weight:600;border-bottom:1px solid rgba(var(--border-rgb),var(--border-opacity));margin-bottom:4px;";
     debugHeader.textContent = t("settings.debugTitle");
     popover.appendChild(debugHeader);
 
-    const debugRow = document.createElement("label");
-    debugRow.style.cssText = "padding:8px 12px;display:flex;gap:8px;align-items:center;cursor:pointer;";
-    const debugCb = document.createElement("input");
-    debugCb.type = "checkbox";
-    debugCb.checked = sessionStore.getState().showMotionDebugPanel;
-    const debugLabel = document.createElement("span");
-    debugLabel.style.cssText = "flex:1;";
-    debugLabel.textContent = t("settings.showMotionDebugPanel");
-    debugCb.addEventListener("change", () => {
-      const checked = debugCb.checked;
-      sessionStore.setState({ showMotionDebugPanel: checked });
-      void getWorkspace(workspacePath)
-        .then((ws) => saveWorkspace(workspacePath, {
-          ...ws.layout,
-          settings: {
-            ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false, showBloodPanel: false }),
-            showMotionDebugPanel: checked,
-          },
-        }, ws.theme))
-        .catch((e) => {
-          console.warn(`[settingsPanel] persist showMotionDebugPanel failed: ${String(e)}`);
-        });
-    });
-    debugRow.appendChild(debugCb);
-    debugRow.appendChild(debugLabel);
-    popover.appendChild(debugRow);
+    const makeToggleRow = (
+      checked: boolean,
+      labelKey: string,
+      onChange: (next: boolean) => void,
+    ): HTMLLabelElement => {
+      const row = document.createElement("label");
+      row.style.cssText = "padding:8px 12px;display:flex;gap:8px;align-items:center;cursor:pointer;";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = checked;
+      const lbl = document.createElement("span");
+      lbl.style.cssText = "flex:1;";
+      lbl.textContent = t(labelKey);
+      cb.addEventListener("change", () => onChange(cb.checked));
+      row.append(cb, lbl);
+      return row;
+    };
 
-    // 翼装配调试面板开关：默认关闭，勾选后右栏显示翅膀调试面板。
-    const wingRow = document.createElement("label");
-    wingRow.style.cssText = "padding:8px 12px;display:flex;gap:8px;align-items:center;cursor:pointer;";
-    const wingCb = document.createElement("input");
-    wingCb.type = "checkbox";
-    wingCb.checked = sessionStore.getState().showWingDebugPanel;
-    const wingLabel = document.createElement("span");
-    wingLabel.style.cssText = "flex:1;";
-    wingLabel.textContent = t("settings.showWingDebugPanel");
-    wingCb.addEventListener("change", () => {
-      const checked = wingCb.checked;
-      sessionStore.setState({ showWingDebugPanel: checked });
-      void getWorkspace(workspacePath)
-        .then((ws) => saveWorkspace(workspacePath, {
-          ...ws.layout,
-          settings: {
-            ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false, showBloodPanel: false }),
-            showWingDebugPanel: checked,
-          },
-        }, ws.theme))
-        .catch((e) => {
-          console.warn(`[settingsPanel] persist showWingDebugPanel failed: ${String(e)}`);
-        });
-    });
-    wingRow.appendChild(wingCb);
-    wingRow.appendChild(wingLabel);
-    popover.appendChild(wingRow);
-
-    // 血液粒子面板开关：默认关闭，勾选后右栏显示 BloodPanel。
-    const bloodRow = document.createElement("label");
-    bloodRow.style.cssText = "padding:8px 12px;display:flex;gap:8px;align-items:center;cursor:pointer;";
-    const bloodCb = document.createElement("input");
-    bloodCb.type = "checkbox";
-    bloodCb.checked = sessionStore.getState().showBloodPanel;
-    const bloodLabel = document.createElement("span");
-    bloodLabel.style.cssText = "flex:1;";
-    bloodLabel.textContent = t("settings.showBloodPanel");
-    bloodCb.addEventListener("change", () => {
-      const checked = bloodCb.checked;
-      sessionStore.setState({ showBloodPanel: checked });
-      void getWorkspace(workspacePath)
-        .then((ws) => saveWorkspace(workspacePath, {
-          ...ws.layout,
-          settings: {
-            ...(ws.layout.settings ?? { showMotionDebugPanel: true, showWingDebugPanel: false, showBloodPanel: false }),
-            showBloodPanel: checked,
-          },
-        }, ws.theme))
-        .catch((e) => {
-          console.warn(`[settingsPanel] persist showBloodPanel failed: ${String(e)}`);
-        });
-    });
-    bloodRow.appendChild(bloodCb);
-    bloodRow.appendChild(bloodLabel);
-    popover.appendChild(bloodRow);
-
-    // 自动保存开关 + 间隔输入。开关持久化到 workspace.settings。
-    const autoRow = document.createElement("label");
-    autoRow.style.cssText = "padding:8px 12px;display:flex;gap:8px;align-items:center;cursor:pointer;";
-    const autoCb = document.createElement("input");
-    autoCb.type = "checkbox";
-    autoCb.checked = sessionStore.getState().autoSaveEnabled;
-    const autoLabel = document.createElement("span");
-    autoLabel.style.cssText = "flex:1;";
-    autoLabel.textContent = t("settings.autoSaveEnabled");
-    autoCb.addEventListener("change", () => {
-      persistAutoSave({ autoSaveEnabled: autoCb.checked });
-    });
-    autoRow.appendChild(autoCb);
-    autoRow.appendChild(autoLabel);
-    popover.appendChild(autoRow);
+    const st = sessionStore.getState();
+    popover.appendChild(
+      makeToggleRow(st.showMotionDebugPanel, "settings.showMotionDebugPanel", (checked) => {
+        sessionStore.setState({ showMotionDebugPanel: checked });
+        updateWorkspaceSettings(workspacePath, { showMotionDebugPanel: checked });
+      }),
+    );
+    popover.appendChild(
+      makeToggleRow(st.showWingDebugPanel, "settings.showWingDebugPanel", (checked) => {
+        sessionStore.setState({ showWingDebugPanel: checked });
+        updateWorkspaceSettings(workspacePath, { showWingDebugPanel: checked });
+      }),
+    );
+    popover.appendChild(
+      makeToggleRow(st.showBloodPanel, "settings.showBloodPanel", (checked) => {
+        sessionStore.setState({ showBloodPanel: checked });
+        updateWorkspaceSettings(workspacePath, { showBloodPanel: checked });
+      }),
+    );
+    popover.appendChild(
+      makeToggleRow(st.autoSaveEnabled, "settings.autoSaveEnabled", (checked) => {
+        persistAutoSave({ autoSaveEnabled: checked });
+      }),
+    );
 
     const intervalRow = document.createElement("div");
     intervalRow.style.cssText = "padding:4px 12px 8px;display:flex;gap:8px;align-items:center;";
@@ -333,17 +258,16 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
     intervalInput.step = "5";
     intervalInput.className = "input";
     intervalInput.style.cssText = "width:72px;";
-    intervalInput.value = String(sessionStore.getState().autoSaveIntervalSec);
+    intervalInput.value = String(st.autoSaveIntervalSec);
     intervalInput.addEventListener("change", () => {
-      const v = Math.max(10, Number.parseInt(intervalInput.value, 10) || 60);
+      const parsed = Number.parseInt(intervalInput.value, 10);
+      const v = Number.isFinite(parsed) ? Math.max(10, parsed) : 60;
       intervalInput.value = String(v);
       persistAutoSave({ autoSaveIntervalSec: v });
     });
-    intervalRow.appendChild(intervalLabel);
-    intervalRow.appendChild(intervalInput);
+    intervalRow.append(intervalLabel, intervalInput);
     popover.appendChild(intervalRow);
 
-    // 切部件未保存处理行为下拉：询问 / 自动切换 / 先保存。
     const switchRow = document.createElement("div");
     switchRow.style.cssText = "padding:4px 12px 8px;display:flex;gap:8px;align-items:center;";
     const switchLabel = document.createElement("span");
@@ -362,17 +286,16 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
       opt.textContent = t(key);
       switchSel.appendChild(opt);
     }
-    const curBehavior = sessionStore.getState().switchSaveBehavior;
-    switchSel.value = curBehavior === "" ? "ask" : curBehavior;
+    switchSel.value = st.switchSaveBehavior === "" ? "ask" : st.switchSaveBehavior;
     switchSel.addEventListener("change", () => {
       persistSwitchBehavior(switchSel.value as "ask" | "save" | "auto");
     });
-    switchRow.appendChild(switchLabel);
-    switchRow.appendChild(switchSel);
+    switchRow.append(switchLabel, switchSel);
     popover.appendChild(switchRow);
 
     const header = document.createElement("div");
-    header.style.cssText = "padding:6px 12px;font-weight:600;border-top:1px solid rgba(0,0,0,var(--border-opacity));border-bottom:1px solid rgba(0,0,0,var(--border-opacity));margin:4px 0;";
+    header.style.cssText =
+      "padding:6px 12px;font-weight:600;border-top:1px solid rgba(var(--border-rgb),var(--border-opacity));border-bottom:1px solid rgba(var(--border-rgb),var(--border-opacity));margin:4px 0;";
     header.textContent = t("settings.shortcutsTitle");
     popover.appendChild(header);
 
@@ -382,7 +305,7 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
 
       const label = document.createElement("span");
       label.style.cssText = "flex:1;";
-      label.textContent = t(`settings.action_${id.replace(".", "_")}`);
+      label.textContent = actionLabel(id);
 
       const cell = document.createElement("button");
       cell.className = "btn";
@@ -397,10 +320,8 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
         recordingId = recordingId === id ? null : id;
         render();
       });
-      row.appendChild(label);
-      row.appendChild(cell);
+      row.append(label, cell);
 
-      // 仅当用户改过默认值时显示"重置"小按钮，避免每行都堆 UI。
       if (bindings[id] !== DEFAULT_SHORTCUTS[id]) {
         const resetBtn = document.createElement("button");
         resetBtn.className = "btn";
@@ -411,7 +332,7 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
           e.stopPropagation();
           const overrides = { ...(sessionStore.getState().shortcuts ?? {}) };
           delete overrides[id];
-          sessionStore.setState({ shortcuts: overrides });
+          persistShortcuts(overrides);
         });
         row.appendChild(resetBtn);
       }
@@ -419,7 +340,8 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
     }
 
     const footer = document.createElement("div");
-    footer.style.cssText = "padding:6px 12px;display:flex;gap:8px;justify-content:space-between;align-items:center;border-top:1px solid rgba(0,0,0,var(--border-opacity));margin-top:4px;";
+    footer.style.cssText =
+      "padding:6px 12px;display:flex;gap:8px;justify-content:space-between;align-items:center;border-top:1px solid rgba(var(--border-rgb),var(--border-opacity));margin-top:4px;";
     const aboutBtn = document.createElement("button");
     aboutBtn.className = "btn";
     aboutBtn.type = "button";
@@ -436,13 +358,12 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
     resetAllBtn.textContent = t("settings.resetAll");
     resetAllBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      sessionStore.setState({ shortcuts: {} });
+      persistShortcuts({});
     });
     footer.appendChild(resetAllBtn);
     popover.appendChild(footer);
   }
 
-  // 录制态全局监听一次按键：写入 sessionStore.shortcuts；Esc 取消。
   function onKey(e: KeyboardEvent): void {
     if (recordingId === null) return;
     if (e.key === "Escape") {
@@ -456,10 +377,29 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
     if (!combo) return;
     e.preventDefault();
     e.stopPropagation();
+
+    const bindings = currentBindings();
+    const conflictId = ACTION_IDS.find((other) => other !== recordingId && bindings[other] === combo);
+    if (conflictId) {
+      showToast(
+        t("settings.shortcutConflict")
+          .replace("{combo}", combo)
+          .replace("{action}", actionLabel(conflictId)),
+        "warn",
+      );
+      recordingId = null;
+      render();
+      return;
+    }
+
     const overrides = { ...(sessionStore.getState().shortcuts ?? {}) };
-    overrides[recordingId] = combo;
+    if (combo === DEFAULT_SHORTCUTS[recordingId]) {
+      delete overrides[recordingId];
+    } else {
+      overrides[recordingId] = combo;
+    }
     recordingId = null;
-    sessionStore.setState({ shortcuts: overrides });
+    persistShortcuts(overrides);
   }
   document.addEventListener("keydown", onKey, true);
 
@@ -472,11 +412,9 @@ export function mountSettingsPopover(triggerBtn: HTMLElement, workspacePath: str
   }
   document.addEventListener("mousedown", onDocClick);
 
-  // sessionStore.shortcuts 变化时重渲染（用户改键 / 重置 都即时反映）。
   const unsubStore = sessionStore.subscribe(() => {
     if (!popover.hidden) render();
   });
-  // 语言切换时刷新 label。
   const unsubLang = subscribeLang(() => {
     if (!popover.hidden) render();
   });

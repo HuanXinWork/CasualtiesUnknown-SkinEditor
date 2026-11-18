@@ -2,152 +2,109 @@
 
 # Changelog
 
-> This document is a description of the update log. 中文版本：[`changes.md`](./changes.md)。
+中文版本：[`changes.md`](./changes.md)
 
 ---
 
 ## 1.0.7 (2026-06-17)
 
-### Improved
+### Added and Changed
 
-- **Auto-create the `captures/` placeholder for animation preview**: when listing motion captures, if `captures/` does not exist the editor now resolves it against the AppRoot and creates it automatically, instead of leaving the dropdown stuck on "No captures". Drop the `motion_*.json` produced by MotionRecorder into the folder and refresh (issue #4).
+- Automatically creates the `captures/` directory next to the executable the first time motion captures are listed, so you can drop `motion_*.json` files from `MotionRecorder` straight in and refresh (issue #4).
+- Added the zone brush and per-zone effect editor (up to 255 zones per part with radial/directional/scatter 2D lights, dual-color gradients, breathing pulses, 5 particle modes, and frame animations), plus 19 worn-slot bindings and `R_` right-facing sprite support across all 42 accessories.
+- Added the 8th facial expression ("Locked in" / `experimentEyeLockedIn`), `BloodParticle_splat`, and full part-name support for `exp`, `milky`, and `dune` naming conventions.
+
+### Fixed
+
+- Serialized `workspace.json` writes through a single in-memory snapshot so concurrent updates from layout dividers, swatches, theme, and settings no longer overwrite each other.
+- Serialized canvas brush IPC calls with Bresenham line interpolation to eliminate skipped pixels during fast strokes, and cleared stuck gradient drags on window blur.
+- Discarded in-memory backend sessions when choosing "Don't save" on part switch, and added revision-checked dirty tracking so background saves do not clear newer edits.
+- Corrected flipped left/right facing and `R_` texture selection in the preview canvas, and seeded initial assembly coordinates so `Shift`+drag no longer snaps parts to `(0, 0)` on the first move.
+- Fixed high-DPI coordinate drift and transparent-overlay black sampling in the eyedropper, and adapted borders and highlights for dark themes.
+- Included `*.zones.json` and `baseSizes.json` in zip import/export, routed `*.zones.*` files into their matching part category folders, and hardened zip extraction against path traversal and oversized entries.
+- Updated `MotionRecorder` to bind `PlayerCamera.main.body` and `Body.tail` directly, subtract paused duration from frame timestamps, and detect `SkinSync` fluid-tail `MeshRenderer` components.
 
 ---
 
 ## 1.0.6 (2026-06-06)
 
-### Added
+### Added and Changed
 
-- **Built-in default skin `exp`**: `data/skin/exp` is embedded at compile time via `rust_embed`. When `data/skin/` has no skin subdirectories, first launch unpacks it to `data/skin/exp/` (Body / Head / Wings / Accessories / Blood plus `accessories.json`, etc.), sets `workspace.json` to `exp`, so a portable exe dropped into an empty folder is ready to preview and edit immediately.
-
-### Improved
-
-- **Data-root path resolution**: the relative `data/skin` path is always resolved against the application root (next to the exe or AppRoot), so seeding the default skin still works when the release exe is started from another working directory.
+- Embedded the default `exp` skin pack into the binary via `rust-embed`. When `data/skin/` is empty on first launch, it unpacks to `data/skin/exp/` (including Body, Head, Wings, Accessories, Blood, and `accessories.json`) and selects it automatically.
+- Anchored relative paths such as `data/skin` to the executable directory (AppRoot) so launching from any working directory resolves files consistently.
 
 ---
 
 ## 1.0.5 (2026-05-31)
 
-### Added
+### Added and Changed
 
-- **Eyedropper**: hold Alt while using the brush / eraser / soft brush and click the canvas to pick the composited color there into the palette; the cursor turns into a dropper and reverts to the original tool when Alt is released.
-- **Fill bucket**: new bucket tool that fills the region connected to the clicked pixel (4-connected) on the current layer.
-- **Soft brush**: new soft brush with a feathered circular edge; passing over the same spot within one stroke does not darken it further. Double-click the tool button to set hardness (0–100%).
-- **View transform**: a "Transform" section at the bottom of the editor canvas applies horizontal / vertical flip, X/Y scale, and rotation to the current layer. The assembly and motion previews follow live while adjusting; clicking *Apply* bakes it into pixels and pushes it onto the undo stack, *Cancel* reverts.
-- **Auto-save on a timer**: new toggle and interval in settings (off by default, minimum 10s, default 60s); when on, all unsaved parts are written back to their PNGs at that interval (layer project data is preserved too).
-- **Switch-part save confirmation**: when the current part has unsaved changes and you switch to another, a dialog offers "Save and switch / Switch without saving / Cancel" on first use, with a "remember my choice" checkbox; the settings panel can switch it back to always ask / auto-save / switch directly.
-- **Copy parts**: right-click a part in the character pane and choose "Copy part"; a dialog lists the parts in that category (tagged "exists" / "new"), and the selected target receives the source part (layers included). If the target already exists, a "copying will overwrite" hint is shown and the copy overwrites it on confirm. No manual filename entry. The menu also includes delete (with confirmation).
-- **Copy layers across parts**: each layer in the layer panel gets a copy button; after switching to a target part, use the toolbar paste button to add it as a new layer. Mismatched sizes are aligned to the top-left corner.
+- Holding `Alt` with the brush, soft brush, or eraser temporarily switches to the canvas eyedropper and restores the previous tool on release.
+- Added the 4-connected flood-fill bucket and the feathered soft brush (without intra-stroke darkening; double-click the tool icon to set `0%`–`100%` hardness).
+- Added non-destructive layer flip, scale, and rotation controls in the canvas footer with live character preview feedback before baking into pixels.
+- Added timed auto-save (minimum 10s, default 60s) and configurable unsaved-switch behavior (ask, auto-save, or discard) in Settings.
+- Added right-click part copy (including layers) and part deletion in the part browser, plus cross-part single-layer copy and paste in the layer strip.
+- Filtered already-created variants out of the add-part dialog and hid the add button once a category is complete.
 
-### Improved
-
-- **Add-part dedup**: the new-part dialog only lists parts not yet fully created; existing front/back and left/right combinations are skipped automatically, and a category's "Add part" button is hidden once everything in it exists.
-- **Settings dropdown styling**: the switch-part behavior dropdown and the auto-save interval input now use the themed input style, consistent with the rest of the panel.
-- **New config cached in workspace**: auto-save toggle and interval, switch-part behavior, and soft brush hardness are all written to `workspace.json` and survive restarts.
+---
 
 ## 1.0.4 (2026-05-28)
 
-### Added
+### Added and Changed
 
-- **Resize supports shrink + custom factor**: the dialog now splits into a "Shrink" row (0.25× / 0.5× / 0.75×) and an "Enlarge" row (1× / 2× / 3× / 4×), plus a number input that accepts any custom factor (Enter or click *Apply* to submit). Factor is clamped to 0.01–1000; the resulting size is still bound by the backend's 1–4096 limit.
-- **Shrink confirmation**: on submit the editor queries `<skin>/baseSizes.json`; if either dimension drops below the registered base size for that part, a danger dialog ("shrinking further may corrupt the image") is shown and the user must click *Yes* again before the resize is applied. Custom parts or skins without `baseSizes.json` skip the check.
-- **Workflow now supports multi-platform automated builds**: covers `windows-latest` / `ubuntu-latest` / `macos-latest`, packages each platform's bundle into its own zip, and uploads them as separate Actions Artifacts so the three platforms never overwrite each other.
+- Added shrink presets (`0.25×`, `0.5×`, `0.75×`), enlarge presets (`1×`–`4×`), and custom scale factors (`0.01`–`1000`, clamped to `1`–`4096` px) to the resize dialog.
+- Added a confirmation warning when resizing a part below its registered dimensions in `<skin>/baseSizes.json`.
+- Expanded the GitHub Actions workflow to build multi-platform release archives.
 
 ---
 
 ## 1.0.3 (2026-05-27)
 
-### Added
+### Added and Changed
 
-- **Per-skin resolution config**: removed the 60-entry hardcoded size table; the editor now generates `<skin>/baseSizes.json` per skin from each PNG's actual pixel size. Created automatically on import, and back-filled at startup for older skins missing the file. Custom parts stay out of the table and render at disk resolution, so any resolution skin works out of the box.
-
-### Improved
-
-- **Import routing**: even when a flat zip dumps everything into a single `Body/` folder, parts like `HeadDefault` / `wingUL` / `eyeOpen` / `disfiguredHead0` now land in their real category. `classifyEntry` priority is flipped to "filename first"; the directory segment is only a fallback for unknown parts.
-- **Legacy export blood**: in Legacy (Flat) format, `Blood/*.png` now flows into `<skinName>/Body/` along with everything else, matching the "all parts under Body" semantics. Categorized format still keeps a separate `Blood/` folder.
-- **Empty character state**: `data/skin/` no longer auto-creates a `default/{Body,Head}/` skeleton; when no skin folder is present, the character pane shows "No character detected".
+- Replaced the hardcoded 60-entry size table with per-skin `<skin>/baseSizes.json`, generated automatically on import and backfilled at startup for existing skins.
+- Prioritized filename matching over folder segments during zip import so flat packs inside `Body/` still route heads, eyes, wings, accessories, and blood textures into their real categories.
+- Routed `Blood/*.png` into `<skinName>/Body/` when exporting legacy flat zips with blood enabled, while keeping a dedicated `Blood/` folder in categorized exports.
+- Stopped generating an empty `default/` skeleton when `data/skin/` has no skins.
 
 ---
 
 ## 1.0.2 (2026-05-27)
 
-### Added
+### Added and Changed
 
-- **Blood particle editor panel**: `bloodPanel` module visually edits all 14 fields of `<skin>/blood.json` (particle start/end color, size, lifetime, fade curve; limb dark/light wound colors; additive glow; sprite-sheet animation; random palette). Each field has an override tri-state toggle. Switching skin reloads the values.
-- **Blood textures category**: new "Blood textures" group in the part panel listing `<skin>/Blood/*.png` (e.g. `BloodParticle.png`); editable in the canvas with resize support.
-- **Custom swatches**: 3 rows × 8 = 24 user slots below the palette. Long-press or right-click opens an editor (HEX input / use current color / clear); auto-saved to workspace config.
-- **Eyedropper drag mode**: hold the left mouse button after activating the dropper for live color preview; release to commit; Esc or right-click cancels.
-- **Persistence expansion**: panel collapse states, recent colors (FIFO 12), custom swatches (24 slots), part panel group collapse states, editor canvas footer height (percent) all save to workspace config.
-- **Export format options**: a selection dialog opens on export — pick "Legacy (`<skin>/Body` flat — all parts in one folder)" or "Categorized (`<skin>/Body, Head, Wings, Accessories`)", with an optional checkbox to include blood config (`blood.json` + `Blood/*.png`).
-- **Filename-routed import**: PNGs in a zip without `Body/Head/...` subfolders are auto-routed by filename against the standard part table; filenames containing `blood` go to `Blood/`.
-- **F/B suffix detection**: sided copies (`experimentEyeOpenF`, `HandB`, etc.) fall back to the base name when looking up standard sizes, preventing preview misalignment caused by resolution mismatch.
-
-### Improved
-
-- **Editor canvas**: footer height switched to a percentage (default 25%, 10–70% range); top divider is draggable; ratio is preserved across collapse / expand. Stage centering bug fixed — selected parts now load in the middle instead of stuck at the top.
-- **Import/export semantics**: both formats wrap output under `<skin-name>/`; `blood.json` + `Blood/*.png` are gated by a separate `includeBlood` flag.
-- **Palette feel**: hue ring widened from 18px to 28px (inner 48 / outer 76), SV box 88 → 96px. Dragging hue / SV no longer records into the recent-colors list every frame; only the final color on mouseup is recorded.
-- **Picker precision**: pixel coordinates use `Math.round` instead of `Math.floor`, reducing sampling drift.
-- **Accessory localization**: 27 accessory item IDs render in Chinese (`autopump` → 自动泵 etc.) under zh locale; `BloodParticle` shows as "血液粒子".
-- **Mod runtime visuals**: `Body.SwitchDir` Harmony patch flips all `SpriteRenderer.sortingOrder`, fixing limb z-order when the character faces left; `PickUpItem` patch keeps newly picked-up items in sync with the current direction.
+- Added the `bloodPanel` editor for `<skin>/blood.json` (particle colors, size, lifetime, fade curve, limb wound colors, additive glow, sheet animation, and random palette) and the *Blood textures* category in the part browser.
+- Added 24 custom swatch slots below the palette (right-click or long-press to edit HEX) and drag-to-preview sampling in the eyedropper.
+- Added categorized vs. legacy flat format selection and an *Include blood* toggle when exporting zip packs.
+- Persisted panel collapse states, recent colors, custom swatches, category collapse states, and canvas footer height in `workspace.json`.
+- Widened the HSV wheel and SV square, added Chinese translations for standard accessories, and supported base-size lookup for `*F`/`*B` sided variants.
 
 ### Fixed
 
-- Editor canvas collapse ▼ + expand caused layout breakage; footer would balloon upward.
-- Selected part stuck at the top of stage with a large empty area below (broken flex centering).
-- `baseSizes` migrated from per-skin `baseSizes.json` to a 60-entry code constant table; deleting the json no longer breaks composite preview alignment.
-- Removed `BloodConfig.spritePath` field (mod always uses `Blood/BloodParticle.png` now).
-- Re-expanding a collapsed dock previously dropped its `flex` style, disabling footer drag.
-- Custom swatches were lost after restart (native `<input type=color>` doesn't open in Tauri).
-- Several other persistence regressions across recent colors / custom swatches / collapse states.
+- Fixed layout stretching, top-stuck sprites, and broken footer dividers after collapsing and re-expanding panels.
+- Fixed preview alignment errors when `baseSizes.json` or individual wing sprites were missing.
+- Fixed custom swatches and collapse states failing to persist across restarts.
 
 ---
 
 ## 1.0.1 (2026-05-25)
 
-### Added
+### Added and Changed
 
-- **Higher-resolution support + resize**: the editor canvas and backend `baseSizes` lift the 64×64 limit and accept arbitrary resolutions; a "Resize" action lets you retarget a part's width × height with a chosen resampling algorithm.
-- **Wing parts**: new Wings group in the part panel with four fixed sprites — `wingUL/wingUR/wingDL/wingDR.png`; the composite preview assembles them by `x / y / rotation / zOrder` from `wings.json`.
-- **wings.json parser**: both the mod and the editor read `<skinName>/wings.json` to override the default assembly position; missing or malformed files fall back to defaults.
-- **Import polishing**: `importSkinPack` accepts any well-formed skin zip and auto-strips a single wrapping directory; only file extension and path traversal are validated, filenames are case-insensitive.
-- **Asymmetric skin creation**: derives an asymmetric copy from an existing skin directory; the editor mirrors single-sided PNGs to the other side and adds the F/B suffix.
-
-### Improved
-
-- Part list groups (Body / Head / Wings) are now collapsible.
-- Toolbar export button now produces a clearer toast when zip contents are missing.
-- Composite preview honors wings' `zOrder` and `rotation` during sort.
-- Resizing a part rebuilds the layers project structure synchronously without losing layers.
+- Lifted the `64×64` canvas limit to support arbitrary resolutions and layer-preserving resizing.
+- Added the `Wings` category (`wingUL`, `wingUR`, `wingDL`, `wingDR`) and `<skin>/wings.json` overrides.
+- Added front/back (`F`/`B`) variant creation and single-wrapper-folder stripping during zip import.
 
 ### Fixed
 
-- Occasional canvas offset on first load of high-resolution parts.
-- Composite preview crashed (null pointer) when one of the four wings was missing.
-- Zip top-level directory names containing spaces failed to extract.
+- Fixed initial canvas offset on high-res parts, crashes when a wing texture was missing, and zip extraction failures on folder names containing spaces.
 
 ---
 
 ## 1.0.0 (2026-05-18)
 
-Initial release.
-
-### Added
-
-- **Desktop shell + HTTP dual mode**: the Tauri v2 desktop shell (portable exe) and the Axum HTTP service share one Rust crate; the desktop shell loads via `rust-embed` and the release binary depends on no external files on disk.
-- **Skin directory management**: scans `data/skin/<skinName>/{Body,Head}/`; the skin dropdown auto-populates; a `default/{Body,Head}/` scaffold is created on first launch when `data/skin/` is empty.
-- **Pixel editing toolset**: pan / brush / gradient / eraser; brush size 1–64; per-stroke undo & redo; 50-entry history ring.
-- **Multi-layer**: up to 8 layers per part with visibility / opacity / reorder / delete; saving writes `<skinName>/layers/<Cat>/<part>/manifest.json` and one `layerN.png` per layer.
-- **Color palette**: HSV color wheel + value slider, current color preview, PS-style eyedropper, 8-slot recent colors.
-- **Composite preview (assembly)**: live 100×100 composite from `assembly.json` plus the current expression / head / facing parameters; live preview can be toggled off in favor of manual refresh.
-- **Composite preview (motion)**: reads MotionRecorder JSON files written by the in-game BepInEx mod from `captures/` and composites frame by frame; play / pause / frame slider; expression / head / facing can still be changed on the active frame and re-renders immediately.
-- **Skin pack import / export**: `importSkinPack` accepts zips (top-level `Body/`/`Head/`, optionally one wrapper directory); export packages the skin with a `<skinName>/{Body,Head}/` top-level layout.
-- **Draggable dock layout**: the six panels (parts / tools / editor / layers / preview / palette) can be moved between dock hosts; out-of-viewport drops or right-click menu detach to a standalone child window.
-- **i18n + theme**: zh / en switch; every shortcut can be rebound from the settings panel.
-- **Unsaved-confirm**: closing the main window with any unsaved part shows a "Save and exit / Don't save / Cancel" dialog.
-
-### Improved
-
-- WebView2 forced to the light color scheme (`color-scheme: light` declared in two places) so Windows dark mode does not paint the empty background black and confuse users into thinking loading failed.
-- Release build suppresses the cmd black window (`windows_subsystem = "windows"`).
-- Self-drawn icon set: 6-size ICO + 256 PNG.
+Initial release:
+- Single Rust crate powering both the portable Tauri v2 desktop app (with embedded assets) and the Axum HTTP server.
+- Pixel brush, linear gradient, eraser, viewport pan, 50-step stroke undo/redo stack, and up to 8 layers per part.
+- 100×100 character preview with static assembly mode and `MotionRecorder` per-frame playback mode.
+- `.zip` skin pack import/export, dockable and detachable panels, Chinese/English UI, customizable shortcuts, and unsaved-exit confirmation.

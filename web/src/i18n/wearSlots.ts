@@ -1,4 +1,4 @@
-// 游戏 wearSlotId → 当前语言显示名。与 mod SkinSyncI18n.slot.* 对齐。
+// 游戏穿戴槽位 ID 到当前语言显示名的映射（对齐 SkinSync `SkinSyncI18n.slot.*`）。
 import { currentLang } from "./index";
 
 export const WEAR_SLOT_IDS = [
@@ -21,7 +21,6 @@ const EN: Record<string, string> = {
   thighback: "Thigh (back)", torso: "Torso", torsofront: "Torso front", wraps: "Wraps",
 };
 
-/// wearSlotId 的本地化显示名；未知 id 原样返回。
 export function localizeWearSlot(id: string): string {
   if (!id) return "";
   const map = currentLang() === "zh" ? ZH : EN;

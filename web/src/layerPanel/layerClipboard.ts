@@ -1,4 +1,5 @@
-// 图层跨部件复制：会话级剪贴板存源 partId+layerId，粘贴到当前部件为新图层。
+// 图层跨部件剪贴板：记录源部件与图层 ID，粘贴时追加为目标部件的新顶层。
+
 import { copyLayerToPart, type ApiError, type LayersSnapshot } from "../apiClient";
 import { showToast } from "../toast";
 import { t } from "../i18n";
@@ -20,8 +21,10 @@ export function copyLayerToClipboard(partId: string, layerId: string, layerName:
   showToast(t("layerClipboard.copyToast").replace("{name}", layerName), "info");
 }
 
-/// 把剪贴板图层粘贴到目标部件为新图层；成功回调返回新快照。
-export function pasteLayerToPart(targetPartId: string, onDone: (snap: LayersSnapshot) => void): void {
+export function pasteLayerToPart(
+  targetPartId: string,
+  onDone: (snap: LayersSnapshot) => void,
+): void {
   const src = clipboard;
   if (!src) return;
   copyLayerToPart(src.partId, src.layerId, targetPartId)

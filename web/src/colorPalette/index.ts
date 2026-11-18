@@ -1,15 +1,20 @@
-// 仿 SAI2 调色盘。
-// UI 自上而下：色相环（外圈，hue 选择）+ 饱和度/明度方块（中间内嵌）→
-// 当前色预览块 + RGB/HEX/Alpha 输入 → 预设色组（多组 ×8 色）→ 取色历史。
-// 用户在任一控件上修改即写回 sessionStore.color / .alpha。
-// 订阅 sessionStore 反向同步外部变更（如最近色按钮点击）。
-//
-// 不引第三方色彩库——HSV↔RGB 公式走 colorMath.ts；预设色组走 swatches.ts。
+// 调色盘面板：HSV 色相环与明度/饱和度方块、RGB/HEX/Alpha 输入、预设色组、24 格自定义色卡及跨窗口取色针。
 
 import { sessionStore } from "../stateStore";
+import {
+  getCachedWorkspace,
+  initWorkspaceCache,
+  updateWorkspaceSettings,
+} from "../stateStore/workspacePersist";
+import type { WorkspaceSettings } from "../stateStore/types";
 import { subscribeLang, t } from "../i18n";
 import { ICON_DROPPER } from "../toolPanel/toolIcons";
-import { pickImagePixelByScreenCoord, getCursorScreenPos, isMouseLeftDown, setPickActive, getWorkspace, saveWorkspace } from "../apiClient";
+import {
+  getCursorScreenPos,
+  isMouseLeftDown,
+  pickImagePixelByScreenCoord,
+  setPickActive,
+} from "../apiClient";
 import {
   hexToRgb,
   hsvToRgb,
@@ -22,12 +27,15 @@ import {
 import { SWATCH_GROUPS } from "./swatches";
 
 const RECENT_LIMIT = 12;
+const CUSTOM_SLOT_COUNT = 24;
 const HUE_WHEEL_SIZE = 160;
 const HUE_WHEEL_INNER = 48;
 const HUE_WHEEL_OUTER = 76;
 const SV_BOX_SIZE = 96;
+const WORKSPACE_PATH = "data/workspace.json";
 
 export function mountColorPalette(container: HTMLElement): () => void {
+  const borderCss = "1px solid rgba(var(--border-rgb),0.25)";
   container.classList.add("color-palette");
   container.style.display = "flex";
   container.style.flexDirection = "column";
@@ -42,7 +50,7 @@ export function mountColorPalette(container: HTMLElement): () => void {
     `</div>` +
     `<div class="cp-side" style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;font-size:11px;">` +
     `<div style="display:flex;align-items:center;gap:4px;">` +
-    `<div data-role="cur-preview" style="flex:1;height:24px;border:1px solid rgba(0,0,0,0.2);"></div>` +
+    `<div data-role="cur-preview" style="flex:1;height:24px;border:${borderCss};"></div>` +
     `<button class="btn cp-tool-btn" data-role="dropper" type="button" style="width:24px;height:24px;padding:0;flex:none;">${ICON_DROPPER}</button>` +
     `</div>` +
     `<label style="display:flex;align-items:center;gap:4px;"><span style="width:30px;">HEX</span>` +
@@ -82,93 +90,72 @@ export function mountColorPalette(container: HTMLElement): () => void {
   const hueCtx = hueCanvas.getContext("2d")!;
   const svCtx = svCanvas.getContext("2d")!;
 
-  // 内部状态。curHsv 是用户操作的权威源——所有颜色变化都先改 HSV，
-  // 再算 RGB 写 sessionStore，避免 RGB↔HSV 来回换算时 Hue 因饱和度=0 丢失。
-  // recent 是持久化的最近用色 FIFO（通过 workspace.json 写盘）。
+  // 以 `curHsv` 为内部权威源，避免饱和度为 0 时 RGB↔HSV 往返丢失色相角。
   let curHsv: Hsv = rgbToHsv(sessionStore.getState().color);
   const recent: Rgb[] = [];
-  // 用户自定义色卡 24 槽，初始全空；启动时从 workspace 读回。
-  const CUSTOM_SLOT_COUNT = 24;
   const customSwatches: Array<Rgb | null> = new Array(CUSTOM_SLOT_COUNT).fill(null);
-  // workspace.json 路径与 main.ts 的 DEFAULT_WORKSPACE_PATH 保持一致。
-  const WORKSPACE_PATH = "data/workspace.json";
+
+  function clampByte(n: number): number {
+    return Math.max(0, Math.min(255, Math.round(n)));
+  }
+
+  function applySettingsFromWorkspace(settings?: WorkspaceSettings): void {
+    if (!settings) return;
+    if (Array.isArray(settings.colorPaletteRecent)) {
+      recent.length = 0;
+      for (const c of settings.colorPaletteRecent) {
+        if (Array.isArray(c) && c.length >= 3) {
+          recent.push([clampByte(c[0]), clampByte(c[1]), clampByte(c[2])]);
+          if (recent.length >= RECENT_LIMIT) break;
+        }
+      }
+      renderRecent();
+    }
+    if (Array.isArray(settings.colorPaletteCustom)) {
+      for (let i = 0; i < CUSTOM_SLOT_COUNT && i < settings.colorPaletteCustom.length; i++) {
+        const c = settings.colorPaletteCustom[i];
+        customSwatches[i] =
+          Array.isArray(c) && c.length >= 3 ? [clampByte(c[0]), clampByte(c[1]), clampByte(c[2])] : null;
+      }
+      renderSwatches();
+    }
+  }
+
+  const cachedWs = getCachedWorkspace();
+  if (cachedWs) {
+    applySettingsFromWorkspace(cachedWs.layout.settings);
+  } else {
+    void initWorkspaceCache(WORKSPACE_PATH)
+      .then((ws) => applySettingsFromWorkspace(ws.layout.settings))
+      .catch((e) => console.warn("[colorPalette] load recent/custom failed", e));
+  }
+
+  function persistRecent(): void {
+    updateWorkspaceSettings(
+      WORKSPACE_PATH,
+      { colorPaletteRecent: recent.map((c): [number, number, number] => [c[0], c[1], c[2]]) },
+      500,
+    );
+  }
+
+  function persistCustom(): void {
+    updateWorkspaceSettings(
+      WORKSPACE_PATH,
+      {
+        colorPaletteCustom: customSwatches.map((c) =>
+          c ? ([c[0], c[1], c[2]] as [number, number, number]) : null,
+        ),
+      },
+      200,
+    );
+  }
 
   function pushRecent(rgb: Rgb): void {
     const idx = recent.findIndex((c) => rgbEqual(c, rgb));
     if (idx >= 0) recent.splice(idx, 1);
     recent.unshift(rgb);
     if (recent.length > RECENT_LIMIT) recent.length = RECENT_LIMIT;
-    schedulePersistRecent();
-  }
-
-  // 启动时从 workspace.json 加载历史用色与自定义色卡；失败回退空数组不阻塞。
-  void getWorkspace(WORKSPACE_PATH).then((ws) => {
-    const stored = ws.layout.settings?.colorPaletteRecent;
-    if (Array.isArray(stored)) {
-      for (const c of stored) {
-        if (Array.isArray(c) && c.length >= 3) {
-          recent.push([c[0] | 0, c[1] | 0, c[2] | 0]);
-          if (recent.length >= RECENT_LIMIT) break;
-        }
-      }
-      renderRecent();
-    }
-    const custom = ws.layout.settings?.colorPaletteCustom;
-    if (Array.isArray(custom)) {
-      for (let i = 0; i < CUSTOM_SLOT_COUNT && i < custom.length; i++) {
-        const c = custom[i];
-        customSwatches[i] = (Array.isArray(c) && c.length >= 3) ? [c[0] | 0, c[1] | 0, c[2] | 0] : null;
-      }
-      renderSwatches();
-    }
-  }).catch((e) => console.warn("[colorPalette] load recent/custom failed", e));
-
-  // 改完 recent 用 500ms debounce 写盘——拖色相环 / 拖 SV 都会高频 push，避免每次都写。
-  let recentSaveTimer: number | null = null;
-  function schedulePersistRecent(): void {
-    if (recentSaveTimer !== null) window.clearTimeout(recentSaveTimer);
-    recentSaveTimer = window.setTimeout(() => {
-      recentSaveTimer = null;
-      void getWorkspace(WORKSPACE_PATH).then((ws) => {
-        const settings = ws.layout.settings ?? {
-          showMotionDebugPanel: true,
-          showWingDebugPanel: false,
-          showBloodPanel: false,
-        };
-        const next = {
-          ...ws.layout,
-          settings: {
-            ...settings,
-            colorPaletteRecent: recent.map((c): [number, number, number] => [c[0], c[1], c[2]]),
-          },
-        };
-        return saveWorkspace(WORKSPACE_PATH, next, ws.theme);
-      }).catch((e) => console.warn("[colorPalette] persist recent failed", e));
-    }, 500);
-  }
-
-  // 自定义色卡更新写盘 debounce 200ms（用户编辑频次低）。
-  let customSaveTimer: number | null = null;
-  function schedulePersistCustom(): void {
-    if (customSaveTimer !== null) window.clearTimeout(customSaveTimer);
-    customSaveTimer = window.setTimeout(() => {
-      customSaveTimer = null;
-      void getWorkspace(WORKSPACE_PATH).then((ws) => {
-        const settings = ws.layout.settings ?? {
-          showMotionDebugPanel: true,
-          showWingDebugPanel: false,
-          showBloodPanel: false,
-        };
-        const next = {
-          ...ws.layout,
-          settings: {
-            ...settings,
-            colorPaletteCustom: customSwatches.map((c) => c ? [c[0], c[1], c[2]] as [number, number, number] : null),
-          },
-        };
-        return saveWorkspace(WORKSPACE_PATH, next, ws.theme);
-      }).catch((e) => console.warn("[colorPalette] persist custom failed", e));
-    }, 200);
+    persistRecent();
   }
 
   function renderRecent(): void {
@@ -177,16 +164,12 @@ export function mountColorPalette(container: HTMLElement): () => void {
       const sw = document.createElement("button");
       sw.className = "btn cp-swatch";
       sw.title = rgbToHex(rgb);
-      sw.style.cssText = `width:18px;height:18px;padding:0;background:${rgbToHex(rgb)};border:1px solid rgba(0,0,0,0.2);`;
-      sw.addEventListener("click", () => {
-        applyRgb(rgb);
-      });
+      sw.style.cssText = `width:18px;height:18px;padding:0;background:${rgbToHex(rgb)};border:${borderCss};`;
+      sw.addEventListener("click", () => applyRgb(rgb));
       recentListEl.appendChild(sw);
     }
   }
 
-  // 由 swatch / recent / hex / rgb 输入触发的"以 RGB 为权威值"应用路径。
-  // 同步 curHsv（保持 hue 一致）+ 写 sessionStore + 推 recent + 重绘 hue/sv canvas。
   function applyRgb(rgb: Rgb): void {
     curHsv = rgbToHsv(rgb);
     pushRecent(rgb);
@@ -196,13 +179,9 @@ export function mountColorPalette(container: HTMLElement): () => void {
     drawSvBox();
   }
 
-  // 色相环渲染 + 拖拽取 Hue。
-  // 画法：1° × 360 扇形铺满外圆 → destination-out 抠掉内圆做成圆环 → 画指示标记。
-  // 拖拽：mousedown 进入，mousemove 算光标极角 = hue。
   const wheelCenter = HUE_WHEEL_SIZE / 2;
   function drawHueWheel(): void {
     hueCtx.clearRect(0, 0, HUE_WHEEL_SIZE, HUE_WHEEL_SIZE);
-    // 360 扇形
     for (let deg = 0; deg < 360; deg++) {
       const start = ((deg - 0.6) * Math.PI) / 180 - Math.PI / 2;
       const end = ((deg + 0.6) * Math.PI) / 180 - Math.PI / 2;
@@ -214,14 +193,13 @@ export function mountColorPalette(container: HTMLElement): () => void {
       hueCtx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
       hueCtx.fill();
     }
-    // 抠中心
     hueCtx.save();
     hueCtx.globalCompositeOperation = "destination-out";
     hueCtx.beginPath();
     hueCtx.arc(wheelCenter, wheelCenter, HUE_WHEEL_INNER, 0, Math.PI * 2);
     hueCtx.fill();
     hueCtx.restore();
-    // 指示器：当前 hue 角的圆环外侧 + 内侧之间画一条短线
+
     const ang = (curHsv.h * Math.PI) / 180 - Math.PI / 2;
     const x1 = wheelCenter + Math.cos(ang) * (HUE_WHEEL_INNER + 1);
     const y1 = wheelCenter + Math.sin(ang) * (HUE_WHEEL_INNER + 1);
@@ -238,39 +216,6 @@ export function mountColorPalette(container: HTMLElement): () => void {
     hueCtx.stroke();
   }
 
-  let huePicking = false;
-  function pickHue(e: MouseEvent): void {
-    const rect = hueCanvas.getBoundingClientRect();
-    const x = e.clientX - rect.left - wheelCenter;
-    const y = e.clientY - rect.top - wheelCenter;
-    let h = (Math.atan2(y, x) * 180) / Math.PI + 90;
-    if (h < 0) h += 360;
-    curHsv = { ...curHsv, h };
-    const rgb = hsvToRgb(curHsv);
-    sessionStore.setState({ color: rgb });
-    drawHueWheel();
-    drawSvBox();
-  }
-  hueCanvas.addEventListener("mousedown", (e) => {
-    huePicking = true;
-    pickHue(e);
-  });
-  document.addEventListener("mousemove", (e) => {
-    if (huePicking) pickHue(e);
-  });
-  document.addEventListener("mouseup", () => {
-    if (huePicking) {
-      huePicking = false;
-      // 拖动结束记一次最终颜色
-      pushRecent(sessionStore.getState().color);
-      renderRecent();
-    }
-  });
-
-  // SV 方块渲染 + 拖拽取饱和度/明度。
-  // 用两层 linearGradient 叠加合成：先画顶色横条（左白到右纯色 hue），
-  // 再叠一层垂直黑色渐变（上透明到下不透明）。视觉等同于逐像素 HSV 填充。
-  // 拖拽：mousedown 进入，mousemove 算 (x,y)→(s,v)。
   function drawSvBox(): void {
     svCtx.clearRect(0, 0, SV_BOX_SIZE, SV_BOX_SIZE);
     const hueRgb = hsvToRgb({ h: curHsv.h, s: 1, v: 1 });
@@ -284,7 +229,7 @@ export function mountColorPalette(container: HTMLElement): () => void {
     vert.addColorStop(1, "rgba(0,0,0,1)");
     svCtx.fillStyle = vert;
     svCtx.fillRect(0, 0, SV_BOX_SIZE, SV_BOX_SIZE);
-    // 指示器：当前 (s, v) 处画双圈
+
     const cx = curHsv.s * SV_BOX_SIZE;
     const cy = (1 - curHsv.v) * SV_BOX_SIZE;
     svCtx.lineWidth = 2;
@@ -297,38 +242,60 @@ export function mountColorPalette(container: HTMLElement): () => void {
     svCtx.stroke();
   }
 
+  let huePicking = false;
   let svPicking = false;
+
+  function pickHue(e: MouseEvent): void {
+    const rect = hueCanvas.getBoundingClientRect();
+    const x = e.clientX - rect.left - wheelCenter;
+    const y = e.clientY - rect.top - wheelCenter;
+    let h = (Math.atan2(y, x) * 180) / Math.PI + 90;
+    if (h < 0) h += 360;
+    curHsv = { ...curHsv, h };
+    sessionStore.setState({ color: hsvToRgb(curHsv) });
+    drawHueWheel();
+    drawSvBox();
+  }
+
   function pickSv(e: MouseEvent): void {
     const rect = svCanvas.getBoundingClientRect();
     const x = Math.max(0, Math.min(SV_BOX_SIZE, e.clientX - rect.left));
     const y = Math.max(0, Math.min(SV_BOX_SIZE, e.clientY - rect.top));
     curHsv = { ...curHsv, s: x / SV_BOX_SIZE, v: 1 - y / SV_BOX_SIZE };
-    const rgb = hsvToRgb(curHsv);
-    sessionStore.setState({ color: rgb });
-    // 仅重绘 SV 方块（hue 角没变，省一帧 hue canvas 重画）；记忆色等 mouseup 才记。
+    sessionStore.setState({ color: hsvToRgb(curHsv) });
     drawSvBox();
   }
+
+  hueCanvas.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    huePicking = true;
+    pickHue(e);
+  });
   svCanvas.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
     svPicking = true;
     pickSv(e);
   });
-  document.addEventListener("mousemove", (e) => {
+
+  const onDocMouseMove = (e: MouseEvent): void => {
+    if (huePicking) pickHue(e);
     if (svPicking) pickSv(e);
-  });
-  document.addEventListener("mouseup", () => {
-    if (svPicking) {
+  };
+  const onDocMouseUp = (): void => {
+    if (huePicking || svPicking) {
+      huePicking = false;
       svPicking = false;
       pushRecent(sessionStore.getState().color);
       renderRecent();
     }
-  });
+  };
+  document.addEventListener("mousemove", onDocMouseMove);
+  document.addEventListener("mouseup", onDocMouseUp);
 
-  // 当前色预览 + RGB/HEX/Alpha 输入双向同步。
   function renderInputs(): void {
     const { color, alpha } = sessionStore.getState();
     previewEl.style.background = rgbToHex(color);
-    if (hexInput.value.toLowerCase() !== rgbToHex(color))
-      hexInput.value = rgbToHex(color);
+    if (hexInput.value.toLowerCase() !== rgbToHex(color)) hexInput.value = rgbToHex(color);
     if (rInput.value !== String(color[0])) rInput.value = String(color[0]);
     if (gInput.value !== String(color[1])) gInput.value = String(color[1]);
     if (bInput.value !== String(color[2])) bInput.value = String(color[2]);
@@ -339,12 +306,13 @@ export function mountColorPalette(container: HTMLElement): () => void {
   hexInput.addEventListener("change", () => {
     const rgb = hexToRgb(hexInput.value);
     if (rgb) applyRgb(rgb);
-    else renderInputs(); // 非法回退到当前值
+    else renderInputs();
   });
+
   function readRgbInputs(): void {
-    const r = Math.max(0, Math.min(255, Number(rInput.value) || 0));
-    const g = Math.max(0, Math.min(255, Number(gInput.value) || 0));
-    const b = Math.max(0, Math.min(255, Number(bInput.value) || 0));
+    const r = clampByte(Number(rInput.value) || 0);
+    const g = clampByte(Number(gInput.value) || 0);
+    const b = clampByte(Number(bInput.value) || 0);
     applyRgb([r, g, b]);
   }
   rInput.addEventListener("change", readRgbInputs);
@@ -352,10 +320,9 @@ export function mountColorPalette(container: HTMLElement): () => void {
   bInput.addEventListener("change", readRgbInputs);
   alphaInput.addEventListener("input", () => {
     const v = Number(alphaInput.value);
-    if (Number.isFinite(v)) sessionStore.setState({ alpha: v });
+    if (Number.isFinite(v)) sessionStore.setState({ alpha: clampByte(v) });
   });
 
-  // 预设色组渲染（每组一行 ×8 swatch）+ i18n 文案 + sessionStore 订阅。
   function renderSwatches(): void {
     swatchesEl.innerHTML = "";
     for (const group of SWATCH_GROUPS) {
@@ -371,14 +338,14 @@ export function mountColorPalette(container: HTMLElement): () => void {
         const sw = document.createElement("button");
         sw.className = "btn cp-swatch";
         sw.title = rgbToHex(rgb);
-        sw.style.cssText = `width:18px;height:18px;padding:0;background:${rgbToHex(rgb)};border:1px solid rgba(0,0,0,0.2);`;
+        sw.style.cssText = `width:18px;height:18px;padding:0;background:${rgbToHex(rgb)};border:${borderCss};`;
         sw.addEventListener("click", () => applyRgb(rgb));
         list.appendChild(sw);
       }
       row.appendChild(list);
       swatchesEl.appendChild(row);
     }
-    // 用户自定义色卡 3 排 × 8：单击应用、长按 600ms 或右键弹 inline color picker 改色。
+
     const customLabel = document.createElement("span");
     customLabel.style.cssText = "opacity:0.6;font-size:10px;margin-top:6px;";
     customLabel.textContent = t("colorPalette.swatchGroup_custom");
@@ -397,8 +364,8 @@ export function mountColorPalette(container: HTMLElement): () => void {
         const bg = slot ? rgbToHex(slot) : "transparent";
         const cross = slot
           ? ""
-          : "background-image:linear-gradient(45deg,#ccc 25%,transparent 25%,transparent 75%,#ccc 75%),linear-gradient(45deg,#ccc 25%,transparent 25%,transparent 75%,#ccc 75%);background-size:6px 6px;background-position:0 0,3px 3px;";
-        sw.style.cssText = `width:22px;height:22px;padding:0;background:${bg};border:1px solid rgba(0,0,0,0.25);${cross}`;
+          : "background-image:linear-gradient(45deg,rgba(var(--border-rgb),0.2) 25%,transparent 25%,transparent 75%,rgba(var(--border-rgb),0.2) 75%),linear-gradient(45deg,rgba(var(--border-rgb),0.2) 25%,transparent 25%,transparent 75%,rgba(var(--border-rgb),0.2) 75%);background-size:6px 6px;background-position:0 0,3px 3px;";
+        sw.style.cssText = `width:22px;height:22px;padding:0;background:${bg};border:${borderCss};${cross}`;
         attachCustomSwatchHandlers(sw, idx);
         rowEl.appendChild(sw);
       }
@@ -406,55 +373,50 @@ export function mountColorPalette(container: HTMLElement): () => void {
     }
   }
 
-  // 单击应用、长按 600ms / 右键 → 弹 inline picker 编辑该格颜色。
   function attachCustomSwatchHandlers(sw: HTMLButtonElement, idx: number): void {
     let pressTimer: number | null = null;
     let longPressFired = false;
+    const clearTimer = (): void => {
+      if (pressTimer !== null) {
+        window.clearTimeout(pressTimer);
+        pressTimer = null;
+      }
+    };
     sw.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
       longPressFired = false;
       pressTimer = window.setTimeout(() => {
         longPressFired = true;
-        openCustomSwatchEditor(sw, idx);
+        openCustomSwatchEditor(idx);
       }, 600);
     });
-    sw.addEventListener("mouseup", () => {
-      if (pressTimer !== null) {
-        window.clearTimeout(pressTimer);
-        pressTimer = null;
-      }
-    });
-    sw.addEventListener("mouseleave", () => {
-      if (pressTimer !== null) {
-        window.clearTimeout(pressTimer);
-        pressTimer = null;
-      }
-    });
+    sw.addEventListener("mouseup", clearTimer);
+    sw.addEventListener("mouseleave", clearTimer);
     sw.addEventListener("click", (e) => {
-      // 长按已弹编辑器时，本次 click 不触发应用色值。
       if (longPressFired) {
         e.preventDefault();
         return;
       }
       const slot = customSwatches[idx];
       if (slot) applyRgb(slot);
-      else openCustomSwatchEditor(sw, idx);
+      else openCustomSwatchEditor(idx);
     });
     sw.addEventListener("contextmenu", (e) => {
       e.preventDefault();
-      openCustomSwatchEditor(sw, idx);
+      openCustomSwatchEditor(idx);
     });
   }
 
-  function openCustomSwatchEditor(_sw: HTMLButtonElement, idx: number): void {
-    // 自建 inline modal：HEX 输入 + 应用当前色 + 清空 + 取消。
+  function openCustomSwatchEditor(idx: number): void {
     const overlay = document.createElement("div");
+    overlay.dataset.modalOpen = "true";
     overlay.style.cssText =
-      "position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:10000;display:flex;align-items:center;justify-content:center;";
+      "position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:10000;display:flex;align-items:center;justify-content:center;";
 
     const card = document.createElement("div");
     card.className = "panel";
-    card.style.cssText = "min-width:280px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;font-size:12px;";
+    card.style.cssText =
+      "min-width:280px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;font-size:12px;";
     overlay.appendChild(card);
 
     const title = document.createElement("div");
@@ -468,7 +430,7 @@ export function mountColorPalette(container: HTMLElement): () => void {
     const previewRow = document.createElement("div");
     previewRow.style.cssText = "display:flex;align-items:center;gap:8px;";
     const previewBox = document.createElement("div");
-    previewBox.style.cssText = `width:40px;height:24px;background:${initialHex};border:1px solid rgba(0,0,0,0.3);`;
+    previewBox.style.cssText = `width:40px;height:24px;background:${initialHex};border:${borderCss};`;
     const hexInputEl = document.createElement("input");
     hexInputEl.type = "text";
     hexInputEl.value = initialHex;
@@ -478,8 +440,7 @@ export function mountColorPalette(container: HTMLElement): () => void {
       const rgb = hexToRgb(hexInputEl.value);
       if (rgb) previewBox.style.background = rgbToHex(rgb);
     });
-    previewRow.appendChild(previewBox);
-    previewRow.appendChild(hexInputEl);
+    previewRow.append(previewBox, hexInputEl);
     card.appendChild(previewRow);
 
     const useCurrentBtn = document.createElement("button");
@@ -510,25 +471,29 @@ export function mountColorPalette(container: HTMLElement): () => void {
     okBtn.type = "button";
     okBtn.className = "btn btn-primary";
     okBtn.textContent = t("colorPalette.customSlotSave");
-    rightGroup.appendChild(cancelBtn);
-    rightGroup.appendChild(okBtn);
-    btnRow.appendChild(clearBtn);
-    btnRow.appendChild(rightGroup);
+    rightGroup.append(cancelBtn, okBtn);
+    btnRow.append(clearBtn, rightGroup);
     card.appendChild(btnRow);
 
     function close(): void {
-      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
       overlay.remove();
     }
     function onKey(e: KeyboardEvent): void {
-      if (e.key === "Escape") close();
-      else if (e.key === "Enter") okBtn.click();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close();
+      } else if (e.key === "Enter") {
+        okBtn.click();
+      }
     }
     cancelBtn.addEventListener("click", close);
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    overlay.addEventListener("mousedown", (e) => {
+      if (e.target === overlay) close();
+    });
     clearBtn.addEventListener("click", () => {
       customSwatches[idx] = null;
-      schedulePersistCustom();
+      persistCustom();
       renderSwatches();
       close();
     });
@@ -536,11 +501,11 @@ export function mountColorPalette(container: HTMLElement): () => void {
       const rgb = hexToRgb(hexInputEl.value);
       if (!rgb) return;
       customSwatches[idx] = rgb;
-      schedulePersistCustom();
+      persistCustom();
       renderSwatches();
       close();
     });
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
     document.body.appendChild(overlay);
     hexInputEl.focus();
     hexInputEl.select();
@@ -550,11 +515,9 @@ export function mountColorPalette(container: HTMLElement): () => void {
     alphaLabelEl.textContent = t("colorPalette.alpha");
     recentLabelEl.textContent = t("colorPalette.recent");
     dropperBtn.title = t("colorPalette.pickFromCanvas");
-    renderSwatches(); // group 标签随 lang 变
+    renderSwatches();
   }
 
-  // sessionStore 订阅：外部修改 color/alpha 时同步输入框 + curHsv。
-  // 注意：本模块自己 setState 时也会回调；renderInputs 用值比较避免回环写。
   const unsubscribe = sessionStore.subscribe(() => {
     const c = sessionStore.getState().color;
     if (!rgbEqual(c, hsvToRgb(curHsv))) {
@@ -571,52 +534,88 @@ export function mountColorPalette(container: HTMLElement): () => void {
   drawSvBox();
   renderRecent();
 
-  // 取色针：点击进入取色模式，鼠标移到画布上实时取色，点击确认 / Esc 取消。
-  // 工作目标是 webview 内的 <canvas>（编辑画布、预览画布等），用 elementsFromPoint
-  // 找到首张 canvas → getImageData(1,1) 读 RGBA。不跨进程取屏幕色。
   const detachDropper = attachDropper(dropperBtn, applyRgb);
-
   const unsubLang = subscribeLang(applyTexts);
 
   return () => {
     unsubscribe();
     unsubLang();
     detachDropper();
+    document.removeEventListener("mousemove", onDocMouseMove);
+    document.removeEventListener("mouseup", onDocMouseUp);
   };
 }
 
-// 取色针：按下拖动持续预览，松手 commit；Esc 取消。
 const TOOLBAR_HEIGHT = 28;
-const POLL_INTERVAL_MS = 30;
+const POLL_INTERVAL_MS = 40;
 
+// 主窗口内直接用浏览器 CSS 坐标采样，零高 DPI 偏差；光标移出主窗口时轮询后端采样图片子窗口。
 function attachDropper(btn: HTMLButtonElement, applyRgb: (rgb: Rgb) => void): () => void {
   let active = false;
   let originalColor: Rgb = sessionStore.getState().color;
   let pollTimer: number | null = null;
-  // dragging：true 表示用户已按下左键进入"拖动取色"阶段，松手即确认。
-  let dragging = false;
+  let cursorInMainWindow = true;
+  let externalDragging = false;
   let inflight = false;
+
+  function onWinMouseMove(e: MouseEvent): void {
+    if (!active) return;
+    cursorInMainWindow = true;
+    const rgb = pickAt(e.clientX, e.clientY);
+    if (rgb) sessionStore.setState({ color: rgb });
+  }
+
+  function onWinMouseLeave(): void {
+    cursorInMainWindow = false;
+  }
+
+  function onWinMouseDown(e: MouseEvent): void {
+    if (!active) return;
+    if (btn.contains(e.target as Node)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.button !== 0) {
+      stop(false);
+      return;
+    }
+    const rgb = pickAt(e.clientX, e.clientY) ?? sessionStore.getState().color;
+    applyRgb(rgb);
+    stop(true);
+  }
+
+  function onKey(e: KeyboardEvent): void {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      stop(false);
+    }
+  }
 
   function start(): void {
     if (active) return;
     active = true;
+    cursorInMainWindow = true;
+    externalDragging = false;
     originalColor = sessionStore.getState().color;
     document.body.classList.add("cp-picking");
     btn.classList.add("btn-primary");
+    window.addEventListener("mousemove", onWinMouseMove, true);
+    document.documentElement.addEventListener("mouseleave", onWinMouseLeave);
+    window.addEventListener("mousedown", onWinMouseDown, true);
     document.addEventListener("keydown", onKey, true);
     void setPickActive(true);
-    void isMouseLeftDown().then((down) => {
-      dragging = down;
-    });
-    pollTimer = window.setInterval(() => void poll(), POLL_INTERVAL_MS);
+    pollTimer = window.setInterval(() => void pollExternal(), POLL_INTERVAL_MS);
   }
 
   function stop(commit: boolean): void {
     if (!active) return;
     active = false;
-    dragging = false;
+    externalDragging = false;
     document.body.classList.remove("cp-picking");
     btn.classList.remove("btn-primary");
+    window.removeEventListener("mousemove", onWinMouseMove, true);
+    document.documentElement.removeEventListener("mouseleave", onWinMouseLeave);
+    window.removeEventListener("mousedown", onWinMouseDown, true);
     document.removeEventListener("keydown", onKey, true);
     void setPickActive(false);
     if (pollTimer !== null) {
@@ -628,45 +627,25 @@ function attachDropper(btn: HTMLButtonElement, applyRgb: (rgb: Rgb) => void): ()
     }
   }
 
-  async function poll(): Promise<void> {
-    if (!active || inflight) return;
+  async function pollExternal(): Promise<void> {
+    if (!active || cursorInMainWindow || inflight) return;
     inflight = true;
     try {
       const pos = await getCursorScreenPos();
-      if (!active) return;
-      let rgb: Rgb | null = null;
-      if (pos) {
-        const cx = pos.x - window.screenX;
-        const cy = pos.y - window.screenY;
-        if (cx >= 0 && cy >= 0 && cx < window.innerWidth && cy < window.innerHeight) {
-          rgb = pickAt(cx, cy);
-        }
-        if (!rgb) {
-          rgb = await pickImagePixelByScreenCoord(pos.x, pos.y, TOOLBAR_HEIGHT);
-        }
-      }
-      if (!active) return;
-      if (rgb) {
-        sessionStore.setState({ color: rgb });
-      }
+      if (!active || cursorInMainWindow || !pos) return;
+      const rgb = await pickImagePixelByScreenCoord(pos.x, pos.y, TOOLBAR_HEIGHT);
+      if (!active || cursorInMainWindow) return;
+      if (rgb) sessionStore.setState({ color: rgb });
       const down = await isMouseLeftDown();
-      if (!active) return;
-      if (!down && dragging) {
-        const finalRgb = rgb ?? sessionStore.getState().color;
-        applyRgb(finalRgb);
+      if (!active || cursorInMainWindow) return;
+      if (!down && externalDragging) {
+        applyRgb(rgb ?? sessionStore.getState().color);
         stop(true);
         return;
       }
-      if (down) dragging = true;
+      if (down) externalDragging = true;
     } finally {
       inflight = false;
-    }
-  }
-
-  function onKey(e: KeyboardEvent): void {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      stop(false);
     }
   }
 
@@ -680,26 +659,25 @@ function attachDropper(btn: HTMLButtonElement, applyRgb: (rgb: Rgb) => void): ()
 }
 
 function pickAt(clientX: number, clientY: number): Rgb | null {
-  // 优先 canvas；canvas 不在时尝试 <img>（图片子窗口的 <img>）。
-  // 取像素时用 round + 周围 3×3 平均，降低显示像素 → 源像素映射的 ±1 偏差。
   const els = document.elementsFromPoint(clientX, clientY);
   for (const el of els) {
     if (el instanceof HTMLCanvasElement) {
       const rect = el.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) continue;
+      if (rect.width === 0 || rect.height === 0 || el.width === 0 || el.height === 0) continue;
       const sx = (clientX - rect.left) * (el.width / rect.width);
       const sy = (clientY - rect.top) * (el.height / rect.height);
-      const cx = Math.max(0, Math.min(el.width - 1, Math.round(sx)));
-      const cy = Math.max(0, Math.min(el.height - 1, Math.round(sy)));
+      const cx = Math.max(0, Math.min(el.width - 1, Math.floor(sx)));
+      const cy = Math.max(0, Math.min(el.height - 1, Math.floor(sy)));
       try {
         const ctx = el.getContext("2d");
         if (!ctx) continue;
-        return sampleCenter(ctx, cx, cy, el.width, el.height);
+        const sampled = sampleNonTransparent(ctx, cx, cy);
+        if (sampled) return sampled;
       } catch {
         continue;
       }
     }
-    if (el instanceof HTMLImageElement && el.complete && el.naturalWidth > 0) {
+    if (el instanceof HTMLImageElement && el.complete && el.naturalWidth > 0 && el.naturalHeight > 0) {
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) continue;
       const off = document.createElement("canvas");
@@ -711,9 +689,10 @@ function pickAt(clientX: number, clientY: number): Rgb | null {
         ctx.drawImage(el, 0, 0);
         const sx = ((clientX - rect.left) / rect.width) * el.naturalWidth;
         const sy = ((clientY - rect.top) / rect.height) * el.naturalHeight;
-        const cx = Math.max(0, Math.min(el.naturalWidth - 1, Math.round(sx)));
-        const cy = Math.max(0, Math.min(el.naturalHeight - 1, Math.round(sy)));
-        return sampleCenter(ctx, cx, cy, el.naturalWidth, el.naturalHeight);
+        const cx = Math.max(0, Math.min(el.naturalWidth - 1, Math.floor(sx)));
+        const cy = Math.max(0, Math.min(el.naturalHeight - 1, Math.floor(sy)));
+        const sampled = sampleNonTransparent(ctx, cx, cy);
+        if (sampled) return sampled;
       } catch {
         continue;
       }
@@ -722,7 +701,9 @@ function pickAt(clientX: number, clientY: number): Rgb | null {
   return null;
 }
 
-function sampleCenter(ctx: CanvasRenderingContext2D, cx: number, cy: number, _w: number, _h: number): Rgb {
+// 透明像素返回 `null`，以便穿透空的叠加画布读取下层像素。
+function sampleNonTransparent(ctx: CanvasRenderingContext2D, cx: number, cy: number): Rgb | null {
   const data = ctx.getImageData(cx, cy, 1, 1).data;
+  if (data[3] === 0) return null;
   return [data[0], data[1], data[2]];
 }

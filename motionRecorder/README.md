@@ -1,111 +1,90 @@
-# MotionRecorder — 角色动作捕捉 mod
+# MotionRecorder 角色动作录制插件
 
-把游戏里玩家角色每一帧的 `Limb` 变换（局部坐标 / 旋转 / 排序 / 可见性 / 朝向 / 表情索引）写成一份独立的 JSON 文件，作为本编辑器装配表与动画分析的数据源。
+`MotionRecorder` 是配合皮肤编辑器使用的 BepInEx 5 小插件。它在游戏运行期间按帧读取玩家角色的身体肢体、尾巴与翅膀变换，停止录制时写成一份独立的 JSON 文件，供编辑器的"动画"预览模式逐帧回放。
 
-它不打日志、不修改游戏行为；产出落到 mod 自己的目录，每按一次"开始 → 停止"生成一份新文件。
+如果你只用编辑器画静态贴图或直接使用现成的动作文件，不需要在游戏里装这个插件。
 
-## 1. 目标读者
+## 1. 输出文件与 JSON 结构
 
-- 想用真实运行数据填充 `assemblyTable.defaultAssembly` 的开发者
-- 想给皮肤编辑器后续加帧动画预览的人
-
-如果只是用编辑器替换皮肤，不需要装这个 mod。
-
-## 2. 数据形态
-
-每次录制写一份独立 JSON：
+每次按下开始到停止录制，都会在插件目录下生成一份新文件（文件名带毫秒时间戳，连按也不会覆盖）：
 
 ```text
 <游戏目录>/BepInEx/plugins/MotionRecorder/captures/
-└── motion_<本地时间戳>_<玩家名>.json
+└── motion_<本地时间戳>_<角色名>.json
 ```
 
-JSON 字段：
+把生成的 `.json` 文件拷到皮肤编辑器同级的 `captures/` 目录，切到编辑器的"动画"预览模式即可选用。
 
-| 字段 | 含义 |
+顶层字段：
+
+| 字段 | 说明 |
 | --- | --- |
-| `version` | schema 版本，目前是 `3` |
-| `modVersion` | 录制时 mod 自身版本 |
-| `startedAtUnixMs` | 录制开始的本地 Unix 毫秒（仅用于排序，不做时区还原） |
-| `playerName` | 录制对象 GameObject 的 name |
-| `frameCount` | 总帧数 |
-| `frames[]` | 每帧采样：见下表 |
+| `version` | 格式版本号，当前固定为 `3` |
+| `modVersion` | 录制该文件时的插件版本 |
+| `startedAtUnixMs` | 开始录制时的 Unix 毫秒时间戳 |
+| `playerName` | 目标角色 `GameObject` 名称 |
+| `frameCount` | 录下的总帧数 |
+| `frames[]` | 按时间顺序排列的帧数组 |
 
-每帧 `frames[i]`：
+每帧 `frames[i]` 字段：
 
-| 字段 | 含义 |
+| 字段 | 说明 |
 | --- | --- |
-| `t` | 距录制起点的秒数 |
-| `isRight` | `Body.transform.localScale.x > 0` 时 true，等价于 Limb 装配表里 `flipX = false` |
-| `expression` | 当前 `FacialExpression.eyeIndex`，与游戏 `eyeList[]` 索引一致 |
-| `limbs[]` | 数组。前 15 条对应 `Body.limbs[i]`；找到 `TailScript` 时会额外追加一条 `Tail` |
+| `t` | 距离录制起点的秒数（游戏暂停期间的挂钟耗时会自动扣除） |
+| `isRight` | 角色当前是否面朝右（读取 `Body.isRight`） |
+| `expression` | 当前眼睛贴图在 `FacialExpression.eyeList` 中的索引，未命中时为 `-1` |
+| `limbs[]` | 当前帧采集到的全部部位，包含 `Body.limbs[]`、尾巴 `Tail` 以及 `SkinSync` 挂载的四片翅膀 |
 
-每条 `limbs[i]`：
+每条部位 `limbs[i]` 字段（共 17 项）：
 
-| 字段 | 含义 |
+| 字段 | 说明 |
 | --- | --- |
-| `name` | Limb 逻辑名；尾巴固定写 `Tail` |
-| `limbNum` | `Body.LimbNum` 枚举数值；尾巴固定写 `-1` |
-| `px / py / pz` | `transform.localPosition`，Unity 单位（× 8 即编辑器像素） |
-| `rotZ` | `transform.localEulerAngles.z`，0–360 度 |
-| `scaleX / scaleY` | `transform.localScale.{x,y}`，多数情况下为 1 |
-| `sortingOrder` | `SpriteRenderer.sortingOrder` |
-| `visible` | `SpriteRenderer.enabled && gameObject.activeInHierarchy` |
+| `name` | 部位名；尾巴固定为 `Tail`，翅膀固定为 `wingUL` / `wingUR` / `wingDL` / `wingDR` |
+| `limbNum` | `Body.limbs[]` 下标；尾巴记 `-1`，四片翅膀记 `-10` 至 `-13` |
+| `px` / `py` / `pz` | `Transform.localPosition`（Unity 单位，`1` 单位等于编辑器画布 `8` 像素） |
+| `rotZ` | Z 轴旋转角度（`0`–`360` 度；常规肢体取局部旋转，挂在深层节点的尾巴与翅膀取世界旋转） |
+| `scaleX` / `scaleY` | `Transform.localScale` 的 X 与 Y 分量 |
+| `sortingOrder` | 渲染器的 `sortingOrder` |
+| `visible` | 当前部位在场景中是否激活且渲染器已启用（兼容 `SkinSync` 流体尾巴的 `MeshRenderer`） |
+| `bcx` / `bcy` | 渲染包围盒中心（`bounds.center`）转回 `Body` 根节点局部空间的坐标，供尾巴与翅膀精确定位 |
+| `spriteName` | 当前挂载的 `Sprite` 名称 |
+| `pivotU` / `pivotV` | 贴图归一化中心锚点（`0`–`1`） |
+| `spriteW` / `spriteH` | 贴图矩形像素宽高 |
 
-尾巴样本补充说明：
+局部坐标换算到编辑器 `100×100` 装配画布的公式为（画布 Y 轴向下，Unity 局部 Y 轴向上）：
 
-- `name = "Tail"`
-- `spriteName` 一般为 `experimentTail`
-- 它不在 `Body.limbs[]` 里，而是来自独立的 `TailScript`
+```text
+x = round(px * 8)
+y = round(-py * 8)
+```
 
-## 3. 安装
+## 2. 编译与安装
 
-1. 安装 BepInEx 5（x64，Mono）到游戏目录，先启动一次让它生成 `BepInEx/plugins/`。
-2. 用 dotnet 8 SDK 构建本 mod：
+1. 先在游戏目录装好 BepInEx 5（x64 Mono），启动一次游戏让它生成 `BepInEx/plugins/`。
+2. 按 `references/README.md` 里的清单，把本地游戏目录的 7 个依赖 DLL 拷进 `motionRecorder/references/`（该目录已在 `.gitignore` 忽略）。
+3. 使用 .NET SDK 编译插件：
 
    ```bash
-   cd mods/motionRecorder
+   cd motionRecorder
    dotnet build -c Release
    ```
 
-3. 把产物 `bin/Release/MotionRecorder.dll` 拷到 `<游戏目录>/BepInEx/plugins/MotionRecorder/MotionRecorder.dll`。
-4. 启动游戏。`BepInEx/LogOutput.log` 末尾会出现 `MotionRecorder ready`。
+4. 把生成好的 `bin/Release/MotionRecorder.dll` 复制到 `<游戏目录>/BepInEx/plugins/MotionRecorder/MotionRecorder.dll`。
+5. 启动游戏，看到 `BepInEx/LogOutput.log` 里打印出 `MotionRecorder ready` 即代表加载成功。
 
-构建依赖的游戏 / Unity / BepInEx DLL 需要从你本地 `<游戏目录>/BepInEx/core/` 与 `<游戏目录>/CasualtiesUnknown_Data/Managed/` 拷贝到本目录的 `references/` 下，路径已被 `.gitignore` 忽略，不会进仓库。具体清单见 `references/README.md`。
+## 3. 游戏内操作
 
-## 4. 使用
+进入有角色的游戏场景后（主菜单和加载界面不会显示录制按钮）：
 
-进游戏后任意场景里：
+- **`F9`**：开始录制（已在录制中再按不会重开，防止误触）。
+- **`F10`**：停止录制并把数据写入 `captures/`。
+- **`F8`**：打开或关闭设置浮窗，可在游戏内直接改绑开始/停止按键（改键时按 `Esc` 可取消）或隐藏左下角按钮。
+- **左下角按钮**：也可以直接用鼠标点屏幕左下角的"开始录制 / 停止录制"按钮。
 
-- **开始录制（默认 F9）/ 停止录制（默认 F10）**：两个独立按键，避免误触把"停"当"开"。
-- **设置面板（默认 F8）**：屏幕中浮窗，可热改两个录制按键、开关左下角浮动 UI。
-- **左下角浮动按钮**：「开始录制 / 停止录制」按钮，鼠标可点；可在设置里隐藏。**只在游戏世界已加载（即 `PlayerCamera.main` 与 `WorldGeneration.world` 都就位）时显示**，主菜单 / 加载界面不会出现。
+按键和界面显隐配置会自动保存在 `<游戏目录>/BepInEx/config/com.casualtiesUnknown.motionRecorder.cfg`。
 
-录制中卡片显示红色 `REC mm:ss.xxx · NNN frames · 停止 <Key>`，停止后卡片切回灰色，并提示落地的 JSON 文件路径。
+## 4. 采样细节与边界
 
-每次开始-停止生成一份新文件。同一秒重复触发也会生成不同文件名（带毫秒后缀）。
-
-按键与 UI 偏好持久化到 `<游戏目录>/BepInEx/config/com.casualtiesUnknown.motionRecorder.cfg`。
-
-## 5. 行为约束
-
-- 只捕捉一个 `Body`：默认取场景里第一个 active 的、且 `Body.limbs` 非空的对象，多数情况下就是玩家。
-- 帧率跟游戏 Update 走，不做插值。30 秒大概 1500 帧，单文件约 1–3 MB。
-- 录制中游戏暂停（`Time.timeScale == 0`）会跳过当帧，避免在暂停面板里写一堆重复值。
-- 不影响游戏存档和任何运行时数据；只读 transform，不写。
-
-## 6. 与皮肤编辑器的关系
-
-抓出来的 `limbs[*].px,py` 与项目里 `assemblyTable.defaultAssembly` 的 `position` 同一坐标系。换算关系：
-
-```text
-assembly.position = round(limb.px * 8) , round(-limb.py * 8)
-```
-
-Y 轴取负是因为编辑器画布像素坐标向下增长，而 Unity 局部坐标 Y 向上。
-
-## 7. 已知约束
-
-- 不捕捉 `bodyAnimator / armsAnimator` 内部状态。如果两个 Limb 的 `localPosition` 因 anim 同步、但你想分别还原 anim 状态机，单看本捕获文件不够。
-- `spriteName / pivot / sprite 尺寸` 已记录，但仍不捕捉 animator 内部状态机字段。
-- 不写元数据到游戏存档；mod 卸载后没有任何残留。
+- 插件优先锁定 `PlayerCamera.main.body`（当前玩家控制的身体）和 `Body.tail`；只有在相机引用缺失时才回退扫描场景，并且对尾巴做了层级与 3 单位距离限制，断尾时不会误抓远处 NPC 的尾巴。
+- 采样频率跟随游戏的 `Update()` 帧率，不做额外插值；按 `Esc` 暂停游戏（`Time.timeScale <= 0`）时会暂停采样并扣除暂停耗时，恢复后动作时间轴依然连贯。
+- 插件全程只读组件状态，不改任何游戏逻辑或存档文件；录制途中如果直接退出场景或关闭游戏，已有帧也会在组件卸载时自动落盘。

@@ -1,108 +1,97 @@
 using System.Collections.Generic;
+using Newtonsoft.Json;
 
 namespace CasualtiesUnknown.MotionRecorder
 {
-    /// <summary>
-    /// 与 <see cref="Plugin"/> 写盘格式一一对应。Newtonsoft.Json 默认序列化字段名
-    /// 即此处的 PascalCase 属性名——为了贴合 README 文档里的 lowerCamelCase JSON
-    /// 字段名，统一通过 <see cref="Newtonsoft.Json.JsonPropertyAttribute"/> 改写。
-    /// </summary>
+    /// <summary>逐帧动作捕捉 JSON 顶层结构（v3，与皮肤编辑器 `MotionCaptureFile` 对齐）。</summary>
     internal sealed class CaptureFile
     {
-        [Newtonsoft.Json.JsonProperty("version")]
+        [JsonProperty("version")]
         public int Version { get; set; } = 3;
 
-        [Newtonsoft.Json.JsonProperty("modVersion")]
+        [JsonProperty("modVersion")]
         public string ModVersion { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("startedAtUnixMs")]
+        [JsonProperty("startedAtUnixMs")]
         public long StartedAtUnixMs { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("playerName")]
+        [JsonProperty("playerName")]
         public string PlayerName { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("frameCount")]
+        [JsonProperty("frameCount")]
         public int FrameCount { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("frames")]
+        [JsonProperty("frames")]
         public List<FrameSample> Frames { get; set; } = new List<FrameSample>();
     }
 
     internal sealed class FrameSample
     {
-        [Newtonsoft.Json.JsonProperty("t")]
+        [JsonProperty("t")]
         public float T { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("isRight")]
+        [JsonProperty("isRight")]
         public bool IsRight { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("expression")]
+        [JsonProperty("expression")]
         public int Expression { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("limbs")]
+        [JsonProperty("limbs")]
         public List<LimbSample> Limbs { get; set; } = new List<LimbSample>();
     }
 
+    /// <summary>单个部位帧数据；`bcx`/`bcy` 为渲染包围盒中心转回 `Body` 局部空间的坐标。</summary>
     internal sealed class LimbSample
     {
-        [Newtonsoft.Json.JsonProperty("name")]
+        [JsonProperty("name")]
         public string Name { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("limbNum")]
+        [JsonProperty("limbNum")]
         public int LimbNum { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("px")]
+        [JsonProperty("px")]
         public float Px { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("py")]
+        [JsonProperty("py")]
         public float Py { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("pz")]
+        [JsonProperty("pz")]
         public float Pz { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("rotZ")]
+        [JsonProperty("rotZ")]
         public float RotZ { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("scaleX")]
+        [JsonProperty("scaleX")]
         public float ScaleX { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("scaleY")]
+        [JsonProperty("scaleY")]
         public float ScaleY { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("sortingOrder")]
+        [JsonProperty("sortingOrder")]
         public int SortingOrder { get; set; }
 
-        [Newtonsoft.Json.JsonProperty("visible")]
+        [JsonProperty("visible")]
         public bool Visible { get; set; }
 
-        // —— v2 新增：sprite 视觉中心与元信息 —— //
-
-        /// <summary>SpriteRenderer.bounds.center 转 Body 局部坐标后的 X（Unity 单位）。</summary>
-        [Newtonsoft.Json.JsonProperty("bcx")]
+        [JsonProperty("bcx")]
         public float Bcx { get; set; }
 
-        /// <summary>SpriteRenderer.bounds.center 转 Body 局部坐标后的 Y。</summary>
-        [Newtonsoft.Json.JsonProperty("bcy")]
+        [JsonProperty("bcy")]
         public float Bcy { get; set; }
 
-        /// <summary>当前 SpriteRenderer.sprite.name；可用于核对皮肤是否被替换。</summary>
-        [Newtonsoft.Json.JsonProperty("spriteName")]
+        [JsonProperty("spriteName")]
         public string SpriteName { get; set; }
 
-        /// <summary>sprite 自身的归一化 pivot.x（0 = 左 / 0.5 = 中心 / 1 = 右）。</summary>
-        [Newtonsoft.Json.JsonProperty("pivotU")]
+        [JsonProperty("pivotU")]
         public float PivotU { get; set; }
 
-        /// <summary>sprite 自身的归一化 pivot.y（0 = 下 / 0.5 = 中心 / 1 = 上）。</summary>
-        [Newtonsoft.Json.JsonProperty("pivotV")]
+        [JsonProperty("pivotV")]
         public float PivotV { get; set; }
 
-        /// <summary>sprite 矩形宽（像素）。</summary>
-        [Newtonsoft.Json.JsonProperty("spriteW")]
+        [JsonProperty("spriteW")]
         public float SpriteW { get; set; }
 
-        /// <summary>sprite 矩形高（像素）。</summary>
-        [Newtonsoft.Json.JsonProperty("spriteH")]
+        [JsonProperty("spriteH")]
         public float SpriteH { get; set; }
     }
 }

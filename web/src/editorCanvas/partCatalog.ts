@@ -1,14 +1,11 @@
-// 新建标准部件的目录表：各分类可建部件 base 名、默认黑块尺寸、是否支持前后(F/B) / 左右(R_)。
+// 新建标准部件目录表与跨角色前缀/维度拼接规则。
 import type { PartCategory } from "../stateStore/types";
 
 export interface PartDef {
-  /** 不含前缀的 base 名，如 "UpArm" / "EyeOpen" / "wingUL"。 */
   base: string;
   width: number;
   height: number;
-  /** 支持前后副本（生成 F / B 后缀）。 */
   fb: boolean;
-  /** 支持左右朝向副本（生成 R_ 前缀）。 */
   lr: boolean;
 }
 
@@ -46,6 +43,8 @@ export const PART_CATALOG: Partial<Record<PartCategory, PartDef[]>> = {
     { base: "EyeScared", width: 26, height: 12, fb: false, lr: true },
     { base: "EyeScaredBack", width: 26, height: 12, fb: false, lr: true },
     { base: "EyePanic", width: 26, height: 12, fb: false, lr: true },
+    { base: "EyeLockedIn", width: 26, height: 12, fb: false, lr: true },
+    { base: "EyeLockedInBack", width: 26, height: 12, fb: false, lr: true },
     { base: "EyeLookBack", width: 26, height: 12, fb: false, lr: true },
     { base: "EyeGone", width: 26, height: 12, fb: false, lr: true },
     { base: "EyeGoneHealed", width: 26, height: 12, fb: false, lr: true },
@@ -57,62 +56,95 @@ export const PART_CATALOG: Partial<Record<PartCategory, PartDef[]>> = {
     { base: "wingDR", width: 32, height: 32, fb: false, lr: false },
   ],
   Accessories: [
-    { base: "autopump", width: 12, height: 12, fb: false, lr: false },
-    { base: "autozoomgoggles", width: 16, height: 12, fb: false, lr: false },
-    { base: "balaclava", width: 26, height: 12, fb: false, lr: false },
-    { base: "bellyarmor", width: 12, height: 12, fb: false, lr: false },
-    { base: "belt", width: 10, height: 8, fb: false, lr: false },
-    { base: "bigpack", width: 24, height: 24, fb: false, lr: false },
-    { base: "bikehelmet", width: 20, height: 18, fb: false, lr: false },
-    { base: "blindfold", width: 26, height: 12, fb: false, lr: false },
-    { base: "carapace", width: 12, height: 18, fb: false, lr: false },
-    { base: "climbingclaws", width: 8, height: 12, fb: false, lr: false },
-    { base: "duffelbag", width: 20, height: 24, fb: false, lr: false },
-    { base: "dustmask", width: 26, height: 12, fb: false, lr: false },
-    { base: "fannypack", width: 16, height: 10, fb: false, lr: false },
-    { base: "headlamp", width: 26, height: 12, fb: false, lr: false },
-    { base: "holidayhat", width: 22, height: 18, fb: false, lr: false },
-    { base: "jetpack", width: 24, height: 30, fb: false, lr: false },
-    { base: "latexgloves", width: 6, height: 8, fb: false, lr: false },
-    { base: "legpouch", width: 10, height: 12, fb: false, lr: false },
-    { base: "makeshiftheadlamp", width: 20, height: 20, fb: false, lr: false },
-    { base: "makeshifthelmet", width: 22, height: 18, fb: false, lr: false },
-    { base: "materialpouch", width: 12, height: 12, fb: false, lr: false },
-    { base: "safetyglasses", width: 26, height: 12, fb: false, lr: false },
-    { base: "scarf", width: 12, height: 14, fb: false, lr: false },
-    { base: "slingbag", width: 26, height: 16, fb: false, lr: false },
-    { base: "smallpack", width: 16, height: 14, fb: false, lr: false },
-    { base: "sneakers", width: 8, height: 11, fb: false, lr: false },
-    { base: "woodsandals", width: 10, height: 11, fb: false, lr: false },
+    { base: "armwarmers", width: 12, height: 14, fb: false, lr: true },
+    { base: "autopump", width: 12, height: 12, fb: false, lr: true },
+    { base: "autozoomgoggles", width: 16, height: 12, fb: false, lr: true },
+    { base: "balaclava", width: 26, height: 12, fb: false, lr: true },
+    { base: "bandolier", width: 12, height: 18, fb: false, lr: true },
+    { base: "bellyarmor", width: 12, height: 12, fb: false, lr: true },
+    { base: "belt", width: 10, height: 8, fb: false, lr: true },
+    { base: "bigpack", width: 24, height: 24, fb: false, lr: true },
+    { base: "bikehelmet", width: 20, height: 18, fb: false, lr: true },
+    { base: "blindfold", width: 26, height: 12, fb: false, lr: true },
+    { base: "carapace", width: 12, height: 18, fb: false, lr: true },
+    { base: "climbingclaws", width: 8, height: 12, fb: false, lr: true },
+    { base: "duffelbag", width: 20, height: 24, fb: false, lr: true },
+    { base: "dustmask", width: 26, height: 12, fb: false, lr: true },
+    { base: "earmuffs", width: 26, height: 18, fb: false, lr: true },
+    { base: "fannypack", width: 16, height: 10, fb: false, lr: true },
+    { base: "headlamp", width: 26, height: 12, fb: false, lr: true },
+    { base: "holidayhat", width: 22, height: 18, fb: false, lr: true },
+    { base: "hoodie", width: 16, height: 20, fb: false, lr: true },
+    { base: "jetpack", width: 24, height: 30, fb: false, lr: true },
+    { base: "kneepads", width: 10, height: 12, fb: false, lr: true },
+    { base: "latexgloves", width: 6, height: 8, fb: false, lr: true },
+    { base: "legpouch", width: 10, height: 12, fb: false, lr: true },
+    { base: "limbwraps", width: 12, height: 14, fb: false, lr: true },
+    { base: "liquidpouch", width: 12, height: 14, fb: false, lr: true },
+    { base: "makeshiftheadlamp", width: 20, height: 20, fb: false, lr: true },
+    { base: "makeshifthelmet", width: 22, height: 18, fb: false, lr: true },
+    { base: "materialpouch", width: 12, height: 12, fb: false, lr: true },
+    { base: "mercscarf", width: 16, height: 14, fb: false, lr: true },
+    { base: "riothelmet", width: 26, height: 20, fb: false, lr: true },
+    { base: "safetyglasses", width: 26, height: 12, fb: false, lr: true },
+    { base: "scarf", width: 12, height: 14, fb: false, lr: true },
+    { base: "scubadivinggear", width: 20, height: 24, fb: false, lr: true },
+    { base: "slingbag", width: 26, height: 16, fb: false, lr: true },
+    { base: "smallpack", width: 16, height: 14, fb: false, lr: true },
+    { base: "sneakers", width: 8, height: 11, fb: false, lr: true },
+    { base: "striderpelt", width: 20, height: 24, fb: false, lr: true },
+    { base: "tacticalboots", width: 12, height: 12, fb: false, lr: true },
+    { base: "tacticalgloves", width: 6, height: 12, fb: false, lr: true },
+    { base: "tornshirt", width: 14, height: 18, fb: false, lr: true },
+    { base: "traumarig", width: 16, height: 18, fb: false, lr: true },
+    { base: "waterpouch1", width: 12, height: 14, fb: false, lr: true },
+    { base: "woodsandals", width: 10, height: 11, fb: false, lr: true },
   ],
   Blood: [
     { base: "BloodParticle", width: 32, height: 32, fb: false, lr: false },
+    { base: "BloodParticle_splat", width: 32, height: 32, fb: false, lr: false },
     { base: "limbBlood", width: 128, height: 128, fb: false, lr: false },
     { base: "nosebleed", width: 14, height: 12, fb: false, lr: false },
   ],
 };
 
-/// 分类是否提供"添加部件"功能。
 export function categorySupportsCreate(cat: PartCategory): boolean {
   return cat in PART_CATALOG;
 }
 
-/// 推断该分类新建部件的前缀：Wings / Blood / Accessories 恒空（base 名即文件名）；其它取已有部件公共前缀，缺失默认 "experiment"。
+/** 推断当前皮肤的角色前缀（兼容 `experiment*`、`dune*` 驼峰与 `milky*` 全小写命名）。 */
 export function inferPrefix(cat: PartCategory, existingNames: string[]): string {
   if (cat === "Wings" || cat === "Blood" || cat === "Accessories") return "";
-  for (const name of existingNames) {
-    const m = /^([a-z]+)[A-Z]/.exec(name.replace(/^R_/, ""));
+  for (const raw of existingNames) {
+    const clean = raw.replace(/^R_/, "");
+    if (clean.startsWith("milky") || clean === "mildownarm") return "milky";
+    if (clean.startsWith("dune")) return "dune";
+    const m = /^([a-z]+)[A-Z]/.exec(clean);
     if (m) return m[1];
   }
   return "experiment";
 }
 
-/// 按 base + 前缀 + 维度组合拼出最终文件名（不含扩展名）。
+const MILKY_STEM_OVERRIDES: Record<string, string> = {
+  UpTorso: "milkytorso",
+  DownArm: "mildownarm",
+  HeadBackMouth: "milkyheadbackmouthopen",
+  HeadBackMouthMini: "milkyheadbackmouthhalfopen",
+  HeadDisfigured1: "milkydisfigure1",
+  HeadDisfigured1Healed: "milkydisfigure1healed",
+  HeadDisfigured2: "milkydisfigure2",
+  HeadDisfigured2Healed: "milkydisfigure2healed",
+};
+
 export function buildPartFileName(prefix: string, base: string, side: "" | "F" | "B", right: boolean): string {
-  return `${right ? "R_" : ""}${prefix}${base}${side}`;
+  const rPrefix = right ? "R_" : "";
+  if (prefix === "milky") {
+    const stem = MILKY_STEM_OVERRIDES[base] ?? `milky${base.toLowerCase()}`;
+    return `${rPrefix}${stem}${side}`;
+  }
+  return `${rPrefix}${prefix}${base}${side}`;
 }
 
-/// 列出该部件定义在当前前缀下的全部维度组合文件名（fb × lr 笛卡尔积）。
 export function partAllComboNames(def: PartDef, prefix: string): string[] {
   const sides: Array<"" | "F" | "B"> = def.fb ? ["F", "B"] : [""];
   const rights: boolean[] = def.lr ? [false, true] : [false];
@@ -121,12 +153,10 @@ export function partAllComboNames(def: PartDef, prefix: string): string[] {
   return out;
 }
 
-/// 该部件定义的所有维度组合是否都已存在。
 export function isPartFullyCreated(def: PartDef, prefix: string, existing: Set<string>): boolean {
   return partAllComboNames(def, prefix).every((n) => existing.has(n));
 }
 
-/// 该分类下所有标准部件是否都已建齐（决定是否隐藏"添加部件"按钮）。
 export function categoryFullyCreated(cat: PartCategory, existingNames: string[]): boolean {
   const defs = PART_CATALOG[cat];
   if (!defs || defs.length === 0) return true;
