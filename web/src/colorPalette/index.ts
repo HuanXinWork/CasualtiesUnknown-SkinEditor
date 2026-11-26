@@ -662,6 +662,8 @@ function attachDropper(btn: HTMLButtonElement, applyRgb: (rgb: Rgb) => void): ()
 function pickAt(clientX: number, clientY: number): Rgb | null {
   const els = document.elementsFromPoint(clientX, clientY);
   for (const el of els) {
+    // 跳过网格/参考线等辅助叠加层，防止吸管误采辅助线颜色。
+    if (el instanceof HTMLElement && el.dataset.skipPick === "true") continue;
     if (el instanceof HTMLCanvasElement) {
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0 || el.width === 0 || el.height === 0) continue;

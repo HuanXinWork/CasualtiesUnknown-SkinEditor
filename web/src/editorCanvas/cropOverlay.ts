@@ -58,7 +58,7 @@ function formatShift(v: number): string {
 export function createCropOverlayController(opts: CropOverlayOptions): CropOverlayController {
   const { gridEl, actionBarEl, getPartId, getPartName, onApplied } = opts;
 
-  // 叠加层挂载在 gridEl 坐标系内，随缩放和平移精确同步；手柄与读数通过 --inv-zoom 保持屏幕恒定视觉尺寸。
+  // 叠加层挂载在真实屏幕 CSS 尺寸的 gridEl 内，用百分比直接对齐图像逻辑像素，手柄与读数天然保持恒定屏幕尺寸。
   const rootEl = document.createElement("div");
   rootEl.className = "crop-overlay-root";
   rootEl.hidden = true;
@@ -147,15 +147,15 @@ export function createCropOverlayController(opts: CropOverlayOptions): CropOverl
   }
 
   function setRect(el: HTMLElement, x: number, y: number, w: number, h: number): void {
-    if (w <= 0 || h <= 0) {
+    if (w <= 0 || h <= 0 || canvasW <= 0 || canvasH <= 0) {
       el.style.display = "none";
       return;
     }
     el.style.display = "";
-    el.style.left = `${x}px`;
-    el.style.top = `${y}px`;
-    el.style.width = `${w}px`;
-    el.style.height = `${h}px`;
+    el.style.left = `${(x / canvasW) * 100}%`;
+    el.style.top = `${(y / canvasH) * 100}%`;
+    el.style.width = `${(w / canvasW) * 100}%`;
+    el.style.height = `${(h / canvasH) * 100}%`;
   }
 
   function render(): void {
@@ -163,8 +163,6 @@ export function createCropOverlayController(opts: CropOverlayOptions): CropOverl
     rootEl.hidden = !active;
     actionBarEl.hidden = !active;
     if (!active) return;
-
-    rootEl.style.setProperty("--inv-zoom", String(1 / Math.max(0.1, zoom)));
 
     const ix0 = Math.max(0, Math.min(canvasW, crop.x));
     const iy0 = Math.max(0, Math.min(canvasH, crop.y));
@@ -177,10 +175,11 @@ export function createCropOverlayController(opts: CropOverlayOptions): CropOverl
     setRect(maskLeft, 0, iy0, ix0, iy1 - iy0);
     setRect(maskRight, ix1, iy0, canvasW - ix1, iy1 - iy0);
 
-    boxEl.style.left = `${crop.x}px`;
-    boxEl.style.top = `${crop.y}px`;
-    boxEl.style.width = `${crop.w}px`;
-    boxEl.style.height = `${crop.h}px`;
+    // 百分比定位允许负值与超过 100%，外扩裁剪框可自然伸出画布边界且严格贴合显示像素。
+    boxEl.style.left = `${(crop.x / canvasW) * 100}%`;
+    boxEl.style.top = `${(crop.y / canvasH) * 100}%`;
+    boxEl.style.width = `${(crop.w / canvasW) * 100}%`;
+    boxEl.style.height = `${(crop.h / canvasH) * 100}%`;
 
     const expanding =
       crop.x < 0 || crop.y < 0 || crop.x + crop.w > canvasW || crop.y + crop.h > canvasH;
@@ -271,8 +270,11 @@ export function createCropOverlayController(opts: CropOverlayOptions): CropOverl
 
   function onDocMouseMove(e: MouseEvent): void {
     if (!dragMode) return;
-    const dx = Math.round((e.clientX - dragStartX) / Math.max(0.1, zoom));
-    const dy = Math.round((e.clientY - dragStartY) / Math.max(0.1, zoom));
+    const rect = gridEl.getBoundingClientRect();
+    const scaleX = rect.width > 0 && canvasW > 0 ? rect.width / canvasW : Math.max(0.1, zoom);
+    const scaleY = rect.height > 0 && canvasH > 0 ? rect.height / canvasH : Math.max(0.1, zoom);
+    const dx = Math.round((e.clientX - dragStartX) / scaleX);
+    const dy = Math.round((e.clientY - dragStartY) / scaleY);
     const s = dragStartCrop;
 
     if (dragMode === "move") {
@@ -385,9 +387,6 @@ export function createCropOverlayController(opts: CropOverlayOptions): CropOverl
     },
     syncZoom(nextZoom: number): void {
       zoom = nextZoom;
-      if (isActive()) {
-        rootEl.style.setProperty("--inv-zoom", String(1 / Math.max(0.1, zoom)));
-      }
     },
     destroy(): void {
       unsubStore();

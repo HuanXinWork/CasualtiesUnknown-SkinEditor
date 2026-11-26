@@ -16,6 +16,46 @@ export const COMPOSITE_W = 100;
 export const COMPOSITE_H = 100;
 export const EXPRESSION_COUNT = 8;
 export const CAPTURE_ROOT = "captures";
+const MAX_PREVIEW_DISPLAY_DIM = 2048;
+
+/**
+ * 将离屏合成源画布按当前缩放与 DPR 硬边缘绘制到显示画布；
+ * 在 2D Context 内完成水平镜像与整数像素放大，避免父容器 CSS scale 触发 WebView2 GPU 合成层双线性渗色。
+ */
+export function renderPreviewDisplayCanvas(
+  source: HTMLCanvasElement,
+  target: HTMLCanvasElement,
+  targetCtx: CanvasRenderingContext2D | null,
+  zoom: number,
+  mirror: boolean,
+): void {
+  if (!targetCtx || source.width <= 0 || source.height <= 0) return;
+  const cssW = Math.max(1, Math.round(source.width * zoom));
+  const cssH = Math.max(1, Math.round(source.height * zoom));
+  target.style.width = `${cssW}px`;
+  target.style.height = `${cssH}px`;
+
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const rawW = cssW * dpr;
+  const rawH = cssH * dpr;
+  const clamp = Math.min(1, MAX_PREVIEW_DISPLAY_DIM / Math.max(rawW, rawH));
+  const bufW = Math.max(1, Math.round(rawW * clamp));
+  const bufH = Math.max(1, Math.round(rawH * clamp));
+  if (target.width !== bufW || target.height !== bufH) {
+    target.width = bufW;
+    target.height = bufH;
+  }
+
+  targetCtx.save();
+  targetCtx.imageSmoothingEnabled = false;
+  targetCtx.clearRect(0, 0, bufW, bufH);
+  if (mirror) {
+    targetCtx.translate(bufW, 0);
+    targetCtx.scale(-1, 1);
+  }
+  targetCtx.drawImage(source, 0, 0, bufW, bufH);
+  targetCtx.restore();
+}
 
 export const HEAD_VARIANTS: readonly HeadVariant[] = [
   "default",
@@ -66,8 +106,8 @@ export function buildPreviewCanvasHtml(): string {
     `</div>` +
     `<div class="preview-stage" data-role="stage" style="flex:1;min-height:0;display:flex;align-items:stretch;padding:0;overflow:hidden;position:relative;">` +
     `<div data-role="stage-main" style="flex:1;min-width:0;position:relative;display:flex;align-items:center;justify-content:center;padding:16px;overflow:hidden;">` +
-    `<div data-role="viewport" style="position:absolute;left:50%;top:50%;will-change:transform;">` +
-    `<canvas data-role="canvas" width="${COMPOSITE_W}" height="${COMPOSITE_H}" style="image-rendering:pixelated;display:none;"></canvas>` +
+    `<div data-role="viewport" style="position:absolute;left:50%;top:50%;">` +
+    `<canvas data-role="canvas" width="${COMPOSITE_W}" height="${COMPOSITE_H}" style="display:none;image-rendering:pixelated;"></canvas>` +
     `</div>` +
     `<div data-role="placeholder" style="opacity:0.6;"></div>` +
     `</div>` +

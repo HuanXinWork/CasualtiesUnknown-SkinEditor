@@ -27,6 +27,7 @@ import { mountAccessoryBar } from "./accessoryBar";
 import {
   attachFooterGrip,
   attachInvertedBorder,
+  blitPixelCanvas,
   bresenhamLine,
   buildEditorCanvasHtml,
   cursorForTool,
@@ -70,6 +71,9 @@ export function mountEditorCanvas(
   const zonesOverlay = gridEl.querySelector<HTMLCanvasElement>('[data-role="zones-overlay"]')!;
   const canvasOverlayEl = gridEl.querySelector<HTMLCanvasElement>('[data-role="canvas-overlay"]')!;
   const ctx = canvas.getContext("2d");
+  // 离屏 1:1 源画布恒等于图像逻辑尺寸，供像素读写、Alt 吸色与区块遮罩采样，显示画布则按 DPR 硬边缘重绘。
+  const sourceCanvas = document.createElement("canvas");
+  const sourceCtx = sourceCanvas.getContext("2d");
 
   const accessoryBar = mountAccessoryBar(
     {
@@ -93,7 +97,7 @@ export function mountEditorCanvas(
     },
     skinRoot,
   );
-  const zonesCtrl = createZonesOverlayController(skinRoot, ctx, zonesOverlay);
+  const zonesCtrl = createZonesOverlayController(skinRoot, sourceCtx, zonesOverlay);
   const mirrorCtrl = mountMirrorPartControls(skinRoot, sideFBtn, sideBBtn, orientRBtn);
 
   let currentPartName: string | null = null;
@@ -175,10 +179,25 @@ export function mountEditorCanvas(
     strokeQueue = strokeQueue.then(op, op);
   }
 
-  function applyZoom(): void {
-    gridEl.style.transform = `translate(${panOffsetX}px, ${panOffsetY}px) scale(${zoom})`;
+  function applyPan(): void {
+    // 仅做整数平移、绝不使用 CSS scale(zoom)，避免高 DPI 非整数倍率下触发 WebView2 GPU 合成层双线性渗色。
+    gridEl.style.transform = `translate(${Math.round(panOffsetX)}px, ${Math.round(panOffsetY)}px)`;
     gridEl.style.transformOrigin = "center";
+  }
+
+  function redrawDisplay(): void {
+    if (currentWidth <= 0 || currentHeight <= 0) return;
+    const cssW = Math.max(1, Math.round(currentWidth * zoom));
+    const cssH = Math.max(1, Math.round(currentHeight * zoom));
+    gridEl.style.width = `${cssW}px`;
+    gridEl.style.height = `${cssH}px`;
+    blitPixelCanvas(sourceCanvas, canvas, ctx, cssW, cssH);
+  }
+
+  function applyZoom(): void {
+    applyPan();
     zoomPctEl.textContent = `${Math.round(zoom * 100)}%`;
+    redrawDisplay();
     canvasOverlay.sync(currentWidth, currentHeight, zoom);
     cropOverlay.syncZoom(zoom);
   }
@@ -231,12 +250,10 @@ export function mountEditorCanvas(
   }
 
   function applyCanvasDimensions(w: number, h: number): void {
-    canvas.width = w;
-    canvas.height = h;
+    sourceCanvas.width = w;
+    sourceCanvas.height = h;
     zonesOverlay.width = w;
     zonesOverlay.height = h;
-    gridEl.style.width = `${w}px`;
-    gridEl.style.height = `${h}px`;
     currentWidth = w;
     currentHeight = h;
     canvasOverlay.sync(w, h, zoom);
@@ -263,6 +280,8 @@ export function mountEditorCanvas(
     currentPartName = null;
     currentWidth = 0;
     currentHeight = 0;
+    sourceCanvas.width = 0;
+    sourceCanvas.height = 0;
     currentBaseSize = null;
     mirrorCtrl.clear();
     zonesCtrl.clear();
@@ -301,12 +320,12 @@ export function mountEditorCanvas(
   }
 
   function render(result: LoadPartResult, partName: string, resetView = true): void {
-    if (!ctx) return;
+    if (!ctx || !sourceCtx) return;
     currentPartName = partName;
     currentPartId = result.partId;
     applyCanvasDimensions(result.width, result.height);
     const data = new ImageData(new Uint8ClampedArray(result.pixels), result.width, result.height);
-    ctx.putImageData(data, 0, 0);
+    sourceCtx.putImageData(data, 0, 0);
     gridEl.style.display = "";
     placeholderEl.style.display = "none";
     placeholderInfo = { kind: "none" };
@@ -321,16 +340,17 @@ export function mountEditorCanvas(
   let pendingFlattenKey = 0;
   function refreshFlatten(): void {
     const partId = currentPartId;
-    if (!partId || !ctx) return;
+    if (!partId || !ctx || !sourceCtx) return;
     const key = ++pendingFlattenKey;
     getFlatten(partId)
       .then((result) => {
         if (key !== pendingFlattenKey || result.partId !== currentPartId) return;
-        if (result.width !== canvas.width || result.height !== canvas.height) {
+        if (result.width !== currentWidth || result.height !== currentHeight) {
           applyCanvasDimensions(result.width, result.height);
         }
         const data = new ImageData(new Uint8ClampedArray(result.pixels), result.width, result.height);
-        ctx.putImageData(data, 0, 0);
+        sourceCtx.putImageData(data, 0, 0);
+        redrawDisplay();
       })
       .catch((e: ApiError) => {
         console.warn(`[editorCanvas] flatten failed: ${e?.message ?? String(e)}`);
@@ -339,14 +359,17 @@ export function mountEditorCanvas(
 
   function eventToPixel(event: MouseEvent): { cx: number; cy: number } {
     const rect = canvas.getBoundingClientRect();
-    const cx = Math.floor(((event.clientX - rect.left) / rect.width) * canvas.width);
-    const cy = Math.floor(((event.clientY - rect.top) / rect.height) * canvas.height);
+    if (rect.width <= 0 || rect.height <= 0 || currentWidth <= 0 || currentHeight <= 0) {
+      return { cx: -1, cy: -1 };
+    }
+    const cx = Math.floor(((event.clientX - rect.left) / rect.width) * currentWidth);
+    const cy = Math.floor(((event.clientY - rect.top) / rect.height) * currentHeight);
     return { cx, cy };
   }
 
   function paintSegment(event: MouseEvent): void {
     const partId = paintingPartId;
-    if (!partId || canvas.width <= 0 || canvas.height <= 0) return;
+    if (!partId || currentWidth <= 0 || currentHeight <= 0) return;
     const { cx, cy } = eventToPixel(event);
     if (cx === lastCx && cy === lastCy) return;
     const pts =
@@ -356,7 +379,7 @@ export function mountEditorCanvas(
     lastCx = cx;
     lastCy = cy;
 
-    const inBounds = pts.filter(([px, py]) => px >= 0 && py >= 0 && px < canvas.width && py < canvas.height);
+    const inBounds = pts.filter(([px, py]) => px >= 0 && py >= 0 && px < currentWidth && py < currentHeight);
     if (inBounds.length === 0) return;
 
     const { brushSize, color, alpha, softBrushHardness } = sessionStore.getState();
@@ -412,7 +435,7 @@ export function mountEditorCanvas(
 
     if ((tool === "brush" || tool === "eraser" || tool === "softBrush") && event.altKey) {
       const { cx, cy } = eventToPixel(event);
-      const rgb = sampleCanvasRgb(ctx, cx, cy, canvas.width, canvas.height);
+      const rgb = sampleCanvasRgb(sourceCtx, cx, cy, currentWidth, currentHeight);
       if (rgb) sessionStore.setState({ color: rgb });
       return;
     }
@@ -458,7 +481,7 @@ export function mountEditorCanvas(
     const partId = currentPartId;
     if (!partId) return;
     const { cx, cy } = eventToPixel(event);
-    if (cx < 0 || cy < 0 || cx >= canvas.width || cy >= canvas.height) return;
+    if (cx < 0 || cy < 0 || cx >= currentWidth || cy >= currentHeight) return;
     const { color, alpha } = sessionStore.getState();
     enqueueStrokeOp(async () => {
       try {
@@ -511,7 +534,7 @@ export function mountEditorCanvas(
     if (isPanning) {
       panOffsetX = panStartOffX + (event.clientX - panStartX);
       panOffsetY = panStartOffY + (event.clientY - panStartY);
-      applyZoom();
+      applyPan();
       return;
     }
     if (isZonePainting) {
@@ -651,15 +674,21 @@ export function mountEditorCanvas(
 
   resizeBtn.addEventListener("click", () => openResizeModal("canvas"));
 
+  function onWindowResize(): void {
+    if (currentWidth <= 0 || currentHeight <= 0) return;
+    redrawDisplay();
+    canvasOverlay.sync(currentWidth, currentHeight, zoom);
+  }
+
   stageEl.addEventListener("contextmenu", (e) => e.preventDefault());
   stageEl.addEventListener("mousedown", onMouseDown);
   stageEl.addEventListener("mousemove", (event) => {
-    if (!currentPartId || canvas.width <= 0 || canvas.height <= 0) {
+    if (!currentPartId || currentWidth <= 0 || currentHeight <= 0) {
       canvasOverlay.setCursor(null, null);
       return;
     }
     const { cx, cy } = eventToPixel(event);
-    if (cx >= 0 && cy >= 0 && cx < canvas.width && cy < canvas.height) {
+    if (cx >= 0 && cy >= 0 && cx < currentWidth && cy < currentHeight) {
       canvasOverlay.setCursor(cx, cy);
     } else {
       canvasOverlay.setCursor(null, null);
@@ -669,6 +698,7 @@ export function mountEditorCanvas(
   document.addEventListener("mousemove", onDocMouseMove);
   document.addEventListener("mouseup", onDocMouseUp);
   window.addEventListener("blur", onWindowBlur);
+  window.addEventListener("resize", onWindowResize);
   stageEl.addEventListener(
     "wheel",
     (e) => {
@@ -754,6 +784,7 @@ export function mountEditorCanvas(
     document.removeEventListener("mousemove", onDocMouseMove);
     document.removeEventListener("mouseup", onDocMouseUp);
     window.removeEventListener("blur", onWindowBlur);
+    window.removeEventListener("resize", onWindowResize);
     loadSeq++;
   };
 }

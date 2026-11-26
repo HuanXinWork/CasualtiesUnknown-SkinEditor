@@ -495,7 +495,6 @@ body.cp-picking * {
   overflow: visible;
   pointer-events: none;
   z-index: 6;
-  --inv-zoom: 1;
 }
 
 .crop-overlay-root[hidden] {
@@ -511,7 +510,7 @@ body.cp-picking * {
 .crop-box {
   position: absolute;
   box-sizing: border-box;
-  border: calc(1.5px * var(--inv-zoom)) solid var(--info-color);
+  border: 1.5px solid var(--info-color);
   cursor: move;
   pointer-events: auto;
 }
@@ -534,7 +533,7 @@ body.cp-picking * {
   background: #ffffff;
   border: 1.5px solid var(--info-color);
   border-radius: 2px;
-  transform: translate(-50%, -50%) scale(var(--inv-zoom));
+  transform: translate(-50%, -50%);
   pointer-events: auto;
 }
 
@@ -546,8 +545,8 @@ body.cp-picking * {
   position: absolute;
   left: 50%;
   top: 100%;
-  margin-top: calc(6px * var(--inv-zoom));
-  transform: translate(-50%, 0) scale(var(--inv-zoom));
+  margin-top: 6px;
+  transform: translate(-50%, 0);
   transform-origin: top center;
   white-space: nowrap;
   padding: 2px 7px;

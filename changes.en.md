@@ -6,6 +6,18 @@
 
 ---
 
+## 1.1.1 (2026-11-27)
+
+### Added and Changed
+
+- Switched the free crop overlay to percentage-based positioning (removing `--inv-zoom` inverse scaling), and skipped the pixel grid and center crosshair overlays during eyedropper sampling.
+
+### Fixed
+
+- Fixed color bleeding onto adjacent pixels on the editor and preview canvases under Windows high DPI (e.g., 150% scaling) combined with non-integer zoom levels (e.g., 530%), caused by bilinear filtering in the WebView2 GPU compositor layer when scaling the parent container with CSS `transform: scale()`. Replaced it with display-DPR-aligned crisp-edge redraws, moved preview horizontal mirroring into the 2D Canvas context, and removed `will-change: transform`.
+
+---
+
 ## 1.1.0 (2026-11-26)
 
 ### Added and Changed

@@ -86,6 +86,36 @@ export function cursorForTool(tool: string, panning: boolean): string {
   return "crosshair";
 }
 
+const MAX_DISPLAY_DIM = 4096;
+
+/**
+ * 将 1:1 离屏源画布按当前 CSS 显示尺寸与 DPR 硬边缘重绘到目标画布。
+ * 通过直接放大显示画布 backing store 并关闭平滑，避免父容器 CSS scale() 在 WebView2 GPU 合成层引发双线性渗色。
+ */
+export function blitPixelCanvas(
+  source: HTMLCanvasElement,
+  target: HTMLCanvasElement,
+  targetCtx: CanvasRenderingContext2D | null,
+  cssW: number,
+  cssH: number,
+  maxDim = MAX_DISPLAY_DIM,
+): void {
+  if (!targetCtx || source.width <= 0 || source.height <= 0 || cssW <= 0 || cssH <= 0) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const rawW = cssW * dpr;
+  const rawH = cssH * dpr;
+  const clamp = Math.min(1, maxDim / Math.max(rawW, rawH));
+  const bufW = Math.max(1, Math.round(rawW * clamp));
+  const bufH = Math.max(1, Math.round(rawH * clamp));
+  if (target.width !== bufW || target.height !== bufH) {
+    target.width = bufW;
+    target.height = bufH;
+  }
+  targetCtx.imageSmoothingEnabled = false;
+  targetCtx.clearRect(0, 0, bufW, bufH);
+  targetCtx.drawImage(source, 0, 0, bufW, bufH);
+}
+
 export function buildEditorCanvasHtml(): string {
   return (
     `<div class="editor-canvas-toolbar" style="display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid rgba(var(--border-rgb),var(--border-opacity));">` +
@@ -96,7 +126,7 @@ export function buildEditorCanvasHtml(): string {
     `</div>` +
     `<div class="crop-action-bar" data-role="crop-bar" hidden></div>` +
     `<div class="editor-canvas-stage" style="flex:1;min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:16px;">` +
-    `<div class="transparent-grid" data-role="grid" style="display:none;position:relative;"><canvas></canvas><canvas data-role="zones-overlay" style="position:absolute;left:0;top:0;pointer-events:none;image-rendering:pixelated;"></canvas><canvas data-role="canvas-overlay" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;"></canvas></div>` +
+    `<div class="transparent-grid" data-role="grid" style="display:none;position:relative;flex:none;"><canvas style="display:block;width:100%;height:100%;image-rendering:pixelated;"></canvas><canvas data-role="zones-overlay" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;image-rendering:pixelated;"></canvas><canvas data-role="canvas-overlay" data-skip-pick="true" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;"></canvas></div>` +
     `<div data-role="placeholder" style="opacity:0.6;">${t("editorCanvas.notSelected")}</div>` +
     `</div>` +
     `<div class="editor-canvas-footer-grip" data-role="footer-grip" style="flex:none;height:6px;cursor:row-resize;background:transparent;position:relative;"><div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:32px;height:2px;border-radius:2px;background:rgba(var(--border-rgb),0.25);pointer-events:none;"></div></div>` +

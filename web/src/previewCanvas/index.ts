@@ -19,10 +19,13 @@ import { localizePartName } from "../i18n/partNames";
 import {
   buildPreviewCanvasHtml,
   CAPTURE_ROOT,
+  COMPOSITE_H,
+  COMPOSITE_W,
   findFrameIndexByTime,
   populateBasePartPositions,
   renderCaptureDropdown,
   renderMotionDebugSection,
+  renderPreviewDisplayCanvas,
   syncExpressionSelect,
   syncHeadVariantSelect,
   toAssemblyEntryName,
@@ -73,6 +76,12 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
   const hintEl = container.querySelector<HTMLDivElement>('[data-role="hint"]')!;
   const ctx = canvas.getContext("2d");
   if (ctx) ctx.imageSmoothingEnabled = false;
+  // 离屏 1:1 源画布接收后端合成像素，显示画布按当前缩放与 DPR 硬边缘重绘并执行镜像。
+  const sourceCanvas = document.createElement("canvas");
+  sourceCanvas.width = COMPOSITE_W;
+  sourceCanvas.height = COMPOSITE_H;
+  const sourceCtx = sourceCanvas.getContext("2d");
+  let hasFrame = false;
   footerEl.style.boxSizing = "border-box";
 
   let viewFacing: ViewFacing = "left";
@@ -153,14 +162,24 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     footerEl.style.height = `${footerHeightPct}%`;
   }
 
-  function applyTransform(): void {
+  function redrawDisplay(): void {
+    if (!hasFrame) return;
     const z = zoomPct / 100;
-    // 原始 100×100 合成画布（头在 X=+10）默认面朝右；朝左时通过负 X 缩放水平镜像（与游戏 Body.localScale.x=-1 一致）。
+    // 原始 100×100 合成画布（头在 X=+10）默认面朝右；朝左时在 2D Context 内水平镜像（与游戏 Body.localScale.x=-1 一致）。
     const mirror = previewMode === "motion" ? !currentMotionIsRight : viewFacing === "left";
-    const sx = mirror ? -z : z;
-    viewportEl.style.transform = `translate(calc(-50% + ${offsetX}px), calc(-50% + ${offsetY}px)) scale(${sx}, ${z})`;
+    renderPreviewDisplayCanvas(sourceCanvas, canvas, ctx, z, mirror);
+  }
+
+  function applyPan(): void {
+    // 仅做整数平移并移除 CSS scale，防止 WebView2 合成层触发双线性渗色。
+    viewportEl.style.transform = `translate(calc(-50% + ${Math.round(offsetX)}px), calc(-50% + ${Math.round(offsetY)}px))`;
+  }
+
+  function applyTransform(): void {
+    applyPan();
     zoomRange.value = String(zoomPct);
     zoomNum.value = String(zoomPct);
+    redrawDisplay();
   }
 
   function setZoom(pct: number): void {
@@ -191,6 +210,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
 
   function showPlaceholder(info: PlaceholderInfo, isError: boolean): void {
     placeholderInfo = info;
+    hasFrame = false;
     canvas.style.display = "none";
     placeholderEl.style.display = "block";
     placeholderEl.style.color = isError ? "#c00" : "";
@@ -198,12 +218,18 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
   }
 
   function drawPixels(width: number, height: number, pixels: number[]): void {
-    if (!ctx) return;
+    if (!sourceCtx || !ctx) return;
+    if (sourceCanvas.width !== width || sourceCanvas.height !== height) {
+      sourceCanvas.width = width;
+      sourceCanvas.height = height;
+    }
     const data = new ImageData(new Uint8ClampedArray(pixels), width, height);
-    ctx.putImageData(data, 0, 0);
-    canvas.style.display = "";
+    sourceCtx.putImageData(data, 0, 0);
+    hasFrame = true;
+    canvas.style.display = "block";
     placeholderEl.style.display = "none";
     placeholderInfo = { kind: "none" };
+    redrawDisplay();
   }
 
   function stopMotionPlayback(): void {
@@ -642,7 +668,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     if (dragMode === "viewport") {
       offsetX = dragStartOffX + (e.clientX - dragStartX);
       offsetY = dragStartOffY + (e.clientY - dragStartY);
-      applyTransform();
+      applyPan();
       return;
     }
     const z = zoomPct / 100;
@@ -679,6 +705,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
   document.addEventListener("mousemove", onDocMouseMove);
   document.addEventListener("mouseup", endInteraction);
   window.addEventListener("blur", endInteraction);
+  window.addEventListener("resize", redrawDisplay);
   stageMainEl.style.cursor = "grab";
 
   liveCb.addEventListener("change", () => {
@@ -758,6 +785,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     document.removeEventListener("mousemove", onDocMouseMove);
     document.removeEventListener("mouseup", endInteraction);
     window.removeEventListener("blur", endInteraction);
+    window.removeEventListener("resize", redrawDisplay);
     endInteraction();
     stopMotionPlayback();
     pendingAssemblyKey = -1;
