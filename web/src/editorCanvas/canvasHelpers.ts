@@ -1,9 +1,17 @@
 // 编辑画布 DOM 骨架、几何连线插值、反色边框与底栏拖拽辅助函数。
 
+import {
+  createOrientationPart,
+  createSidePart,
+  listParts,
+  type ApiError,
+} from "../apiClient";
+import { bumpPartListVersion, parsePartId } from "../stateStore";
 import type { PartCategory } from "../stateStore/types";
 import { t } from "../i18n";
 import { CANVAS_CURSORS } from "../toolPanel/toolIcons";
 import { getSize, setSize } from "../layoutEngine";
+import { showToast } from "../toast";
 
 const SIDE_SPLIT_SUFFIXES = [
   "uptorso",
@@ -68,6 +76,7 @@ export function bresenhamLine(
 export function cursorForTool(tool: string, panning: boolean): string {
   if (panning) return "grabbing";
   if (tool === "pan") return "grab";
+  if (tool === "crop") return "default";
   if (tool === "brush") return CANVAS_CURSORS.brush;
   if (tool === "softBrush") return CANVAS_CURSORS.softBrush;
   if (tool === "eraser") return CANVAS_CURSORS.eraser;
@@ -85,8 +94,9 @@ export function buildEditorCanvasHtml(): string {
     `<button class="btn" data-role="zoom-in">+</button>` +
     `<span class="mono" data-role="meta" style="margin-left:8px;opacity:0.7;"></span>` +
     `</div>` +
+    `<div class="crop-action-bar" data-role="crop-bar" hidden></div>` +
     `<div class="editor-canvas-stage" style="flex:1;min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:16px;">` +
-    `<div class="transparent-grid" data-role="grid" style="display:none;position:relative;"><canvas></canvas><canvas data-role="zones-overlay" style="position:absolute;left:0;top:0;pointer-events:none;image-rendering:pixelated;"></canvas></div>` +
+    `<div class="transparent-grid" data-role="grid" style="display:none;position:relative;"><canvas></canvas><canvas data-role="zones-overlay" style="position:absolute;left:0;top:0;pointer-events:none;image-rendering:pixelated;"></canvas><canvas data-role="canvas-overlay" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;"></canvas></div>` +
     `<div data-role="placeholder" style="opacity:0.6;">${t("editorCanvas.notSelected")}</div>` +
     `</div>` +
     `<div class="editor-canvas-footer-grip" data-role="footer-grip" style="flex:none;height:6px;cursor:row-resize;background:transparent;position:relative;"><div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:32px;height:2px;border-radius:2px;background:rgba(var(--border-rgb),0.25);pointer-events:none;"></div></div>` +
@@ -116,7 +126,8 @@ export function buildEditorCanvasHtml(): string {
     `<span data-role="acc-adv-status" style="font-size:11px;opacity:0.65;"></span>` +
     `</div>` +
     `</div>` +
-    `</div>`
+    `</div>` +
+    `<div class="editor-status-bar" data-role="status-bar"></div>`
   );
 }
 
@@ -193,4 +204,132 @@ export function attachFooterGrip(
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   });
+}
+
+export interface MirrorPartControls {
+  refresh(partId: string | null, partName: string | null): void;
+  clear(): void;
+  applyTexts(): void;
+}
+
+/** 管理前后侧 (F/B) 与朝右 (R_) 衍生部件创建按钮的显隐探测与触发逻辑。 */
+export function mountMirrorPartControls(
+  skinRoot: string,
+  sideFBtn: HTMLButtonElement,
+  sideBBtn: HTMLButtonElement,
+  orientRBtn: HTMLButtonElement,
+): MirrorPartControls {
+  let activePartId: string | null = null;
+  let sideF = false;
+  let sideB = false;
+  let orientR = false;
+  let querySeq = 0;
+
+  function syncVisibility(): void {
+    sideFBtn.textContent = t("editorCanvas.createSideFBtn");
+    sideBBtn.textContent = t("editorCanvas.createSideBBtn");
+    orientRBtn.textContent = t("editorCanvas.createOrientRBtn");
+    sideFBtn.style.display = activePartId && sideF ? "" : "none";
+    sideBBtn.style.display = activePartId && sideB ? "" : "none";
+    orientRBtn.style.display = activePartId && orientR ? "" : "none";
+  }
+
+  function attachSide(btn: HTMLButtonElement, side: "F" | "B", isAvail: () => boolean): void {
+    btn.addEventListener("click", () => {
+      if (!activePartId || !isAvail()) return;
+      const parsed = parsePartId(activePartId);
+      if (!parsed) return;
+      btn.disabled = true;
+      createSidePart(skinRoot, parsed.skinName, parsed.category, parsed.partName, side)
+        .then((r) => {
+          showToast(`✓ ${r.sidePartName}`, "info");
+          if (side === "F") sideF = false;
+          else sideB = false;
+          syncVisibility();
+          bumpPartListVersion();
+        })
+        .catch((e: ApiError) => showToast(e?.message ?? String(e), "error"))
+        .finally(() => {
+          btn.disabled = false;
+        });
+    });
+  }
+  attachSide(sideFBtn, "F", () => sideF);
+  attachSide(sideBBtn, "B", () => sideB);
+
+  orientRBtn.addEventListener("click", () => {
+    if (!activePartId || !orientR) return;
+    const parsed = parsePartId(activePartId);
+    if (!parsed) return;
+    orientRBtn.disabled = true;
+    createOrientationPart(skinRoot, parsed.skinName, parsed.category, parsed.partName)
+      .then((r) => {
+        showToast(`✓ ${r.orientationPartName}`, "info");
+        orientR = false;
+        syncVisibility();
+        bumpPartListVersion();
+      })
+      .catch((e: ApiError) => showToast(e?.message ?? String(e), "error"))
+      .finally(() => {
+        orientRBtn.disabled = false;
+      });
+  });
+
+  return {
+    refresh(partId: string | null, partName: string | null): void {
+      activePartId = partId;
+      sideF = false;
+      sideB = false;
+      orientR = false;
+      const parsed = partId ? parsePartId(partId) : null;
+      if (!partId || !partName || !parsed) {
+        syncVisibility();
+        return;
+      }
+      const sideEligible =
+        (parsed.category === "Body" || parsed.category === "Head") &&
+        isSideSplittablePartName(partName);
+      const orientEligible = isOrientationSplittablePartName(partName, parsed.category);
+      if (!sideEligible && !orientEligible) {
+        syncVisibility();
+        return;
+      }
+      const seq = ++querySeq;
+      listParts(skinRoot, parsed.skinName)
+        .then((skin) => {
+          if (seq !== querySeq || activePartId !== partId) return;
+          const list =
+            parsed.category === "Body"
+              ? skin.body
+              : parsed.category === "Head"
+                ? skin.head
+                : parsed.category === "Wings"
+                  ? skin.wings
+                  : parsed.category === "Blood"
+                    ? skin.blood
+                    : skin.accessories;
+          if (sideEligible) {
+            sideF = !list.some((p) => p.name === `${partName}F`);
+            sideB = !list.some((p) => p.name === `${partName}B`);
+          }
+          if (orientEligible) {
+            orientR = !list.some((p) => p.name === `R_${partName}`);
+          }
+          syncVisibility();
+        })
+        .catch(() => {
+          if (seq === querySeq) syncVisibility();
+        });
+    },
+    clear(): void {
+      activePartId = null;
+      sideF = false;
+      sideB = false;
+      orientR = false;
+      syncVisibility();
+    },
+    applyTexts(): void {
+      syncVisibility();
+    },
+  };
 }

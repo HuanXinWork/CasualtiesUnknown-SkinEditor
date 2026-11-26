@@ -25,6 +25,7 @@ export function mountLayerPanel(container: HTMLElement, skinRoot: string): () =>
   let lastZoneMode = sessionStore.getState().activeTool === "zoneBrush";
   let lastActiveZoneId = sessionStore.getState().activeZoneId;
   let lastLayerSnapshotVer = sessionStore.getState().layerSnapshotVersion ?? 0;
+  let lastCanvasSizeVer = sessionStore.getState().canvasSizeVersion ?? 0;
   let pendingPartId: string | null = lastPartId;
   const expandedZoneIds = new Set<number>();
 
@@ -274,12 +275,14 @@ export function mountLayerPanel(container: HTMLElement, skinRoot: string): () =>
     const zoneMode = state.activeTool === "zoneBrush";
     const activeZoneId = state.activeZoneId;
     const layerVer = state.layerSnapshotVersion ?? 0;
+    const sizeVer = state.canvasSizeVersion ?? 0;
 
     if (partId !== lastPartId) {
       lastPartId = partId;
       lastZoneMode = zoneMode;
       lastActiveZoneId = activeZoneId;
       lastLayerSnapshotVer = layerVer;
+      lastCanvasSizeVer = sizeVer;
       clearError();
       if (partId === null) {
         pendingPartId = null;
@@ -293,8 +296,9 @@ export function mountLayerPanel(container: HTMLElement, skinRoot: string): () =>
       return;
     }
 
-    if (layerVer !== lastLayerSnapshotVer) {
+    if (layerVer !== lastLayerSnapshotVer || sizeVer !== lastCanvasSizeVer) {
       lastLayerSnapshotVer = layerVer;
+      lastCanvasSizeVer = sizeVer;
       if (partId) fetchSnapshot(partId);
     }
 

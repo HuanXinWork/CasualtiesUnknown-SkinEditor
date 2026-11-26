@@ -32,13 +32,16 @@ export const HEAD_VARIANTS: readonly HeadVariant[] = [
 export function buildPreviewCanvasHtml(): string {
   const borderCss = "1px solid rgba(var(--border-rgb),var(--border-opacity))";
   return (
-    `<div class="preview-toolbar" style="display:flex;align-items:center;gap:8px;padding:8px;border-bottom:${borderCss};flex-wrap:wrap;">` +
-    `<div data-role="orientation" style="display:flex;gap:4px;"></div>` +
-    `<div data-role="expression" style="display:flex;gap:4px;flex-wrap:wrap;"></div>` +
-    `</div>` +
-    `<div class="preview-toolbar" style="display:flex;align-items:center;gap:4px;padding:6px 8px;border-bottom:${borderCss};flex-wrap:wrap;">` +
-    `<span data-role="head-variant-label" style="opacity:0.7;font-size:11px;"></span>` +
-    `<div data-role="head-variant" style="display:flex;gap:4px;flex-wrap:wrap;"></div>` +
+    `<div class="preview-toolbar" style="display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:${borderCss};flex-wrap:wrap;">` +
+    `<div data-role="orientation" style="display:flex;gap:4px;flex:none;"></div>` +
+    `<label style="display:flex;align-items:center;gap:4px;font-size:11px;min-width:0;flex:1 1 110px;">` +
+    `<span data-role="expression-label" style="opacity:0.7;flex:none;"></span>` +
+    `<select class="input" data-role="expression-select" style="flex:1;min-width:0;padding:2px 6px;font-size:12px;"></select>` +
+    `</label>` +
+    `<label style="display:flex;align-items:center;gap:4px;font-size:11px;min-width:0;flex:1 1 130px;">` +
+    `<span data-role="head-variant-label" style="opacity:0.7;flex:none;"></span>` +
+    `<select class="input" data-role="head-variant-select" style="flex:1;min-width:0;padding:2px 6px;font-size:12px;"></select>` +
+    `</label>` +
     `</div>` +
     `<div class="preview-toolbar" style="display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:${borderCss};flex-wrap:wrap;">` +
     `<div data-role="preview-mode" style="display:flex;gap:4px;"></div>` +
@@ -52,7 +55,7 @@ export function buildPreviewCanvasHtml(): string {
     `</div>` +
     `<div class="preview-zoom-bar" style="display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:${borderCss};flex-wrap:wrap;">` +
     `<input type="range" data-role="zoom-range" min="10" max="800" step="1" value="200" style="flex:1;min-width:80px;" />` +
-    `<input type="number" data-role="zoom-num" min="10" max="800" step="1" value="200" style="width:64px;" />` +
+    `<input class="input" type="number" data-role="zoom-num" min="10" max="800" step="1" value="200" style="width:64px;padding:2px 6px;" />` +
     `<span class="mono" style="opacity:0.6;">%</span>` +
     `<button class="btn" data-role="reset-view" type="button"></button>` +
     `<label data-role="live-toggle" style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;user-select:none;">` +
@@ -82,6 +85,47 @@ export function buildPreviewCanvasHtml(): string {
     `<div data-role="hint" class="mono" style="flex:1 1 auto;min-height:0;padding:0 8px 6px;opacity:0.55;font-size:11px;overflow:auto;"></div>` +
     `</div>`
   );
+}
+
+export function syncExpressionSelect(
+  labelEl: HTMLSpanElement,
+  selectEl: HTMLSelectElement,
+  currentIndex: number,
+): void {
+  labelEl.textContent = t("previewCanvas.expressionPrefix");
+  if (selectEl.options.length !== EXPRESSION_COUNT) {
+    selectEl.innerHTML = "";
+    for (let i = 0; i < EXPRESSION_COUNT; i++) {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      selectEl.appendChild(opt);
+    }
+  }
+  for (let i = 0; i < EXPRESSION_COUNT; i++) {
+    selectEl.options[i].textContent = `${i}: ${t(`previewCanvas.expression${i}`)}`;
+  }
+  const clamped = Math.max(0, Math.min(EXPRESSION_COUNT - 1, currentIndex));
+  if (selectEl.value !== String(clamped)) selectEl.value = String(clamped);
+}
+
+export function syncHeadVariantSelect(
+  labelEl: HTMLSpanElement,
+  selectEl: HTMLSelectElement,
+  currentVariant: HeadVariant,
+): void {
+  labelEl.textContent = t("previewCanvas.headVariantLabel");
+  if (selectEl.options.length !== HEAD_VARIANTS.length) {
+    selectEl.innerHTML = "";
+    for (const hv of HEAD_VARIANTS) {
+      const opt = document.createElement("option");
+      opt.value = hv;
+      selectEl.appendChild(opt);
+    }
+  }
+  for (let i = 0; i < HEAD_VARIANTS.length; i++) {
+    selectEl.options[i].textContent = t(`previewCanvas.headVariant_${HEAD_VARIANTS[i]}`);
+  }
+  if (selectEl.value !== currentVariant) selectEl.value = currentVariant;
 }
 
 const CROSS_CHAR_TO_EXPERIMENT: Readonly<Record<string, string>> = {

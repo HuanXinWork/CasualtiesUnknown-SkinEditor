@@ -114,6 +114,49 @@ pub fn scaleMaskNearest(ids: &[u8], oldW: u32, oldH: u32, newW: u32, newH: u32) 
     out
 }
 
+/// 纯几何裁切/扩展区块遮罩 ID 数组：与 `resizeCanvasRgba` 使用相同偏移逻辑，空白补 `0`、不缩放。
+pub fn resizeMaskCanvas(
+    ids: &[u8],
+    oldW: u32,
+    oldH: u32,
+    newW: u32,
+    newH: u32,
+    offsetX: i32,
+    offsetY: i32,
+) -> Vec<u8> {
+    let Some(outLen) = (newW as usize).checked_mul(newH as usize) else {
+        return Vec::new();
+    };
+    let mut out = vec![0u8; outLen];
+    if oldW == 0 || oldH == 0 || newW == 0 || newH == 0 {
+        return out;
+    }
+    let Some(inLen) = (oldW as usize).checked_mul(oldH as usize) else {
+        return out;
+    };
+    if ids.len() != inLen {
+        return out;
+    }
+    let ox = offsetX as i64;
+    let oy = offsetY as i64;
+    let xStart = 0i64.max(-ox);
+    let xEnd = (oldW as i64).min(newW as i64 - ox);
+    let yStart = 0i64.max(-oy);
+    let yEnd = (oldH as i64).min(newH as i64 - oy);
+    if xStart >= xEnd || yStart >= yEnd {
+        return out;
+    }
+    let rowLen = (xEnd - xStart) as usize;
+    for sy in yStart..yEnd {
+        let dy = (sy + oy) as usize;
+        let dx = (xStart + ox) as usize;
+        let srcOff = (sy as usize) * (oldW as usize) + (xStart as usize);
+        let dstOff = dy * (newW as usize) + dx;
+        out[dstOff..dstOff + rowLen].copy_from_slice(&ids[srcOff..srcOff + rowLen]);
+    }
+    out
+}
+
 /// 计算各非零区块在遮罩像素空间中的包围盒中心与半对角线 `(id, cx, cy, halfDiagonal)`。
 pub fn computeGeometry(width: u32, height: u32, ids: &[u8]) -> Vec<(u8, f32, f32, f32)> {
     let Some(expected) = (width as usize).checked_mul(height as usize) else {
@@ -256,5 +299,24 @@ mod tests {
         let err = saveMask(&path, 4, 2, &ids).unwrap_err();
         assert_eq!(err.code, "shape_mismatch");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resizeMaskCanvasCropsAndExpandsWithoutScaling() {
+        // 2x2: [1, 2; 3, 4]
+        let src = vec![1u8, 2, 3, 4];
+        // 扩展到 4x3，偏移 (1, 1)：内容落在 (1..3, 1..3)，周围补 0。
+        let expanded = resizeMaskCanvas(&src, 2, 2, 4, 3, 1, 1);
+        assert_eq!(
+            expanded,
+            vec![
+                0, 0, 0, 0, //
+                0, 1, 2, 0, //
+                0, 3, 4, 0, //
+            ]
+        );
+        // 裁切回 2x1，偏移 (-1, -1)：只保留旧 (1, 1) -> 4 与右侧空白 0。
+        let cropped = resizeMaskCanvas(&src, 2, 2, 2, 1, -1, -1);
+        assert_eq!(cropped, vec![4, 0]);
     }
 }

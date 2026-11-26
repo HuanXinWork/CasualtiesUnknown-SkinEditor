@@ -184,6 +184,7 @@ pub fn runDesktop() {
             tauriCommands::api_getAssemblyTable,
             tauriCommands::api_savePart,
             tauriCommands::api_resizePart,
+            tauriCommands::api_resizeCanvas,
             tauriCommands::api_getBaseSize,
             tauriCommands::api_createSidePart,
             tauriCommands::api_createOrientationPart,
@@ -397,10 +398,31 @@ mod ensureInitializedTests {
         let _guard = EnvGuard::set(tmp.path());
         let skin = dataPaths::skinDir("oldSkin2");
         fs::create_dir_all(skin.join("Body")).unwrap();
-        let existing = "{ \"manualOverride\": [99, 99] }";
+        let existing = "{\n  \"entries\": {\n    \"manualOverride\": [99, 99]\n  }\n}\n";
         fs::write(skin.join("baseSizes.json"), existing).unwrap();
         ensureInitialized();
         let json = fs::read_to_string(skin.join("baseSizes.json")).unwrap();
         assert_eq!(json, existing);
+    }
+
+    #[test]
+    fn writeBaseSizesForSkinUpgradesLegacyFlatFormat() {
+        let tmp = TempDir::new();
+        let skin = tmp.path().join("legacySkin");
+        fs::create_dir_all(skin.join("Body")).unwrap();
+        fs::write(
+            skin.join("baseSizes.json"),
+            r#"{"Body/experimentUpTorso": [12, 18], "Head/experimentHeadBack": [28, 16]}"#,
+        )
+        .unwrap();
+        skinLoader::writeBaseSizesForSkin(&skin).expect("upgrade legacy");
+        let raw = fs::read_to_string(skin.join("baseSizes.json")).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let entries = val
+            .get("entries")
+            .and_then(|v| v.as_object())
+            .expect("must have entries object");
+        assert_eq!(entries.get("Body/experimentUpTorso"), Some(&serde_json::json!([12, 18])));
+        assert_eq!(entries.get("Head/experimentHeadBack"), Some(&serde_json::json!([28, 16])));
     }
 }

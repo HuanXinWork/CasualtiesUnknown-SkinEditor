@@ -72,6 +72,9 @@ export interface PixelDiff {
   height: number;
   before: number[];
   after: number[];
+  canvasWidth?: number;
+  canvasHeight?: number;
+  resized?: boolean;
 }
 
 export interface BrushParams {
@@ -93,6 +96,22 @@ export interface ResizePartResult {
   partId: string;
   width: number;
   height: number;
+}
+
+export interface ResizeCanvasParams {
+  partId: string;
+  width: number;
+  height: number;
+  offsetX: number;
+  offsetY: number;
+  syncBaseSize?: boolean;
+}
+
+export interface ResizeCanvasResult {
+  partId: string;
+  width: number;
+  height: number;
+  baseSize: [number, number] | null;
 }
 
 export interface BaseSizeResult {

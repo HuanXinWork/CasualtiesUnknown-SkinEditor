@@ -122,19 +122,10 @@ pub(super) fn bakeLayerTransform(
     let after = imageOps::transformLayerPixels(&before, width, height, &transform);
     layer.pixels = after.clone();
     let layerId = layer.id.clone();
-    let diff = PixelDiff {
-        x: 0,
-        y: 0,
-        width,
-        height,
-        before,
-        after,
-    };
-    session.history.push(HistoryEntry {
-        layerId,
-        diff: diff.clone(),
-        timestamp: nowMillis(),
-    });
+    let diff = PixelDiff::new(0, 0, width, height, before, after);
+    session
+        .history
+        .push(HistoryEntry::pixel(layerId, diff.clone(), nowMillis()));
     Ok(diff)
 }
 

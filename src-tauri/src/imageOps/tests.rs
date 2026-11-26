@@ -408,3 +408,56 @@ fn flipYSwapsRows() {
     assert_eq!(&out[0..4], &[2, 0, 0, 255]);
     assert_eq!(&out[4..8], &[1, 0, 0, 255]);
 }
+
+#[test]
+fn resizeCanvasRgbaExpandsCropsAndOffsetsWithoutInterpolation() {
+    // 2x2: (0,0)=R1, (1,0)=R2, (0,1)=R3, (1,1)=R4
+    let src = vec![
+        1, 0, 0, 255, 2, 0, 0, 255, //
+        3, 0, 0, 255, 4, 0, 0, 255, //
+    ];
+    // 扩展到 4x3，偏移 (1, 1)
+    let exp = resizeCanvasRgba(&src, 2, 2, 4, 3, 1, 1);
+    assert_eq!(exp.len(), 4 * 3 * 4);
+    let pxAt = |buf: &[u8], w: u32, x: u32, y: u32| -> [u8; 4] {
+        let i = ((y * w + x) * 4) as usize;
+        [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
+    };
+    assert_eq!(pxAt(&exp, 4, 0, 0), [0, 0, 0, 0]);
+    assert_eq!(pxAt(&exp, 4, 1, 1), [1, 0, 0, 255]);
+    assert_eq!(pxAt(&exp, 4, 2, 1), [2, 0, 0, 255]);
+    assert_eq!(pxAt(&exp, 4, 1, 2), [3, 0, 0, 255]);
+    assert_eq!(pxAt(&exp, 4, 2, 2), [4, 0, 0, 255]);
+    assert_eq!(pxAt(&exp, 4, 3, 2), [0, 0, 0, 0]);
+
+    // 裁切到 2x1，偏移 (-1, -1)：仅旧 (1,1) 落在 (0,0)，其余透明
+    let crop = resizeCanvasRgba(&src, 2, 2, 2, 1, -1, -1);
+    assert_eq!(pxAt(&crop, 2, 0, 0), [4, 0, 0, 255]);
+    assert_eq!(pxAt(&crop, 2, 1, 0), [0, 0, 0, 0]);
+}
+
+#[test]
+fn blitWithRotationHeadAndEye347StrictlyAligned() {
+    // 验证 experimentHeadBack (28x16) 与 experimentEyeOpen (26x12) 同在 (60, 31) 旋转 347° 时
+    // 居中对应的像素在目标画布上逐像素重合，不存在 1px 中心错位。
+    let (cw, ch) = (100u32, 100u32);
+    let mut head = vec![0u8; (28 * 16 * 4) as usize];
+    let mut eye = vec![0u8; (26 * 12 * 4) as usize];
+    let eyeSamples = [(5u32, 3u32), (12, 6), (20, 9)];
+    for &(ex, ey) in &eyeSamples {
+        let ei = ((ey * 26 + ex) * 4) as usize;
+        eye[ei..ei + 4].copy_from_slice(&[255, 0, 0, 255]);
+        let hx = ex + (28 - 26) / 2;
+        let hy = ey + (16 - 12) / 2;
+        let hi = ((hy * 28 + hx) * 4) as usize;
+        head[hi..hi + 4].copy_from_slice(&[255, 0, 0, 255]);
+    }
+
+    let mut headCanvas = vec![0u8; (cw * ch * 4) as usize];
+    let mut eyeCanvas = vec![0u8; (cw * ch * 4) as usize];
+    blitWithRotation(&mut headCanvas, cw, ch, &head, 28, 16, 60, 31, 347.0, false);
+    blitWithRotation(&mut eyeCanvas, cw, ch, &eye, 26, 12, 60, 31, 347.0, false);
+
+    assert_eq!(headCanvas, eyeCanvas);
+    assert!(headCanvas.chunks_exact(4).any(|p| p[3] == 255));
+}

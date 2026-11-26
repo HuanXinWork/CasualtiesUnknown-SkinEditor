@@ -130,6 +130,25 @@ pub struct ResizePartResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResizeCanvasParams {
+    pub partId: String,
+    pub width: u32,
+    pub height: u32,
+    pub offsetX: i32,
+    pub offsetY: i32,
+    #[serde(default)]
+    pub syncBaseSize: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResizeCanvasResult {
+    pub partId: String,
+    pub width: u32,
+    pub height: u32,
+    pub baseSize: Option<[u32; 2]>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetBaseSizeParams {
     pub skinRoot: String,
     pub skinName: String,
@@ -557,6 +576,7 @@ pub trait ApiLayer: Send + Sync + 'static {
     fn getAssemblyTable(&self, params: AssemblyParams) -> Result<AssemblyResult, ApiError>;
     fn savePart(&self, params: SavePartParams) -> Result<(), ApiError>;
     fn resizePart(&self, params: ResizePartParams) -> Result<ResizePartResult, ApiError>;
+    fn resizeCanvas(&self, params: ResizeCanvasParams) -> Result<ResizeCanvasResult, ApiError>;
     fn getBaseSize(&self, params: GetBaseSizeParams) -> Result<GetBaseSizeResult, ApiError>;
     fn createSidePart(&self, params: CreateSidePartParams)
         -> Result<CreateSidePartResult, ApiError>;

@@ -343,3 +343,38 @@ fn motionCompositeUsesUnsavedSessionPixels() {
     let i = ((50 * result.width + 50) as usize) * 4;
     assert_eq!(&result.pixels[i..i + 4], &[0, 0, 255, 255]);
 }
+
+#[test]
+fn applyBaseSizeFitPreservesAspectForTallEarsAndHdParts() {
+    let mut raw = HashMap::new();
+    raw.insert("Head/experimentHeadBack".to_string(), (26, 12));
+    let map = crate::baseSizes::BaseSizes::fromMap(raw);
+
+    // 宽度等于基准宽度（26），高度扩展到 24 画高耳朵：必须原样保留 26x24，不得压扁成 26x12。
+    let tallPx = vec![255u8; (26 * 24 * 4) as usize];
+    let (w1, h1, px1) = super::composite::applyBaseSizeFit(
+        &map,
+        PartCategory::Head,
+        "experimentHeadBack",
+        "experimentHeadBack",
+        26,
+        24,
+        tallPx.clone(),
+    );
+    assert_eq!((w1, h1), (26, 24));
+    assert_eq!(px1.len(), tallPx.len());
+
+    // 2x 高清高耳朵（52x48）：按宽度 26/52 = 0.5 等比缩回 26x24，仍保留 24 高度而非压扁到 12。
+    let hdTallPx = vec![128u8; (52 * 48 * 4) as usize];
+    let (w2, h2, px2) = super::composite::applyBaseSizeFit(
+        &map,
+        PartCategory::Head,
+        "experimentHeadBack",
+        "experimentHeadBack",
+        52,
+        48,
+        hdTallPx,
+    );
+    assert_eq!((w2, h2), (26, 24));
+    assert_eq!(px2.len(), (26 * 24 * 4) as usize);
+}

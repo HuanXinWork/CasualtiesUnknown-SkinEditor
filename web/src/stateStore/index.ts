@@ -4,7 +4,15 @@ import type { Orientation, PartCategory, ThemeConfig } from "./types";
 import type { HeadVariant, PixelDiff } from "../apiClient";
 import { defaultTheme } from "./theme";
 
-export type Tool = "brush" | "eraser" | "pan" | "gradient" | "zoneBrush" | "fill" | "softBrush";
+export type Tool =
+  | "brush"
+  | "eraser"
+  | "pan"
+  | "gradient"
+  | "zoneBrush"
+  | "fill"
+  | "softBrush"
+  | "crop";
 
 export type Lang = "zh" | "en";
 
@@ -14,10 +22,25 @@ export interface AppliedDiff {
   phase: "before" | "after";
 }
 
+export interface CanvasSizeInfo {
+  partId: string;
+  width: number;
+  height: number;
+}
+
 export interface HistoryRecord {
   id: number;
   partId: string;
-  tool: "brush" | "eraser" | "gradient" | "fill" | "softBrush" | "transform" | "undo" | "redo";
+  tool:
+    | "brush"
+    | "eraser"
+    | "gradient"
+    | "fill"
+    | "softBrush"
+    | "transform"
+    | "resizeCanvas"
+    | "undo"
+    | "redo";
   rectW: number;
   rectH: number;
   timestamp: number;
@@ -38,6 +61,10 @@ export interface SessionState {
   assemblyOverrideVersion: number;
   partListVersion: number;
   accessoriesVersion: number;
+  canvasSizeVersion: number;
+  lastResizedCanvas: CanvasSizeInfo | null;
+  showPixelGrid: boolean;
+  showPivotCross: boolean;
   activeZoneId: number;
   eraserMode: "part" | "zone";
   history: HistoryRecord[];
@@ -99,6 +126,10 @@ function buildInitialState(): SessionState {
     assemblyOverrideVersion: 0,
     partListVersion: 0,
     accessoriesVersion: 0,
+    canvasSizeVersion: 0,
+    lastResizedCanvas: null,
+    showPixelGrid: true,
+    showPivotCross: true,
     activeZoneId: 1,
     eraserMode: "part",
     history: [],
@@ -206,4 +237,29 @@ export function bumpPartListVersion(): void {
 export function bumpAccessoriesVersion(): void {
   const v = sessionStore.getState().accessoriesVersion ?? 0;
   sessionStore.setState({ accessoriesVersion: v + 1 });
+}
+
+export function setShowPixelGrid(showPixelGrid: boolean): void {
+  sessionStore.setState({ showPixelGrid });
+}
+
+export function setShowPivotCross(showPivotCross: boolean): void {
+  sessionStore.setState({ showPivotCross });
+}
+
+export function bumpCanvasSizeVersion(info?: CanvasSizeInfo): void {
+  const v = sessionStore.getState().canvasSizeVersion ?? 0;
+  sessionStore.setState({
+    canvasSizeVersion: v + 1,
+    ...(info ? { lastResizedCanvas: info } : {}),
+  });
+}
+
+/** 统一校验柔笔刷硬度为合法 u8（0..255）；兼容历史工作区保存的 (0, 1) 浮点值。 */
+export function normalizeSoftBrushHardness(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 128;
+  if (value > 0 && value < 1) {
+    return Math.max(0, Math.min(255, Math.round(value * 255)));
+  }
+  return Math.max(0, Math.min(255, Math.round(value)));
 }

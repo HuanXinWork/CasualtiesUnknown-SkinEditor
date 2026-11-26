@@ -196,6 +196,49 @@ pub fn scaleNearest(pixels: &[u8], oldW: u32, oldH: u32, newW: u32, newH: u32) -
     out
 }
 
+/// 纯几何画布裁切/扩展：按像素偏移原样搬运 RGBA8 像素，越界裁切、空白补全透明，不做像素插值。
+pub fn resizeCanvasRgba(
+    pixels: &[u8],
+    oldW: u32,
+    oldH: u32,
+    newW: u32,
+    newH: u32,
+    offsetX: i32,
+    offsetY: i32,
+) -> Vec<u8> {
+    let Some(outLen) = rgbaByteLen(newW, newH) else {
+        return Vec::new();
+    };
+    let mut out = vec![0u8; outLen];
+    if oldW == 0 || oldH == 0 || newW == 0 || newH == 0 {
+        return out;
+    }
+    let Some(inLen) = rgbaByteLen(oldW, oldH) else {
+        return out;
+    };
+    if pixels.len() != inLen {
+        return out;
+    }
+    let ox = offsetX as i64;
+    let oy = offsetY as i64;
+    let xStart = 0i64.max(-ox);
+    let xEnd = (oldW as i64).min(newW as i64 - ox);
+    let yStart = 0i64.max(-oy);
+    let yEnd = (oldH as i64).min(newH as i64 - oy);
+    if xStart >= xEnd || yStart >= yEnd {
+        return out;
+    }
+    let rowBytes = ((xEnd - xStart) as usize) * 4;
+    for sy in yStart..yEnd {
+        let dy = (sy + oy) as usize;
+        let dx = (xStart + ox) as usize;
+        let srcOff = ((sy as usize) * (oldW as usize) + (xStart as usize)) * 4;
+        let dstOff = (dy * (newW as usize) + dx) * 4;
+        out[dstOff..dstOff + rowBytes].copy_from_slice(&pixels[srcOff..srcOff + rowBytes]);
+    }
+    out
+}
+
 pub fn loadPng(path: &Path) -> Result<(u32, u32, Vec<u8>), ApiError> {
     let reader = image::ImageReader::open(path).map_err(|e| ApiError {
         code: "io_failed".into(),

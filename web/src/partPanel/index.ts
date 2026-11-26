@@ -1,7 +1,7 @@
 // 角色选择与六类部件分组列表（身体 / 头部 / 表情 / 翅膀 / 配件 / 血液贴图）。
 
 import { getWorkspace, listParts, listSkins, type ApiError } from "../apiClient";
-import { bumpPartListVersion, sessionStore } from "../stateStore";
+import { bumpPartListVersion, parsePartId, sessionStore } from "../stateStore";
 import { updateWorkspace, updateWorkspaceSettings } from "../stateStore/workspacePersist";
 import type { PartCategory, PartInfo, Skin } from "../stateStore/types";
 import { subscribeLang, t } from "../i18n";
@@ -323,6 +323,7 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
 
   let lastPartListVersion = sessionStore.getState().partListVersion ?? 0;
   let lastAccVersion = sessionStore.getState().accessoriesVersion ?? 0;
+  let lastCanvasSizeVersion = sessionStore.getState().canvasSizeVersion ?? 0;
 
   const unsubscribe = sessionStore.subscribe((s) => {
     if (
@@ -345,6 +346,33 @@ export function mountPartPanel(container: HTMLElement, skinRoot: string): () => 
     if (accVer !== lastAccVersion) {
       lastAccVersion = accVer;
       if (s.currentSkinName) refreshCurrentSkinList(s.currentSkinName);
+    }
+    const sizeVer = s.canvasSizeVersion ?? 0;
+    if (sizeVer !== lastCanvasSizeVersion) {
+      lastCanvasSizeVersion = sizeVer;
+      const resized = s.lastResizedCanvas;
+      const parsed = resized ? parsePartId(resized.partId) : null;
+      if (resized && parsed) {
+        const skin = cachedSkins.find((sk) => sk.name === parsed.skinName);
+        if (skin) {
+          const list =
+            parsed.category === "Body"
+              ? skin.body
+              : parsed.category === "Head"
+                ? skin.head
+                : parsed.category === "Wings"
+                  ? skin.wings
+                  : parsed.category === "Blood"
+                    ? skin.blood
+                    : skin.accessories;
+          const part = list.find((p) => p.name === parsed.partName);
+          if (part) {
+            part.width = resized.width;
+            part.height = resized.height;
+            renderParts();
+          }
+        }
+      }
     }
   });
 

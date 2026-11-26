@@ -231,24 +231,19 @@ proptest! {
                 let end = start + (ww * 4) as usize;
                 before.extend_from_slice(&state[start..end]);
             }
-            let diff = PixelDiff {
-                x: xx, y: yy, width: ww, height: hh,
-                before, after: after.clone(),
-            };
+            let diff = PixelDiff::new(xx, yy, ww, hh, before, after.clone());
             historyManager::applyAfter(&mut state, W, &diff);
-            stack.push(HistoryEntry {
-                layerId: format!("L{}", i),
-                diff,
-                timestamp: i as i64,
-            });
+            stack.push(HistoryEntry::pixel(format!("L{}", i), diff, i as i64));
         }
         let stateN = state.clone();
         while let Some(e) = stack.undo() {
-            historyManager::applyBefore(&mut state, W, &e.diff);
+            let (_, diff) = e.asPixel().expect("pixel entry");
+            historyManager::applyBefore(&mut state, W, diff);
         }
         prop_assert_eq!(state.clone(), initial);
         while let Some(e) = stack.redo() {
-            historyManager::applyAfter(&mut state, W, &e.diff);
+            let (_, diff) = e.asPixel().expect("pixel entry");
+            historyManager::applyAfter(&mut state, W, diff);
         }
         prop_assert_eq!(state, stateN);
     }

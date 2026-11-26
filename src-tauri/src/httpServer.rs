@@ -19,7 +19,8 @@ use crate::apiLayer::{
     LayerVisibilityParams, LayersSnapshot, LoadPartParams, LoadPartResult, LoadZonesParams,
     LoadZonesResult, MotionCaptureListParams, MotionCaptureMeta, MotionCaptureResult,
     MotionCompositeParams, MotionCompositeResult, PartIdParams, PartsParams, RemoveLayerParams,
-    ReorderLayersParams, ResizePartParams, ResizePartResult, SaveAccessoryConfigParams,
+    ReorderLayersParams, ResizeCanvasParams, ResizeCanvasResult, ResizePartParams,
+    ResizePartResult, SaveAccessoryConfigParams,
     SaveBloodConfigParams, SavePartParams, SaveWingsConfigParams, SaveWorkspaceParams,
     SaveZonesParams, SetAccessoryEnabledParams, SetActiveLayerParams, SetAssemblyOverrideParams,
     SetLayerTransformParams, SkinsParams, SoftBrushParams, WingsConfig, WingsConfigPathParams,
@@ -57,6 +58,7 @@ pub async fn serve(config: HttpConfig, api: SharedApi) {
         .route("/api/assembly", get(handleAssembly))
         .route("/api/savePart", post(handleSavePart))
         .route("/api/resizePart", post(handleResizePart))
+        .route("/api/resizeCanvas", post(handleResizeCanvas))
         .route("/api/baseSize", post(handleGetBaseSize))
         .route("/api/createSidePart", post(handleCreateSidePart))
         .route("/api/createOrientationPart", post(handleCreateOrientationPart))
@@ -305,6 +307,14 @@ async fn handleResizePart(
     Json(params): Json<ResizePartParams>,
 ) -> Response {
     let result: Result<ResizePartResult, ApiError> = api.resizePart(params);
+    intoResponse(result)
+}
+
+async fn handleResizeCanvas(
+    State(api): State<SharedApi>,
+    Json(params): Json<ResizeCanvasParams>,
+) -> Response {
+    let result: Result<ResizeCanvasResult, ApiError> = api.resizeCanvas(params);
     intoResponse(result)
 }
 

@@ -12,6 +12,8 @@ mod zoneRender;
 #[cfg(test)]
 mod compositeTests;
 #[cfg(test)]
+mod resizeCanvasTests;
+#[cfg(test)]
 mod tests;
 
 pub use types::*;
@@ -297,6 +299,10 @@ impl ApiLayer for CoreApi {
 
     fn resizePart(&self, params: ResizePartParams) -> Result<ResizePartResult, ApiError> {
         partManage::resizePart(&self.sessions, params)
+    }
+
+    fn resizeCanvas(&self, params: ResizeCanvasParams) -> Result<ResizeCanvasResult, ApiError> {
+        partManage::resizeCanvas(&self.sessions, params)
     }
 
     fn getBaseSize(&self, params: GetBaseSizeParams) -> Result<GetBaseSizeResult, ApiError> {
@@ -622,14 +628,7 @@ pub(crate) fn partIdKey(skinName: &str, category: PartCategory, partName: &str) 
 }
 
 pub(super) fn emptyPixelDiff() -> PixelDiff {
-    PixelDiff {
-        x: 0,
-        y: 0,
-        width: 0,
-        height: 0,
-        before: vec![],
-        after: vec![],
-    }
+    PixelDiff::new(0, 0, 0, 0, vec![], vec![])
 }
 
 pub(crate) fn categoryDir(category: PartCategory) -> &'static str {

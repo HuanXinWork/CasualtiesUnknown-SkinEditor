@@ -7,8 +7,12 @@ export type ActionId =
   | "redo"
   | "save"
   | "tool.brush"
+  | "tool.softBrush"
   | "tool.eraser"
   | "tool.gradient"
+  | "tool.fill"
+  | "tool.zoneBrush"
+  | "tool.crop"
   | "tool.pan"
   | "brush.larger"
   | "brush.smaller"
@@ -20,8 +24,12 @@ export const ACTION_IDS: readonly ActionId[] = [
   "redo",
   "save",
   "tool.brush",
+  "tool.softBrush",
   "tool.eraser",
   "tool.gradient",
+  "tool.fill",
+  "tool.zoneBrush",
+  "tool.crop",
   "tool.pan",
   "brush.larger",
   "brush.smaller",
@@ -34,8 +42,12 @@ export const DEFAULT_SHORTCUTS: Readonly<Record<ActionId, string>> = Object.free
   redo: "Ctrl+Y",
   save: "Ctrl+S",
   "tool.brush": "B",
+  "tool.softBrush": "S",
   "tool.eraser": "E",
-  "tool.gradient": "G",
+  "tool.gradient": "Shift+G",
+  "tool.fill": "G",
+  "tool.zoneBrush": "Z",
+  "tool.crop": "C",
   "tool.pan": "H",
   "brush.larger": "]",
   "brush.smaller": "[",

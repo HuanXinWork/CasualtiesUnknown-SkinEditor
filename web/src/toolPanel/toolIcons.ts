@@ -56,6 +56,12 @@ export const ICON_SOFT_BRUSH =
   `<circle cx="7" cy="17" r="3.2" stroke-dasharray="2 2"/>` +
   `</svg>`;
 
+export const ICON_CROP =
+  `<svg ${SVG_BASE}>` +
+  `<path d="M6 2v14a2 2 0 0 0 2 2h14"/>` +
+  `<path d="M18 22V8a2 2 0 0 0-2-2H2"/>` +
+  `</svg>`;
+
 export const ICON_UNDO =
   `<svg ${SVG_BASE}>` +
   `<path d="M9 14L4 9l5-5"/>` +
@@ -185,7 +191,7 @@ export const CURSOR_DROPPER_DATAURL = (() => {
 })();
 
 export const TOOL_ICONS: Record<
-  "brush" | "eraser" | "pan" | "gradient" | "zoneBrush" | "fill" | "softBrush",
+  "brush" | "eraser" | "pan" | "gradient" | "zoneBrush" | "fill" | "softBrush" | "crop",
   string
 > = {
   brush: ICON_BRUSH,
@@ -195,6 +201,7 @@ export const TOOL_ICONS: Record<
   zoneBrush: ICON_ZONE_BRUSH,
   fill: ICON_FILL,
   softBrush: ICON_SOFT_BRUSH,
+  crop: ICON_CROP,
 };
 
 function cursorUrl(svg: string, hotX: number, hotY: number): string {

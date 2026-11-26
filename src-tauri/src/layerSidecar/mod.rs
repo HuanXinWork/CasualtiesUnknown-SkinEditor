@@ -3,6 +3,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +12,8 @@ use crate::dataPaths;
 use crate::imageOps::{self, Layer, PartEditState};
 
 pub const SIDECAR_VERSION: u32 = 1;
+/// 容忍文件系统时间戳精度抖动（如 FAT/NTFS 2s 粒度），主 PNG 修改时间超出该阈值视为已被外部替换。
+const MTIME_TOLERANCE_SECS: u64 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerEntry {
@@ -28,10 +31,58 @@ pub struct SidecarManifest {
     pub height: u32,
     pub activeLayerIndex: usize,
     pub layers: Vec<LayerEntry>,
+    /// 记录保存旁车时主 PNG 的字节数与修改时间戳（秒），用于检测外部改图后旁车过时。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pngLen: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pngMtimeSec: Option<u64>,
 }
 
 pub fn sidecarDir(skinDir: &Path, categoryDir: &str, partName: &str) -> PathBuf {
     skinDir.join("layers").join(categoryDir).join(partName)
+}
+
+fn mainPngPath(skinDir: &Path, categoryDir: &str, partName: &str) -> PathBuf {
+    skinDir.join(categoryDir).join(format!("{}.png", partName))
+}
+
+fn readFileFingerprint(path: &Path) -> (Option<u64>, Option<u64>) {
+    let Ok(meta) = fs::metadata(path) else {
+        return (None, None);
+    };
+    let len = Some(meta.len());
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    (len, mtime)
+}
+
+fn isSidecarStale(manifest: &SidecarManifest, manifestPath: &Path, mainPng: &Path) -> bool {
+    let (curLen, curMtime) = readFileFingerprint(mainPng);
+    let Some(diskLen) = curLen else {
+        return false;
+    };
+    if let Some(savedLen) = manifest.pngLen {
+        if savedLen != diskLen {
+            return true;
+        }
+    }
+    if let (Some(savedMtime), Some(diskMtime)) = (manifest.pngMtimeSec, curMtime) {
+        if diskMtime > savedMtime.saturating_add(MTIME_TOLERANCE_SECS) {
+            return true;
+        }
+    }
+    if manifest.pngLen.is_none() && manifest.pngMtimeSec.is_none() {
+        let (_, manifestMtime) = readFileFingerprint(manifestPath);
+        if let (Some(mSec), Some(diskMtime)) = (manifestMtime, curMtime) {
+            if diskMtime > mSec.saturating_add(MTIME_TOLERANCE_SECS) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// 先写入全部图层 PNG 并原子替换 `manifest.json`，最后清理超出当前层数的旧 `layerN.png`。
@@ -58,12 +109,15 @@ pub fn save(
         });
     }
 
+    let (pngLen, pngMtimeSec) = readFileFingerprint(&mainPngPath(skinDir, categoryDir, partName));
     let manifest = SidecarManifest {
         version: SIDECAR_VERSION,
         width: state.width,
         height: state.height,
         activeLayerIndex: activeIndex,
         layers: entries,
+        pngLen,
+        pngMtimeSec,
     };
     let bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| ApiError {
         code: "encode_failed".into(),
@@ -90,14 +144,15 @@ pub fn save(
     Ok(())
 }
 
-/// 读取 sidecar 还原多图层状态；缺失、版本不兼容、非法文件名或尺寸失配时返回 `None` 以回退单层 PNG。
+/// 读取 sidecar 还原多图层状态；缺失、过时、版本不兼容、非法文件名或尺寸失配时返回 `None` 以回退单层 PNG。
 pub fn loadIfPresent(
     skinDir: &Path,
     categoryDir: &str,
     partName: &str,
 ) -> Option<(PartEditState, usize)> {
     let dir = sidecarDir(skinDir, categoryDir, partName);
-    let bytes = fs::read(dir.join("manifest.json")).ok()?;
+    let manifestPath = dir.join("manifest.json");
+    let bytes = fs::read(&manifestPath).ok()?;
     let manifest: SidecarManifest = serde_json::from_slice(&bytes).ok()?;
     if manifest.version != SIDECAR_VERSION
         || manifest.width == 0
@@ -105,6 +160,10 @@ pub fn loadIfPresent(
         || manifest.width > imageOps::MAX_PART_DIM
         || manifest.height > imageOps::MAX_PART_DIM
     {
+        return None;
+    }
+    let mainPng = mainPngPath(skinDir, categoryDir, partName);
+    if isSidecarStale(&manifest, &manifestPath, &mainPng) {
         return None;
     }
 
@@ -266,5 +325,28 @@ mod tests {
         save(tmp.path(), "Body", "p", &state, 0).expect("save");
         assert!(!dir.join("layer5.png").exists());
         assert!(dir.join("layer0.png").is_file());
+    }
+
+    #[test]
+    fn loadInvalidatesWhenMainPngChangedExternally() {
+        let tmp = TempDir::new();
+        let mainPng = tmp.path().join("Body").join("p.png");
+        fs::create_dir_all(mainPng.parent().unwrap()).unwrap();
+        let px1 = vec![10, 20, 30, 255];
+        imageOps::savePng(&mainPng, 1, 1, &px1).expect("save main png");
+
+        let state = PartEditState {
+            partName: "p".into(),
+            width: 1,
+            height: 1,
+            layers: vec![mkLayer("layer0", 255, 1, 1, [10, 20, 30, 255])],
+        };
+        save(tmp.path(), "Body", "p", &state, 0).expect("save sidecar");
+        assert!(loadIfPresent(tmp.path(), "Body", "p").is_some());
+
+        // 模拟外部软件覆写主 PNG（尺寸和字节数变化），旁车应被判过时并返回 None。
+        let px2 = vec![200, 100, 50, 255, 1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255];
+        imageOps::savePng(&mainPng, 2, 2, &px2).expect("overwrite main png");
+        assert!(loadIfPresent(tmp.path(), "Body", "p").is_none());
     }
 }

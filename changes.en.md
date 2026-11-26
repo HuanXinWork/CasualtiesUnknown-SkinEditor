@@ -6,6 +6,26 @@
 
 ---
 
+## 1.0.9 (2026-11-26)
+
+### Added and Changed
+
+- Added the Crop/Expand canvas tool (shortcut `C`): drag 8 handles inward to crop or outward beyond canvas bounds to expand, with live target dimensions and center offset relative to the game pivot `(0.5, 0.5)`.
+- Upgraded the Canvas Size dialog to two tabs: Tab 1 adjusts canvas bounds with a 9-grid anchor, 4-side quick expand/shrink controls, auto-trim for transparent margins, and an opt-in checkbox to sync `baseSizes.json` (unchanged by default); Tab 2 keeps nearest-neighbor resampling.
+- Extended the undo stack so canvas dimensions, all layers, and `.zones.png` support lossless `Ctrl+Z` / `Ctrl+Y` undo and redo.
+- Refined editor canvas visuals and responsiveness: added theme-adaptive transparency checkerboard, high-zoom pixel grid, dashed pivot crosshair, and a bottom real-time coordinate status bar, and removed the 100ms zoom/pan transition lag.
+- Streamlined top controls and shortcuts: collapsed preview expressions (including the 7th "Focused" expression and built-in `exp` focused eye texture) and head variants into two compact dropdowns; grouped top toolbar tools and added `C` / `G` / `S` / `Z` shortcuts (moved gradient to `Shift+G`).
+
+### Fixed
+
+- Changed preview `applyBaseSizeFit` to scale proportionally by base width to match in-game `SkinSync`, fixing squashed or stretched custom tall-ear and expanded-margin heads in preview.
+- Corrected default head base-size dimensions, auto-migrated legacy flat `baseSizes.json` files to the `entries` envelope, and inherited base sizes for `F`/`B`/`R_` variant copies.
+- Fixed dark-mode palette HEX/R/G/B inputs rendering with black text on a white background.
+- Fixed soft brush default hardness type mismatch between backend and frontend.
+- Added main PNG validation to the layer sidecar `manifest.json` so external edits to the main image fall back to reading the main PNG directly.
+
+---
+
 ## 1.0.8 (2026-11-18)
 
 ### Added and Changed

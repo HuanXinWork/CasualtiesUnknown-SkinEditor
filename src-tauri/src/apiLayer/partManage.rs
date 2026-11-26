@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use crate::accessories;
 use crate::baseSizes;
 use crate::dataPaths;
+use crate::historyManager::{BaseSizeChange, CanvasResizeSnapshot, HistoryEntry, ZonesSnapshot};
 use crate::imageOps::{self, Layer, PartEditState};
 use crate::layerSidecar;
 use crate::skinLoader::{self, PartCategory};
@@ -15,10 +16,13 @@ use crate::zones;
 use super::types::{
     ApiError, CopyPartParams, CreateOrientationPartParams, CreateOrientationPartResult,
     CreatePartFromTemplateParams, CreatePartParams, CreatePartResult, CreateSidePartParams,
-    CreateSidePartResult, DeletePartParams, GetBaseSizeParams, GetBaseSizeResult, ResizePartParams,
-    ResizePartResult,
+    CreateSidePartResult, DeletePartParams, GetBaseSizeParams, GetBaseSizeResult,
+    ResizeCanvasParams, ResizeCanvasResult, ResizePartParams, ResizePartResult,
 };
-use super::{categoryDir, lockSessions, notLoaded, partIdKey, validateSegment, PartSession};
+use super::{
+    categoryDir, finalizePendingStroke, lockSessions, notLoaded, nowMillis, partIdKey,
+    validateSegment, PartSession,
+};
 
 pub(super) fn resizePart(
     sessionsMutex: &Mutex<HashMap<String, PartSession>>,
@@ -111,6 +115,181 @@ pub(super) fn resizePart(
     })
 }
 
+/// 无损画布裁切/扩展：按像素偏移搬运全部图层与区块遮罩并压入撤销栈，不直接覆写磁盘主 PNG。
+pub(super) fn resizeCanvas(
+    sessionsMutex: &Mutex<HashMap<String, PartSession>>,
+    params: ResizeCanvasParams,
+) -> Result<ResizeCanvasResult, ApiError> {
+    if params.width == 0 || params.height == 0 {
+        return Err(ApiError {
+            code: "invalid_size".into(),
+            message: format!("size must be positive: {}x{}", params.width, params.height),
+        });
+    }
+    if params.width > imageOps::MAX_PART_DIM || params.height > imageOps::MAX_PART_DIM {
+        return Err(ApiError {
+            code: "size_too_large".into(),
+            message: format!(
+                "size exceeds {}: {}x{}",
+                imageOps::MAX_PART_DIM,
+                params.width,
+                params.height
+            ),
+        });
+    }
+    let mut sessions = lockSessions(sessionsMutex)?;
+    let session = sessions
+        .get_mut(&params.partId)
+        .ok_or_else(|| notLoaded(&params.partId))?;
+    finalizePendingStroke(session);
+    for layer in &mut session.state.layers {
+        layer.transform = None;
+    }
+
+    let (oldW, oldH) = (session.state.width, session.state.height);
+    if oldW == params.width
+        && oldH == params.height
+        && params.offsetX == 0
+        && params.offsetY == 0
+    {
+        return Ok(ResizeCanvasResult {
+            partId: params.partId,
+            width: oldW,
+            height: oldH,
+            baseSize: None,
+        });
+    }
+
+    let beforeLayers: Vec<(String, Vec<u8>)> = session
+        .state
+        .layers
+        .iter()
+        .map(|l| (l.id.clone(), l.pixels.clone()))
+        .collect();
+    let afterLayers: Vec<(String, Vec<u8>)> = session
+        .state
+        .layers
+        .iter()
+        .map(|l| {
+            let resized = imageOps::resizeCanvasRgba(
+                &l.pixels,
+                oldW,
+                oldH,
+                params.width,
+                params.height,
+                params.offsetX,
+                params.offsetY,
+            );
+            (l.id.clone(), resized)
+        })
+        .collect();
+
+    let maskFile = session
+        .skinDir
+        .join(session.categoryDir)
+        .join(format!("{}.zones.png", session.partName));
+    let zonesSnap = if maskFile.is_file() {
+        if let Some((mw, mh, oldIds)) = zones::loadMask(&maskFile) {
+            let newIds = zones::resizeMaskCanvas(
+                &oldIds,
+                mw,
+                mh,
+                params.width,
+                params.height,
+                params.offsetX,
+                params.offsetY,
+            );
+            zones::saveMask(&maskFile, params.width, params.height, &newIds)?;
+            Some(ZonesSnapshot {
+                beforeWidth: mw,
+                beforeHeight: mh,
+                beforeIds: oldIds,
+                afterWidth: params.width,
+                afterHeight: params.height,
+                afterIds: newIds,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // 仅在显式勾选 `syncBaseSize` 时按当前高清倍率同步更新 `baseSizes.json`，默认绝不触碰。
+    let mut baseSizeSnap: Option<BaseSizeChange> = None;
+    let mut baseSizeOut: Option<[u32; 2]> = None;
+    if params.syncBaseSize {
+        let existingBase = baseSizes::load(&session.skinDir);
+        let baseKey = baseSizes::keyFor(session.categoryDir, &session.partName);
+        let prevExact = existingBase.get(&baseKey);
+        let oldBase = prevExact
+            .or_else(|| {
+                let noOrient = session
+                    .partName
+                    .strip_prefix("R_")
+                    .unwrap_or(&session.partName);
+                if noOrient != session.partName {
+                    existingBase.get(&baseSizes::keyFor(session.categoryDir, noOrient))
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                let stripped = baseSizes::stripSideSuffixForLookup(&session.partName);
+                if stripped != session.partName {
+                    existingBase.get(&baseSizes::keyFor(session.categoryDir, stripped))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or((oldW, oldH));
+        let scaleX = (oldW as f64) / (oldBase.0.max(1) as f64);
+        let scaleY = (oldH as f64) / (oldBase.1.max(1) as f64);
+        let newBw = ((params.width as f64) / scaleX).round().max(1.0) as u32;
+        let newBh = ((params.height as f64) / scaleY).round().max(1.0) as u32;
+        if let Err(e) = baseSizes::upsert(&session.skinDir, &baseKey, newBw, newBh) {
+            if let Some(ref z) = zonesSnap {
+                let _ = zones::saveMask(&maskFile, z.beforeWidth, z.beforeHeight, &z.beforeIds);
+            }
+            return Err(e);
+        }
+        baseSizeSnap = Some(BaseSizeChange {
+            key: baseKey,
+            before: prevExact,
+            after: (newBw, newBh),
+        });
+        baseSizeOut = Some([newBw, newBh]);
+    }
+
+    session.state.width = params.width;
+    session.state.height = params.height;
+    for (layer, (_, afterPx)) in session.state.layers.iter_mut().zip(afterLayers.iter()) {
+        layer.pixels = afterPx.clone();
+    }
+    session.history.push(HistoryEntry::canvasResize(
+        CanvasResizeSnapshot {
+            beforeWidth: oldW,
+            beforeHeight: oldH,
+            beforeLayers,
+            afterWidth: params.width,
+            afterHeight: params.height,
+            afterLayers,
+            offsetX: params.offsetX,
+            offsetY: params.offsetY,
+            zones: zonesSnap,
+            baseSize: baseSizeSnap,
+        },
+        nowMillis(),
+    ));
+
+    Ok(ResizeCanvasResult {
+        partId: params.partId,
+        width: params.width,
+        height: params.height,
+        baseSize: baseSizeOut,
+    })
+}
+
 pub(super) fn getBaseSize(params: GetBaseSizeParams) -> Result<GetBaseSizeResult, ApiError> {
     validateSegment("skinName", &params.skinName)?;
     validateSegment("partName", &params.partName)?;
@@ -185,6 +364,7 @@ pub(super) fn createSidePart(
         code: "io_failed".into(),
         message: format!("copy {} -> {} failed: {}", src.display(), dst.display(), e),
     })?;
+    inheritBaseSizeIfPresent(&skinDir, categoryDir(params.category), &params.partName, &sideName);
     Ok(CreateSidePartResult {
         sidePartName: sideName,
     })
@@ -228,9 +408,32 @@ pub(super) fn createOrientationPart(
         code: "io_failed".into(),
         message: format!("copy {} -> {} failed: {}", src.display(), dst.display(), e),
     })?;
+    inheritBaseSizeIfPresent(
+        &skinDir,
+        categoryDir(params.category),
+        &params.partName,
+        &orientName,
+    );
     Ok(CreateOrientationPartResult {
         orientationPartName: orientName,
     })
+}
+
+/// 若源部件在 `baseSizes.json` 中存在记录，同步登记给新拆出的 F/B 或 `R_` 副本，避免副本丢失 1x 基准。
+fn inheritBaseSizeIfPresent(skinDir: &Path, catDirName: &str, srcName: &str, dstName: &str) {
+    let existing = baseSizes::load(skinDir);
+    let srcKey = baseSizes::keyFor(catDirName, srcName);
+    let hit = existing.get(&srcKey).or_else(|| {
+        let stripped = baseSizes::stripSideSuffixForLookup(srcName);
+        if stripped == srcName {
+            None
+        } else {
+            existing.get(&baseSizes::keyFor(catDirName, stripped))
+        }
+    });
+    if let Some((bw, bh)) = hit {
+        let _ = baseSizes::upsert(skinDir, &baseSizes::keyFor(catDirName, dstName), bw, bh);
+    }
 }
 
 pub(super) fn createPart(params: CreatePartParams) -> Result<CreatePartResult, ApiError> {

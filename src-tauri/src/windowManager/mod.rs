@@ -84,8 +84,40 @@ fn defaultSwitchSaveBehavior() -> String {
     "ask".into()
 }
 
-fn defaultSoftBrushHardness() -> f32 {
-    0.5
+fn defaultSoftBrushHardness() -> u8 {
+    128
+}
+
+/// 兼容旧版 `workspace.json` 的 `0.0..=1.0` 浮点硬度与新版 `0..=255` 整数硬度。
+fn deserializeSoftBrushHardness<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct HardnessVisitor;
+    impl<'de> serde::de::Visitor<'de> for HardnessVisitor {
+        type Value = u8;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a u8 hardness (0..=255) or legacy float hardness (0.0..=1.0)")
+        }
+
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(v.min(255) as u8)
+        }
+
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(v.clamp(0, 255) as u8)
+        }
+
+        fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+            if !v.is_finite() || v <= 0.0 {
+                return Ok(0);
+            }
+            let scaled = if v <= 1.0 { v * 255.0 } else { v };
+            Ok(scaled.round().clamp(0.0, 255.0) as u8)
+        }
+    }
+    deserializer.deserialize_any(HardnessVisitor)
 }
 
 /// 工作区用户偏好，字段与前端 `WorkspaceSettings` 对齐。
@@ -109,8 +141,11 @@ pub struct WorkspaceSettings {
     pub autoSaveIntervalSec: u32,
     #[serde(default = "defaultSwitchSaveBehavior")]
     pub switchSaveBehavior: String,
-    #[serde(default = "defaultSoftBrushHardness")]
-    pub softBrushHardness: f32,
+    #[serde(
+        default = "defaultSoftBrushHardness",
+        deserialize_with = "deserializeSoftBrushHardness"
+    )]
+    pub softBrushHardness: u8,
     #[serde(default)]
     pub shortcuts: HashMap<String, String>,
 }
@@ -342,7 +377,7 @@ mod tests {
         layout.settings.autoSaveEnabled = true;
         layout.settings.autoSaveIntervalSec = 120;
         layout.settings.switchSaveBehavior = "save".into();
-        layout.settings.softBrushHardness = 0.75;
+        layout.settings.softBrushHardness = 192;
         layout.settings.shortcuts.insert("tool.brush".into(), "KeyQ".into());
         let theme = ThemeConfig {
             primary: "#112233".into(),
@@ -364,12 +399,34 @@ mod tests {
         assert!(loaded.settings.autoSaveEnabled);
         assert_eq!(loaded.settings.autoSaveIntervalSec, 120);
         assert_eq!(loaded.settings.switchSaveBehavior, "save");
-        assert!((loaded.settings.softBrushHardness - 0.75).abs() < f32::EPSILON);
+        assert_eq!(loaded.settings.softBrushHardness, 192);
         assert_eq!(loaded.settings.shortcuts.get("tool.brush").map(String::as_str), Some("KeyQ"));
         let pos = loaded.panels[1].windowPosition.as_ref().unwrap();
         assert_eq!((pos.x, pos.y), (100, 50));
         assert_eq!(loadedTheme.primary, "#112233");
         assert!((loadedTheme.borderOpacity - 0.32).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn softBrushHardnessDeserializesLegacyFloatAndU8() {
+        let parse = |val: &str| -> u8 {
+            let raw = format!(r#"{{"softBrushHardness": {}}}"#, val);
+            serde_json::from_str::<WorkspaceSettings>(&raw)
+                .expect("parse settings")
+                .softBrushHardness
+        };
+        assert_eq!(parse("0.0"), 0);
+        assert_eq!(parse("0.5"), 128);
+        assert_eq!(parse("0.75"), 191);
+        assert_eq!(parse("1.0"), 255);
+        assert_eq!(parse("128"), 128);
+        assert_eq!(parse("1"), 1);
+        assert_eq!(parse("255"), 255);
+        assert_eq!(parse("300.0"), 255);
+        assert_eq!(parse("300"), 255);
+        assert_eq!(parse("-0.2"), 0);
+        let defaultSettings: WorkspaceSettings = serde_json::from_str("{}").expect("default");
+        assert_eq!(defaultSettings.softBrushHardness, 128);
     }
 
     #[test]

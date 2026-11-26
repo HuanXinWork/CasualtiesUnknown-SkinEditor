@@ -3,7 +3,7 @@
 import "./styles/theme.css";
 import "./styles/motion.css";
 import { applyTheme, defaultTheme } from "./stateStore/theme";
-import { sessionStore } from "./stateStore";
+import { normalizeSoftBrushHardness, sessionStore } from "./stateStore";
 import {
   initWorkspaceCache,
   updateWorkspace,
@@ -29,7 +29,7 @@ import { mountAutoSave } from "./autoSave";
 import { showToast } from "./toast";
 import { ICON_CLOSE, ICON_PIN, ICON_PIN_OFF, ICON_REATTACH } from "./toolPanel/toolIcons";
 
-const APP_VERSION = "1.0.8";
+const APP_VERSION = "1.0.9";
 const DEFAULT_SKIN_ROOT = "data/skin";
 export const DEFAULT_WORKSPACE_PATH = "data/workspace.json";
 
@@ -95,7 +95,7 @@ async function mountMainWindow(): Promise<void> {
       autoSaveEnabled: ws.layout.settings?.autoSaveEnabled ?? false,
       autoSaveIntervalSec: ws.layout.settings?.autoSaveIntervalSec ?? 60,
       switchSaveBehavior: ws.layout.settings?.switchSaveBehavior ?? "",
-      softBrushHardness: ws.layout.settings?.softBrushHardness ?? 128,
+      softBrushHardness: normalizeSoftBrushHardness(ws.layout.settings?.softBrushHardness),
     });
     if (ws.source === "file") {
       lastLoadedPanels = ws.layout.panels as PanelLayout[];

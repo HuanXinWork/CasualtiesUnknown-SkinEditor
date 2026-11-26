@@ -53,11 +53,10 @@ export function mountToolPanel(
   container.classList.add("panel");
   container.style.display = "flex";
   container.style.alignItems = "center";
-  container.style.gap = "12px";
-  container.style.padding = "0 12px";
+  container.style.gap = "8px";
+  container.style.padding = "0 10px";
   container.innerHTML =
-    `<div data-role="tools" style="display:flex;gap:4px;">` +
-    `<button class="btn cp-tool-btn" data-tool="pan">${TOOL_ICONS.pan}</button>` +
+    `<div data-role="tools-draw" style="display:flex;align-items:center;gap:4px;">` +
     `<button class="btn cp-tool-btn" data-tool="brush">${TOOL_ICONS.brush}</button>` +
     `<button class="btn cp-tool-btn" data-tool="softBrush">${TOOL_ICONS.softBrush}</button>` +
     `<button class="btn cp-tool-btn" data-tool="gradient">${TOOL_ICONS.gradient}</button>` +
@@ -71,23 +70,32 @@ export function mountToolPanel(
     `<span class="mono" data-role="size-val" style="min-width:2ch;text-align:center;"></span>` +
     `<button class="btn" data-role="size-inc">+</button>` +
     `</div>` +
-    `<div data-role="history" style="display:flex;gap:4px;margin-left:auto;">` +
+    `<span class="toolbar-sep" aria-hidden="true"></span>` +
+    `<div data-role="tools-view" style="display:flex;align-items:center;gap:4px;">` +
+    `<button class="btn cp-tool-btn" data-tool="crop">${TOOL_ICONS.crop}</button>` +
+    `<button class="btn cp-tool-btn" data-tool="pan">${TOOL_ICONS.pan}</button>` +
+    `</div>` +
+    `<div data-role="history" style="display:flex;align-items:center;gap:4px;margin-left:auto;">` +
     `<button class="btn cp-tool-btn" data-role="undo">${ICON_UNDO}</button>` +
     `<button class="btn cp-tool-btn" data-role="redo">${ICON_REDO}</button>` +
     `<button class="btn cp-tool-btn" data-role="history-toggle">${ICON_HISTORY}</button>` +
     `</div>` +
+    `<span class="toolbar-sep" aria-hidden="true"></span>` +
+    `<div data-role="actions" style="display:flex;align-items:center;gap:4px;">` +
+    `<button class="btn cp-tool-btn" data-role="save-part">${ICON_SAVE}</button>` +
     `<button class="btn cp-tool-btn" data-role="export-pack">${ICON_EXPORT}</button>` +
     `<button class="btn cp-tool-btn" data-role="import-pack">${ICON_IMPORT}</button>` +
-    `<button class="btn cp-tool-btn" data-role="save-part">${ICON_SAVE}</button>` +
     `<span data-role="lang-host" style="display:inline-flex;"></span>` +
     `<span data-role="theme-host" style="display:inline-flex;"></span>` +
     `<button class="btn cp-tool-btn" data-role="settings-toggle">${ICON_SETTINGS}</button>` +
-    `<button class="btn cp-tool-btn" data-role="reset-layout">${ICON_RESET_LAYOUT}</button>`;
+    `<button class="btn cp-tool-btn" data-role="reset-layout">${ICON_RESET_LAYOUT}</button>` +
+    `</div>`;
 
   const brushBtn = container.querySelector<HTMLButtonElement>('[data-tool="brush"]')!;
   const softBrushBtn = container.querySelector<HTMLButtonElement>('[data-tool="softBrush"]')!;
   const eraserBtn = container.querySelector<HTMLButtonElement>('[data-tool="eraser"]')!;
   const panBtn = container.querySelector<HTMLButtonElement>('[data-tool="pan"]')!;
+  const cropBtn = container.querySelector<HTMLButtonElement>('[data-tool="crop"]')!;
   const gradientBtn = container.querySelector<HTMLButtonElement>('[data-tool="gradient"]')!;
   const fillBtn = container.querySelector<HTMLButtonElement>('[data-tool="fill"]')!;
   const zoneBrushBtn = container.querySelector<HTMLButtonElement>('[data-tool="zoneBrush"]')!;
@@ -118,10 +126,11 @@ export function mountToolPanel(
       eraserMode === "zone"
         ? `${t("toolPanel.eraser")} · ${t("toolPanel.eraserModeZone")}`
         : `${t("toolPanel.eraser")} · ${t("toolPanel.eraserModePart")}`;
-    panBtn.title = t("toolPanel.pan");
+    panBtn.title = `${t("toolPanel.pan")} (H)`;
+    cropBtn.title = `${t("toolPanel.crop")} (C)`;
     gradientBtn.title = t("toolPanel.gradient");
-    fillBtn.title = t("toolPanel.fill");
-    zoneBrushBtn.title = t("toolPanel.zoneBrush");
+    fillBtn.title = `${t("toolPanel.fill")} (G)`;
+    zoneBrushBtn.title = `${t("toolPanel.zoneBrush")} (Z)`;
     sizeLabelEl.textContent = t("toolPanel.size");
     undoBtn.title = t("toolPanel.undo");
     redoBtn.title = t("toolPanel.redo");
@@ -141,6 +150,8 @@ export function mountToolPanel(
     softBrushBtn.classList.toggle("btn-primary", activeTool === "softBrush");
     eraserBtn.classList.toggle("btn-primary", activeTool === "eraser");
     panBtn.classList.toggle("btn-primary", activeTool === "pan");
+    cropBtn.classList.toggle("btn-primary", activeTool === "crop");
+    cropBtn.disabled = currentPartId === null;
     gradientBtn.classList.toggle("btn-primary", activeTool === "gradient");
     fillBtn.classList.toggle("btn-primary", activeTool === "fill");
     zoneBrushBtn.classList.toggle("btn-primary", activeTool === "zoneBrush");
@@ -167,6 +178,11 @@ export function mountToolPanel(
     }
   });
   panBtn.addEventListener("click", () => sessionStore.setState({ activeTool: "pan" }));
+  cropBtn.addEventListener("click", () => {
+    if (sessionStore.getState().currentPartId) {
+      sessionStore.setState({ activeTool: "crop" });
+    }
+  });
   gradientBtn.addEventListener("click", () => sessionStore.setState({ activeTool: "gradient" }));
   fillBtn.addEventListener("click", () => sessionStore.setState({ activeTool: "fill" }));
   zoneBrushBtn.addEventListener("click", () => sessionStore.setState({ activeTool: "zoneBrush" }));
@@ -188,19 +204,32 @@ export function mountToolPanel(
     const promise = kind === "undo" ? apiUndo(currentPartId) : apiRedo(currentPartId);
     promise
       .then((diff) => {
+        // 将 diff 与画布尺寸版本号合并在单次 setState 内，避免预览区因连续通知重复合成。
+        const resizedPatch =
+          diff.resized && diff.canvasWidth && diff.canvasHeight
+            ? {
+                canvasSizeVersion: (sessionStore.getState().canvasSizeVersion ?? 0) + 1,
+                lastResizedCanvas: {
+                  partId: currentPartId,
+                  width: diff.canvasWidth,
+                  height: diff.canvasHeight,
+                },
+              }
+            : {};
         sessionStore.setState({
           lastAppliedDiff: {
             partId: currentPartId,
             diff,
             phase: kind === "undo" ? "before" : "after",
           },
+          ...resizedPatch,
         });
         markPartDirty(currentPartId);
         pushHistoryRecord({
           partId: currentPartId,
           tool: kind,
-          rectW: diff.width,
-          rectH: diff.height,
+          rectW: diff.canvasWidth ?? diff.width,
+          rectH: diff.canvasHeight ?? diff.height,
         });
       })
       .catch((e: ApiError) => {
@@ -246,8 +275,16 @@ export function mountToolPanel(
     registerAction("redo", () => runHistory("redo")),
     registerAction("save", runSave),
     registerAction("tool.brush", () => sessionStore.setState({ activeTool: "brush" })),
+    registerAction("tool.softBrush", () => sessionStore.setState({ activeTool: "softBrush" })),
     registerAction("tool.eraser", () => sessionStore.setState({ activeTool: "eraser" })),
     registerAction("tool.gradient", () => sessionStore.setState({ activeTool: "gradient" })),
+    registerAction("tool.fill", () => sessionStore.setState({ activeTool: "fill" })),
+    registerAction("tool.zoneBrush", () => sessionStore.setState({ activeTool: "zoneBrush" })),
+    registerAction("tool.crop", () => {
+      if (sessionStore.getState().currentPartId) {
+        sessionStore.setState({ activeTool: "crop" });
+      }
+    }),
     registerAction("tool.pan", () => sessionStore.setState({ activeTool: "pan" })),
     registerAction("brush.larger", () => {
       const cur = sessionStore.getState().brushSize;

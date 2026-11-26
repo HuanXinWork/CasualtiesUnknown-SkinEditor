@@ -7,18 +7,16 @@ import {
   applyGradient,
   applySoftBrush,
   beginStroke as apiBeginStroke,
-  createOrientationPart,
-  createSidePart,
   endStroke as apiEndStroke,
+  getBaseSize,
   getFlatten,
-  listParts,
   loadPartImage,
   type ApiError,
   type LoadPartResult,
 } from "../apiClient";
 import {
-  bumpPartListVersion,
   markPartDirty,
+  normalizeSoftBrushHardness,
   parsePartId,
   pushHistoryRecord,
   sessionStore,
@@ -32,14 +30,14 @@ import {
   bresenhamLine,
   buildEditorCanvasHtml,
   cursorForTool,
-  isOrientationSplittablePartName,
-  isSideSplittablePartName,
+  mountMirrorPartControls,
 } from "./canvasHelpers";
+import { createCanvasOverlayController } from "./canvasOverlay";
+import { createCropOverlayController } from "./cropOverlay";
 import { attachAltCursor, sampleCanvasRgb } from "./eyedropper";
 import { openResizeDialog } from "./resizeDialog";
 import { mountTransformControls } from "./transformPanel";
 import { createZonesOverlayController } from "./zonesOverlay";
-import { showToast } from "../toast";
 
 const ZOOM_MIN = 0.1;
 
@@ -64,10 +62,13 @@ export function mountEditorCanvas(
   const sideBBtn = container.querySelector<HTMLButtonElement>('[data-role="side-b-btn"]')!;
   const orientRBtn = container.querySelector<HTMLButtonElement>('[data-role="orient-r-btn"]')!;
   const gridEl = container.querySelector<HTMLDivElement>('[data-role="grid"]')!;
+  const cropBarEl = container.querySelector<HTMLDivElement>('[data-role="crop-bar"]')!;
+  const statusBarEl = container.querySelector<HTMLDivElement>('[data-role="status-bar"]')!;
   const placeholderEl = container.querySelector<HTMLDivElement>('[data-role="placeholder"]')!;
   const stageEl = container.querySelector<HTMLDivElement>(".editor-canvas-stage")!;
   const canvas = gridEl.querySelector("canvas")!;
   const zonesOverlay = gridEl.querySelector<HTMLCanvasElement>('[data-role="zones-overlay"]')!;
+  const canvasOverlayEl = gridEl.querySelector<HTMLCanvasElement>('[data-role="canvas-overlay"]')!;
   const ctx = canvas.getContext("2d");
 
   const accessoryBar = mountAccessoryBar(
@@ -93,14 +94,13 @@ export function mountEditorCanvas(
     skinRoot,
   );
   const zonesCtrl = createZonesOverlayController(skinRoot, ctx, zonesOverlay);
+  const mirrorCtrl = mountMirrorPartControls(skinRoot, sideFBtn, sideBBtn, orientRBtn);
 
   let currentPartName: string | null = null;
   let currentWidth = 0;
   let currentHeight = 0;
-  let sideFBtnAvailable = false;
-  let sideBBtnAvailable = false;
-  let orientRBtnAvailable = false;
-  let mirrorQuerySeq = 0;
+  let currentBaseSize: [number, number] | null = null;
+  let baseSizeSeq = 0;
 
   let zoom = 1;
   let panOffsetX = 0;
@@ -137,6 +137,40 @@ export function mountEditorCanvas(
   let lastAppliedDiffRef: ReturnType<typeof sessionStore.getState>["lastAppliedDiff"] = null;
   let lastLayerSnapshotVersion = sessionStore.getState().layerSnapshotVersion ?? 0;
 
+  function openResizeModal(initialTab: "canvas" | "resample"): void {
+    if (!currentPartId) return;
+    void openResizeDialog({
+      skinRoot,
+      partId: currentPartId,
+      currentWidth,
+      currentHeight,
+      initialTab,
+      onResized: (w, h) => {
+        currentWidth = w;
+        currentHeight = h;
+        updateInfoPanel();
+        reloadCurrent();
+      },
+      onCanvasResized: (w, h, baseSize) => {
+        handleCanvasResized(w, h, baseSize);
+      },
+    });
+  }
+
+  const canvasOverlay = createCanvasOverlayController({
+    overlayCanvas: canvasOverlayEl,
+    statusBarEl,
+    onOpenCanvasSize: () => openResizeModal("canvas"),
+  });
+
+  const cropOverlay = createCropOverlayController({
+    gridEl,
+    actionBarEl: cropBarEl,
+    getPartId: () => currentPartId,
+    getPartName: () => currentPartName,
+    onApplied: (res) => handleCanvasResized(res.width, res.height, res.baseSize),
+  });
+
   function enqueueStrokeOp(op: () => Promise<void>): void {
     strokeQueue = strokeQueue.then(op, op);
   }
@@ -145,74 +179,78 @@ export function mountEditorCanvas(
     gridEl.style.transform = `translate(${panOffsetX}px, ${panOffsetY}px) scale(${zoom})`;
     gridEl.style.transformOrigin = "center";
     zoomPctEl.textContent = `${Math.round(zoom * 100)}%`;
+    canvasOverlay.sync(currentWidth, currentHeight, zoom);
+    cropOverlay.syncZoom(zoom);
   }
 
   function updateInfoPanel(): void {
     resizeBtn.textContent = t("editorCanvas.resizeBtn");
-    sideFBtn.textContent = t("editorCanvas.createSideFBtn");
-    sideBBtn.textContent = t("editorCanvas.createSideBBtn");
-    orientRBtn.textContent = t("editorCanvas.createOrientRBtn");
+    mirrorCtrl.applyTexts();
     if (!currentPartName || !currentPartId) {
       metaEl.textContent = "";
       resizeBtn.disabled = true;
-      sideFBtn.style.display = "none";
-      sideBBtn.style.display = "none";
-      orientRBtn.style.display = "none";
       accessoryBar.refresh(null, null);
       return;
     }
-    metaEl.textContent = `${localizePartName(currentPartName)} ${currentWidth}×${currentHeight}`;
+    const basePart = currentBaseSize
+      ? ` (${t("editorCanvas.baseSizeTag")} ${currentBaseSize[0]}×${currentBaseSize[1]})`
+      : "";
+    metaEl.textContent = `${localizePartName(currentPartName)} ${currentWidth}×${currentHeight}${basePart}`;
     resizeBtn.disabled = false;
-    sideFBtn.style.display = sideFBtnAvailable ? "" : "none";
-    sideBBtn.style.display = sideBBtnAvailable ? "" : "none";
-    orientRBtn.style.display = orientRBtnAvailable ? "" : "none";
     accessoryBar.refresh(currentPartId, currentPartName);
   }
 
-  function refreshMirrorAvailability(): void {
-    sideFBtnAvailable = false;
-    sideBBtnAvailable = false;
-    orientRBtnAvailable = false;
+  function refreshBaseSize(explicit?: [number, number] | null): void {
+    if (explicit !== undefined) {
+      currentBaseSize = explicit;
+      canvasOverlay.setBaseSize(currentBaseSize);
+      updateInfoPanel();
+      return;
+    }
     const partId = currentPartId;
-    const partName = currentPartName;
     const parsed = partId ? parsePartId(partId) : null;
-    if (!partId || !partName || !parsed) {
-      updateInfoPanel();
+    if (!partId || !parsed) {
+      currentBaseSize = null;
+      canvasOverlay.setBaseSize(null);
       return;
     }
-    const sideEligible =
-      (parsed.category === "Body" || parsed.category === "Head") && isSideSplittablePartName(partName);
-    const orientEligible = isOrientationSplittablePartName(partName, parsed.category);
-    if (!sideEligible && !orientEligible) {
-      updateInfoPanel();
-      return;
-    }
-    const seq = ++mirrorQuerySeq;
-    listParts(skinRoot, parsed.skinName)
-      .then((skin) => {
-        if (seq !== mirrorQuerySeq || currentPartId !== partId) return;
-        const list =
-          parsed.category === "Body"
-            ? skin.body
-            : parsed.category === "Head"
-              ? skin.head
-              : parsed.category === "Wings"
-                ? skin.wings
-                : parsed.category === "Blood"
-                  ? skin.blood
-                  : skin.accessories;
-        if (sideEligible) {
-          sideFBtnAvailable = !list.some((p) => p.name === `${partName}F`);
-          sideBBtnAvailable = !list.some((p) => p.name === `${partName}B`);
-        }
-        if (orientEligible) {
-          orientRBtnAvailable = !list.some((p) => p.name === `R_${partName}`);
-        }
+    const seq = ++baseSizeSeq;
+    getBaseSize(skinRoot, parsed.skinName, parsed.category, parsed.partName)
+      .then((res) => {
+        if (seq !== baseSizeSeq || currentPartId !== partId) return;
+        currentBaseSize = res.found ? [res.width, res.height] : null;
+        canvasOverlay.setBaseSize(currentBaseSize);
         updateInfoPanel();
       })
       .catch(() => {
-        if (seq === mirrorQuerySeq) updateInfoPanel();
+        if (seq === baseSizeSeq && currentPartId === partId) {
+          currentBaseSize = null;
+          canvasOverlay.setBaseSize(null);
+        }
       });
+  }
+
+  function applyCanvasDimensions(w: number, h: number): void {
+    canvas.width = w;
+    canvas.height = h;
+    zonesOverlay.width = w;
+    zonesOverlay.height = h;
+    gridEl.style.width = `${w}px`;
+    gridEl.style.height = `${h}px`;
+    currentWidth = w;
+    currentHeight = h;
+    canvasOverlay.sync(w, h, zoom);
+    cropOverlay.syncCanvasSize(w, h);
+    updateInfoPanel();
+  }
+
+  function handleCanvasResized(w: number, h: number, baseSize?: [number, number] | null): void {
+    applyCanvasDimensions(w, h);
+    if (baseSize) refreshBaseSize(baseSize);
+    else refreshBaseSize();
+    if (currentPartId) zonesCtrl.loadForPart(currentPartId);
+    refreshFlatten();
+    applyZoom();
   }
 
   function showPlaceholder(info: PlaceholderInfo, isError: boolean): void {
@@ -225,10 +263,13 @@ export function mountEditorCanvas(
     currentPartName = null;
     currentWidth = 0;
     currentHeight = 0;
-    sideFBtnAvailable = false;
-    sideBBtnAvailable = false;
-    orientRBtnAvailable = false;
+    currentBaseSize = null;
+    mirrorCtrl.clear();
     zonesCtrl.clear();
+    canvasOverlay.setBaseSize(null);
+    canvasOverlay.setCursor(null, null);
+    canvasOverlay.sync(0, 0, zoom);
+    cropOverlay.syncCanvasSize(0, 0);
     updateInfoPanel();
     if (sessionStore.getState().currentPartId !== null) {
       sessionStore.setState({ currentPartId: null });
@@ -261,23 +302,16 @@ export function mountEditorCanvas(
 
   function render(result: LoadPartResult, partName: string, resetView = true): void {
     if (!ctx) return;
-    canvas.width = result.width;
-    canvas.height = result.height;
-    zonesOverlay.width = result.width;
-    zonesOverlay.height = result.height;
-    gridEl.style.width = `${result.width}px`;
-    gridEl.style.height = `${result.height}px`;
+    currentPartName = partName;
+    currentPartId = result.partId;
+    applyCanvasDimensions(result.width, result.height);
     const data = new ImageData(new Uint8ClampedArray(result.pixels), result.width, result.height);
     ctx.putImageData(data, 0, 0);
     gridEl.style.display = "";
     placeholderEl.style.display = "none";
     placeholderInfo = { kind: "none" };
-    currentPartName = partName;
-    currentWidth = result.width;
-    currentHeight = result.height;
-    currentPartId = result.partId;
-    updateInfoPanel();
-    refreshMirrorAvailability();
+    mirrorCtrl.refresh(result.partId, partName);
+    refreshBaseSize();
     sessionStore.setState({ currentPartId: result.partId });
     zonesCtrl.loadForPart(result.partId);
     if (resetView) fitZoomToStage(result.width, result.height);
@@ -292,6 +326,9 @@ export function mountEditorCanvas(
     getFlatten(partId)
       .then((result) => {
         if (key !== pendingFlattenKey || result.partId !== currentPartId) return;
+        if (result.width !== canvas.width || result.height !== canvas.height) {
+          applyCanvasDimensions(result.width, result.height);
+        }
         const data = new ImageData(new Uint8ClampedArray(result.pixels), result.width, result.height);
         ctx.putImageData(data, 0, 0);
       })
@@ -339,7 +376,7 @@ export function mountEditorCanvas(
                     cx: px,
                     cy: py,
                     brushSize,
-                    hardness: softBrushHardness,
+                    hardness: normalizeSoftBrushHardness(softBrushHardness),
                     color: rgba,
                   })
                 : await applyBrush({ partId, cx: px, cy: py, brushSize, color: rgba });
@@ -371,7 +408,7 @@ export function mountEditorCanvas(
       gridEl.style.cursor = "grabbing";
       return;
     }
-    if (event.button !== 0 || !currentPartId) return;
+    if (event.button !== 0 || !currentPartId || tool === "crop") return;
 
     if ((tool === "brush" || tool === "eraser" || tool === "softBrush") && event.altKey) {
       const { cx, cy } = eventToPixel(event);
@@ -558,6 +595,16 @@ export function mountEditorCanvas(
     if (state.lastAppliedDiff !== lastAppliedDiffRef) {
       lastAppliedDiffRef = state.lastAppliedDiff;
       if (state.lastAppliedDiff && state.lastAppliedDiff.partId === currentPartId) {
+        const diff = state.lastAppliedDiff.diff;
+        if (diff.resized) {
+          // 撤销/重做整画布裁扩时同步重建画布/叠加层尺寸、重载区块与基准尺寸显示。
+          const nextW = diff.canvasWidth ?? currentWidth;
+          const nextH = diff.canvasHeight ?? currentHeight;
+          applyCanvasDimensions(nextW, nextH);
+          zonesCtrl.loadForPart(currentPartId);
+          refreshBaseSize();
+          applyZoom();
+        }
         refreshFlatten();
       }
     }
@@ -602,65 +649,23 @@ export function mountEditorCanvas(
     applyZoom();
   });
 
-  resizeBtn.addEventListener("click", () => {
-    if (!currentPartId) return;
-    void openResizeDialog({
-      skinRoot,
-      partId: currentPartId,
-      currentWidth,
-      currentHeight,
-      onResized: (w, h) => {
-        currentWidth = w;
-        currentHeight = h;
-        updateInfoPanel();
-        reloadCurrent();
-      },
-    });
-  });
-
-  function attachSideBtn(btn: HTMLButtonElement, side: "F" | "B", availableRef: () => boolean): void {
-    btn.addEventListener("click", () => {
-      if (!currentPartId || !availableRef()) return;
-      const parsed = parsePartId(currentPartId);
-      if (!parsed) return;
-      btn.disabled = true;
-      createSidePart(skinRoot, parsed.skinName, parsed.category, parsed.partName, side)
-        .then((r) => {
-          showToast(`✓ ${r.sidePartName}`, "info");
-          if (side === "F") sideFBtnAvailable = false;
-          else sideBBtnAvailable = false;
-          updateInfoPanel();
-          bumpPartListVersion();
-        })
-        .catch((e: ApiError) => showToast(e?.message ?? String(e), "error"))
-        .finally(() => {
-          btn.disabled = false;
-        });
-    });
-  }
-  attachSideBtn(sideFBtn, "F", () => sideFBtnAvailable);
-  attachSideBtn(sideBBtn, "B", () => sideBBtnAvailable);
-
-  orientRBtn.addEventListener("click", () => {
-    if (!currentPartId || !orientRBtnAvailable) return;
-    const parsed = parsePartId(currentPartId);
-    if (!parsed) return;
-    orientRBtn.disabled = true;
-    createOrientationPart(skinRoot, parsed.skinName, parsed.category, parsed.partName)
-      .then((r) => {
-        showToast(`✓ ${r.orientationPartName}`, "info");
-        orientRBtnAvailable = false;
-        updateInfoPanel();
-        bumpPartListVersion();
-      })
-      .catch((e: ApiError) => showToast(e?.message ?? String(e), "error"))
-      .finally(() => {
-        orientRBtn.disabled = false;
-      });
-  });
+  resizeBtn.addEventListener("click", () => openResizeModal("canvas"));
 
   stageEl.addEventListener("contextmenu", (e) => e.preventDefault());
   stageEl.addEventListener("mousedown", onMouseDown);
+  stageEl.addEventListener("mousemove", (event) => {
+    if (!currentPartId || canvas.width <= 0 || canvas.height <= 0) {
+      canvasOverlay.setCursor(null, null);
+      return;
+    }
+    const { cx, cy } = eventToPixel(event);
+    if (cx >= 0 && cy >= 0 && cx < canvas.width && cy < canvas.height) {
+      canvasOverlay.setCursor(cx, cy);
+    } else {
+      canvasOverlay.setCursor(null, null);
+    }
+  });
+  stageEl.addEventListener("mouseleave", () => canvasOverlay.setCursor(null, null));
   document.addEventListener("mousemove", onDocMouseMove);
   document.addEventListener("mouseup", onDocMouseUp);
   window.addEventListener("blur", onWindowBlur);
@@ -741,6 +746,8 @@ export function mountEditorCanvas(
     unsubLang();
     accessoryBar.destroy();
     zonesCtrl.destroy();
+    canvasOverlay.destroy();
+    cropOverlay.destroy();
     detachInverted();
     detachAlt();
     detachTransform();

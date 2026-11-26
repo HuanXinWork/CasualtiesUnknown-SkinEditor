@@ -205,14 +205,7 @@ fn copyRect(pixels: &[u8], width: u32, x0: u32, y0: u32, x1: u32, y1: u32) -> Ve
 }
 
 fn emptyDiff() -> PixelDiff {
-    PixelDiff {
-        x: 0,
-        y: 0,
-        width: 0,
-        height: 0,
-        before: vec![],
-        after: vec![],
-    }
+    PixelDiff::new(0, 0, 0, 0, vec![], vec![])
 }
 
 pub fn applyBrush(
@@ -241,14 +234,7 @@ pub fn applyBrush(
         }
     }
     let after = copyRect(pixels, width, x0, y0, x1, y1);
-    PixelDiff {
-        x: x0,
-        y: y0,
-        width: x1 - x0,
-        height: y1 - y0,
-        before,
-        after,
-    }
+    PixelDiff::new(x0, y0, x1 - x0, y1 - y0, before, after)
 }
 
 pub fn applyEraser(
@@ -276,14 +262,7 @@ pub fn applyEraser(
         }
     }
     let after = copyRect(pixels, width, x0, y0, x1, y1);
-    PixelDiff {
-        x: x0,
-        y: y0,
-        width: x1 - x0,
-        height: y1 - y0,
-        before,
-        after,
-    }
+    PixelDiff::new(x0, y0, x1 - x0, y1 - y0, before, after)
 }
 
 /// 4 连通泛洪填充；完全透明像素（`alpha == 0`）忽略底色 RGB 差异以保证橡皮擦除区与原生透明区连通。
@@ -380,14 +359,7 @@ pub fn applyFill(
         pixels[off..off + 4].copy_from_slice(&color);
     }
     let after = copyRect(pixels, width, x0, y0, x1, y1);
-    PixelDiff {
-        x: x0,
-        y: y0,
-        width: x1 - x0,
-        height: y1 - y0,
-        before,
-        after,
-    }
+    PixelDiff::new(x0, y0, x1 - x0, y1 - y0, before, after)
 }
 
 /// 在单笔 `coverage` 缓冲区（`0..=255`）上取最大值叠加羽化圆，防止同笔内反复扫过变深。
@@ -576,12 +548,5 @@ pub fn applyGradient(
         }
     }
     let after = copyRect(pixels, width, 0, 0, width, height);
-    PixelDiff {
-        x: 0,
-        y: 0,
-        width,
-        height,
-        before,
-        after,
-    }
+    PixelDiff::new(0, 0, width, height, before, after)
 }

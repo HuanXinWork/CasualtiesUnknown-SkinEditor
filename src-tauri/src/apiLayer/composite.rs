@@ -90,7 +90,7 @@ pub(super) fn renderComposite(
         entry.zOrder
     };
 
-    // 上翼关节高度必须基于 `baseSizes` 缩回后的逻辑高度计算，避免高清上翼导致下翼飞出。
+    // 上翼关节高度必须与 `applyBaseSizeFit` 等比缩回后的逻辑高度一致，避免高清或扩高上翼导致下翼错位。
     let upperWingPose = |upperName: &str| -> Option<(AssemblyPosition, f32, f32)> {
         let entry = entries
             .iter()
@@ -98,23 +98,27 @@ pub(super) fn renderComposite(
         let ovr = overrides.get(&(entry.partName.clone(), entry.category));
         let pos = resolveWingPos(entry, ovr);
         let rotation = resolveWingRot(entry, ovr);
-        let baseH = baseSizesMap
-            .get(&baseSizes::keyFor("Wings", &entry.partName))
-            .map(|(_, h)| h);
-        let effectiveH = if let Some(bh) = baseH {
-            bh as f32
-        } else {
+        let baseEntry = baseSizesMap.get(&baseSizes::keyFor("Wings", &entry.partName));
+        let rawDim = {
             let key = partIdKey(&params.skinName, entry.category, &entry.partName);
             if let Some(session) = sessions.get(&key) {
-                session.state.height as f32
+                Some((session.state.width, session.state.height))
             } else {
                 let pngPath = skinDir
                     .join("Wings")
                     .join(format!("{}.png", entry.partName));
                 skinLoader::decodePart(&pngPath)
-                    .map(|d| d.height as f32)
-                    .unwrap_or(32.0)
+                    .ok()
+                    .map(|d| (d.width, d.height))
             }
+        };
+        let effectiveH = match (rawDim, baseEntry) {
+            (Some((rw, rh)), Some((bw, _))) if bw > 0 && rw > 0 && rw != bw => {
+                fitHeightByWidth(rw, rh, bw) as f32
+            }
+            (Some((_, rh)), _) => rh as f32,
+            (None, Some((_, bh))) => bh as f32,
+            (None, None) => 32.0,
         };
         Some((pos, rotation, effectiveH * 0.5))
     };
@@ -622,6 +626,12 @@ pub(super) fn pickPartPixels(
     None
 }
 
+/// 按目标基准宽度等比推算高度，与游戏端 `SkinSync` 的 `ppu = 8 * (tex.width / baseSize.x)` 保持一致。
+pub(super) fn fitHeightByWidth(w: u32, h: u32, bw: u32) -> u32 {
+    (((h as u64) * (bw as u64) + (w as u64 / 2)) / (w as u64)).max(1) as u32
+}
+
+/// 命中 `baseSizes` 且宽度不同时按宽度等比缩回，不按目标高度独立拉伸，防止高耳/扩画布贴图被压扁。
 pub(super) fn applyBaseSizeFit(
     map: &baseSizes::BaseSizes,
     category: PartCategory,
@@ -651,9 +661,10 @@ pub(super) fn applyBaseSizeFit(
             }
         });
     match target {
-        Some((bw, bh)) if bw > 0 && bh > 0 && (bw != w || bh != h) => {
-            let scaled = imageOps::scaleNearest(&pixels, w, h, bw, bh);
-            (bw, bh, scaled)
+        Some((bw, _bh)) if bw > 0 && w > 0 && w != bw => {
+            let targetH = fitHeightByWidth(w, h, bw);
+            let scaled = imageOps::scaleNearest(&pixels, w, h, bw, targetH);
+            (bw, targetH, scaled)
         }
         _ => (w, h, pixels),
     }

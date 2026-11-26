@@ -54,13 +54,13 @@ export function mountColorPalette(container: HTMLElement): () => void {
     `<button class="btn cp-tool-btn" data-role="dropper" type="button" style="width:24px;height:24px;padding:0;flex:none;">${ICON_DROPPER}</button>` +
     `</div>` +
     `<label style="display:flex;align-items:center;gap:4px;"><span style="width:30px;">HEX</span>` +
-    `<input type="text" data-role="hex" maxlength="7" style="flex:1;font-family:ui-monospace,monospace;"></label>` +
+    `<input class="input" type="text" data-role="hex" maxlength="7" style="flex:1;min-width:0;padding:2px 6px;font-family:ui-monospace,monospace;"></label>` +
     `<label style="display:flex;align-items:center;gap:4px;"><span style="width:30px;">R</span>` +
-    `<input type="number" data-role="r" min="0" max="255" style="flex:1;"></label>` +
+    `<input class="input" type="number" data-role="r" min="0" max="255" style="flex:1;min-width:0;padding:2px 6px;"></label>` +
     `<label style="display:flex;align-items:center;gap:4px;"><span style="width:30px;">G</span>` +
-    `<input type="number" data-role="g" min="0" max="255" style="flex:1;"></label>` +
+    `<input class="input" type="number" data-role="g" min="0" max="255" style="flex:1;min-width:0;padding:2px 6px;"></label>` +
     `<label style="display:flex;align-items:center;gap:4px;"><span style="width:30px;">B</span>` +
-    `<input type="number" data-role="b" min="0" max="255" style="flex:1;"></label>` +
+    `<input class="input" type="number" data-role="b" min="0" max="255" style="flex:1;min-width:0;padding:2px 6px;"></label>` +
     `<label style="display:flex;align-items:center;gap:4px;"><span data-role="alpha-label" style="width:30px;"></span>` +
     `<input type="range" data-role="alpha" min="0" max="255" style="flex:1;">` +
     `<span class="mono" data-role="alpha-val" style="min-width:3ch;text-align:right;"></span></label>` +
@@ -432,6 +432,7 @@ export function mountColorPalette(container: HTMLElement): () => void {
     const previewBox = document.createElement("div");
     previewBox.style.cssText = `width:40px;height:24px;background:${initialHex};border:${borderCss};`;
     const hexInputEl = document.createElement("input");
+    hexInputEl.className = "input";
     hexInputEl.type = "text";
     hexInputEl.value = initialHex;
     hexInputEl.maxLength = 7;

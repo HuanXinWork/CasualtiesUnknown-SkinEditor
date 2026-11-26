@@ -83,6 +83,35 @@ impl BaseSizes {
     pub fn fromMap(map: HashMap<String, (u32, u32)>) -> Self {
         BaseSizes { entries: map }
     }
+
+    pub fn entries(&self) -> &HashMap<String, (u32, u32)> {
+        &self.entries
+    }
+}
+
+/// 若 `<skinDir>/baseSizes.json` 为旧版扁平顶层键值格式（缺少 `"entries"` 对象），原地重写为标准格式。
+pub fn upgradeLegacyIfNeeded(skinDir: &Path) -> Result<bool, ApiError> {
+    let path = skinDir.join(BASE_SIZES_FILE);
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return Ok(false);
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Ok(false);
+    };
+    let hasEntriesObj = value
+        .as_object()
+        .and_then(|o| o.get("entries"))
+        .and_then(|v| v.as_object())
+        .is_some();
+    if hasEntriesObj {
+        return Ok(false);
+    }
+    let loaded = load(skinDir);
+    if loaded.isEmpty() {
+        return Ok(false);
+    }
+    write(skinDir, loaded.entries())?;
+    Ok(true)
 }
 
 pub fn load(skinDir: &Path) -> BaseSizes {
@@ -207,16 +236,16 @@ fn buildSizeTable() -> HashMap<&'static str, (u32, u32)> {
     m.insert("experimentUpTorso", (12, 18));
     m.insert("experimentDownTorso", (12, 12));
     m.insert("experimentTail", (68, 22));
-    m.insert("experimentHead", (26, 18));
-    m.insert("experimentHeadBack", (26, 18));
+    m.insert("experimentHead", (26, 12));
+    m.insert("experimentHeadBack", (26, 12));
     m.insert("experimentHeadBackMouth", (26, 18));
     m.insert("experimentHeadBackMouthMini", (26, 18));
-    m.insert("experimentHeadDisfigured1", (26, 18));
-    m.insert("experimentHeadDisfigured1Healed", (26, 18));
-    m.insert("experimentHeadDisfigured2", (26, 18));
-    m.insert("experimentHeadDisfigured2Healed", (26, 18));
-    m.insert("experimentHeadDisfigured3", (26, 18));
-    m.insert("experimentHeadDisfigured3Healed", (26, 18));
+    m.insert("experimentHeadDisfigured1", (26, 12));
+    m.insert("experimentHeadDisfigured1Healed", (26, 12));
+    m.insert("experimentHeadDisfigured2", (26, 12));
+    m.insert("experimentHeadDisfigured2Healed", (26, 12));
+    m.insert("experimentHeadDisfigured3", (26, 12));
+    m.insert("experimentHeadDisfigured3Healed", (26, 12));
     m.insert("experimentNosebleed", (14, 12));
     m.insert("experimentEyeClosed", (26, 12));
     m.insert("experimentEyeGone", (26, 12));
@@ -488,5 +517,15 @@ mod tests {
         write(&dir, &HashMap::new()).unwrap();
         assert!(!dir.join(BASE_SIZES_FILE).exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn defaultHeadSizesMatchVanillaAndMouthVariants() {
+        assert_eq!(defaultSize("experimentHead"), Some((26, 12)));
+        assert_eq!(defaultSize("experimentHeadBack"), Some((26, 12)));
+        assert_eq!(defaultSize("experimentHeadDisfigured1"), Some((26, 12)));
+        assert_eq!(defaultSize("experimentHeadDisfigured3Healed"), Some((26, 12)));
+        assert_eq!(defaultSize("experimentHeadBackMouth"), Some((26, 18)));
+        assert_eq!(defaultSize("experimentHeadBackMouthMini"), Some((26, 18)));
     }
 }

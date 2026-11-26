@@ -37,6 +37,8 @@ import type {
   MotionCompositeParams,
   MotionCompositeResult,
   PixelDiff,
+  ResizeCanvasParams,
+  ResizeCanvasResult,
   ResizePartResult,
   SetAssemblyOverrideParams,
   SoftBrushParams,
@@ -203,6 +205,18 @@ export function resizePart(
     });
   }
   return httpPost<ResizePartResult>("/api/resizePart", { partId, width, height, targetPath });
+}
+
+export function resizeCanvas(params: ResizeCanvasParams): Promise<ResizeCanvasResult> {
+  // 默认不修改 baseSizes.json，仅在用户显式勾选时传入 true。
+  const payload: ResizeCanvasParams = {
+    ...params,
+    syncBaseSize: params.syncBaseSize === true,
+  };
+  if (getRuntimeMode() === "tauri") {
+    return tauriInvoke<ResizeCanvasResult>("api_resizeCanvas", { params: payload });
+  }
+  return httpPost<ResizeCanvasResult>("/api/resizeCanvas", payload);
 }
 
 export function getBaseSize(

@@ -1,4 +1,4 @@
-// 基于矩形 RGBA 差异块的撤销/重做双栈（上限 50 步，超出按 FIFO 淘汰）。
+// 基于矩形 RGBA 差异块与整画布裁扩快照的撤销/重做双栈（上限 50 步，超出按 FIFO 淘汰）。
 #![allow(non_snake_case)]
 
 use std::collections::VecDeque;
@@ -6,13 +6,76 @@ use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HistoryEntry {
-    pub layerId: String,
-    pub diff: PixelDiff,
-    pub timestamp: i64,
+pub struct ZonesSnapshot {
+    pub beforeWidth: u32,
+    pub beforeHeight: u32,
+    pub beforeIds: Vec<u8>,
+    pub afterWidth: u32,
+    pub afterHeight: u32,
+    pub afterIds: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaseSizeChange {
+    pub key: String,
+    /// 变更前 `baseSizes.json` 中该精确键的记录；`None` 表示变更前无记录，撤销时移除该键。
+    pub before: Option<(u32, u32)>,
+    pub after: (u32, u32),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanvasResizeSnapshot {
+    pub beforeWidth: u32,
+    pub beforeHeight: u32,
+    pub beforeLayers: Vec<(String, Vec<u8>)>,
+    pub afterWidth: u32,
+    pub afterHeight: u32,
+    pub afterLayers: Vec<(String, Vec<u8>)>,
+    pub offsetX: i32,
+    pub offsetY: i32,
+    pub zones: Option<ZonesSnapshot>,
+    pub baseSize: Option<BaseSizeChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum HistoryPayload {
+    Pixel {
+        layerId: String,
+        diff: PixelDiff,
+    },
+    CanvasResize(CanvasResizeSnapshot),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    pub payload: HistoryPayload,
+    pub timestamp: i64,
+}
+
+impl HistoryEntry {
+    pub fn pixel(layerId: String, diff: PixelDiff, timestamp: i64) -> Self {
+        Self {
+            payload: HistoryPayload::Pixel { layerId, diff },
+            timestamp,
+        }
+    }
+
+    pub fn canvasResize(snapshot: CanvasResizeSnapshot, timestamp: i64) -> Self {
+        Self {
+            payload: HistoryPayload::CanvasResize(snapshot),
+            timestamp,
+        }
+    }
+
+    pub fn asPixel(&self) -> Option<(&str, &PixelDiff)> {
+        match &self.payload {
+            HistoryPayload::Pixel { layerId, diff } => Some((layerId.as_str(), diff)),
+            HistoryPayload::CanvasResize(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PixelDiff {
     pub x: u32,
     pub y: u32,
@@ -20,6 +83,43 @@ pub struct PixelDiff {
     pub height: u32,
     pub before: Vec<u8>,
     pub after: Vec<u8>,
+    /// 仅在撤销/重做整画布裁扩时返回，向后兼容既有单图层局部 diff JSON 结构。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvasWidth: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvasHeight: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resized: Option<bool>,
+}
+
+impl PixelDiff {
+    pub fn new(x: u32, y: u32, width: u32, height: u32, before: Vec<u8>, after: Vec<u8>) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+            before,
+            after,
+            canvasWidth: None,
+            canvasHeight: None,
+            resized: None,
+        }
+    }
+
+    pub fn resized(width: u32, height: u32) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width,
+            height,
+            before: Vec::new(),
+            after: Vec::new(),
+            canvasWidth: Some(width),
+            canvasHeight: Some(height),
+            resized: Some(true),
+        }
+    }
 }
 
 const MAX_UNDO: usize = 50;
@@ -63,10 +163,20 @@ impl HistoryStack {
         self.redoStack.len()
     }
 
-    /// 删除图层时清理关联条目，避免撤销时引用已不存在的图层。
+    /// 删除图层时清理关联的像素条目并裁剪画布快照中的已删图层，避免撤销时引用不存在的图层。
     pub fn dropEntriesForLayer(&mut self, layerId: &str) {
-        self.undoStack.retain(|e| e.layerId != layerId);
-        self.redoStack.retain(|e| e.layerId != layerId);
+        let scrub = |entry: &mut HistoryEntry| -> bool {
+            match &mut entry.payload {
+                HistoryPayload::Pixel { layerId: lid, .. } => lid != layerId,
+                HistoryPayload::CanvasResize(snap) => {
+                    snap.beforeLayers.retain(|(id, _)| id != layerId);
+                    snap.afterLayers.retain(|(id, _)| id != layerId);
+                    true
+                }
+            }
+        };
+        self.undoStack.retain_mut(scrub);
+        self.redoStack.retain_mut(scrub);
     }
 
     pub fn clear(&mut self) {
@@ -129,33 +239,15 @@ mod tests {
     use super::*;
 
     fn mkEntry(layerId: &str, ts: i64, diff: PixelDiff) -> HistoryEntry {
-        HistoryEntry {
-            layerId: layerId.into(),
-            diff,
-            timestamp: ts,
-        }
+        HistoryEntry::pixel(layerId.into(), diff, ts)
     }
 
     fn emptyDiff() -> PixelDiff {
-        PixelDiff {
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-            before: vec![],
-            after: vec![],
-        }
+        PixelDiff::new(0, 0, 0, 0, vec![], vec![])
     }
 
     fn pixelDiff1x1(x: u32, y: u32, before: [u8; 4], after: [u8; 4]) -> PixelDiff {
-        PixelDiff {
-            x,
-            y,
-            width: 1,
-            height: 1,
-            before: before.to_vec(),
-            after: after.to_vec(),
-        }
+        PixelDiff::new(x, y, 1, 1, before.to_vec(), after.to_vec())
     }
 
     #[test]
@@ -175,7 +267,7 @@ mod tests {
         h.push(mkEntry("A", 1, emptyDiff()));
         h.push(mkEntry("B", 2, emptyDiff()));
         let popped = h.undo().expect("undo returns entry");
-        assert_eq!(popped.layerId, "B");
+        assert_eq!(popped.asPixel().map(|(id, _)| id), Some("B"));
         assert_eq!(h.undoLen(), 1);
         assert_eq!(h.redoLen(), 1);
     }
@@ -187,7 +279,7 @@ mod tests {
         h.push(mkEntry("B", 2, emptyDiff()));
         h.undo();
         let r = h.redo().expect("redo returns entry");
-        assert_eq!(r.layerId, "B");
+        assert_eq!(r.asPixel().map(|(id, _)| id), Some("B"));
         assert_eq!(h.undoLen(), 2);
         assert_eq!(h.redoLen(), 0);
     }
@@ -200,12 +292,12 @@ mod tests {
         }
         assert_eq!(h.undoLen(), 50);
         let top = h.undo().expect("undo top");
-        assert_eq!(top.layerId, "L50");
+        assert_eq!(top.asPixel().map(|(id, _)| id), Some("L50"));
         let mut last = top;
         while let Some(e) = h.undo() {
             last = e;
         }
-        assert_eq!(last.layerId, "L1");
+        assert_eq!(last.asPixel().map(|(id, _)| id), Some("L1"));
     }
 
     #[test]
@@ -245,10 +337,26 @@ mod tests {
             h.push(mkEntry("L", i as i64, diff));
         }
         while let Some(e) = h.undo() {
-            applyBefore(&mut pixels, 5, &e.diff);
+            let (_, diff) = e.asPixel().expect("pixel entry");
+            applyBefore(&mut pixels, 5, diff);
         }
         assert_eq!(pixels, initial);
         assert_eq!(h.undoLen(), 0);
         assert_eq!(h.redoLen(), 5);
+    }
+
+    #[test]
+    fn pixelDiffSerializationOmitsOptionalResizeFieldsByDefault() {
+        let regular = emptyDiff();
+        let v = serde_json::to_value(&regular).unwrap();
+        assert!(v.get("resized").is_none());
+        assert!(v.get("canvasWidth").is_none());
+        assert!(v.get("canvasHeight").is_none());
+
+        let resized = PixelDiff::resized(32, 24);
+        let rv = serde_json::to_value(&resized).unwrap();
+        assert_eq!(rv.get("resized"), Some(&serde_json::json!(true)));
+        assert_eq!(rv.get("canvasWidth"), Some(&serde_json::json!(32)));
+        assert_eq!(rv.get("canvasHeight"), Some(&serde_json::json!(24)));
     }
 }

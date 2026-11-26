@@ -1,11 +1,11 @@
 // 柔和笔刷硬度设置弹窗（0~100% 映射 0~255）。
 
-import { sessionStore } from "../stateStore";
+import { normalizeSoftBrushHardness, sessionStore } from "../stateStore";
 import { updateWorkspaceSettings } from "../stateStore/workspacePersist";
 import { subscribeLang, t } from "../i18n";
 
 export function openSoftBrushDialog(workspacePath: string): void {
-  const current = sessionStore.getState().softBrushHardness;
+  const current = normalizeSoftBrushHardness(sessionStore.getState().softBrushHardness);
   const overlay = document.createElement("div");
   overlay.dataset.modalOpen = "true";
   overlay.style.cssText =

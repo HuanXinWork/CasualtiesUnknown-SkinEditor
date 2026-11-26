@@ -19,12 +19,12 @@ import { localizePartName } from "../i18n/partNames";
 import {
   buildPreviewCanvasHtml,
   CAPTURE_ROOT,
-  EXPRESSION_COUNT,
   findFrameIndexByTime,
-  HEAD_VARIANTS,
   populateBasePartPositions,
   renderCaptureDropdown,
   renderMotionDebugSection,
+  syncExpressionSelect,
+  syncHeadVariantSelect,
   toAssemblyEntryName,
 } from "./helpers";
 
@@ -42,9 +42,10 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
   container.innerHTML = buildPreviewCanvasHtml();
 
   const orientationEl = container.querySelector<HTMLDivElement>('[data-role="orientation"]')!;
-  const expressionEl = container.querySelector<HTMLDivElement>('[data-role="expression"]')!;
-  const headVariantEl = container.querySelector<HTMLDivElement>('[data-role="head-variant"]')!;
+  const expressionLabelEl = container.querySelector<HTMLSpanElement>('[data-role="expression-label"]')!;
+  const expressionSelect = container.querySelector<HTMLSelectElement>('[data-role="expression-select"]')!;
   const headVariantLabelEl = container.querySelector<HTMLSpanElement>('[data-role="head-variant-label"]')!;
+  const headVariantSelect = container.querySelector<HTMLSelectElement>('[data-role="head-variant-select"]')!;
   const previewModeEl = container.querySelector<HTMLDivElement>('[data-role="preview-mode"]')!;
   const motionCaptureHost = container.querySelector<HTMLDivElement>('[data-role="motion-capture-host"]')!;
   const motionCaptureToggle = container.querySelector<HTMLButtonElement>('[data-role="motion-capture-toggle"]')!;
@@ -110,6 +111,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
   let lastDiffRef: SessionState["lastAppliedDiff"] = sessionStore.getState().lastAppliedDiff;
   let lastAssemblyOverrideVersion: number = sessionStore.getState().assemblyOverrideVersion ?? 0;
   let lastAccessoriesVersion: number = sessionStore.getState().accessoriesVersion ?? 0;
+  let lastCanvasSizeVersion: number = sessionStore.getState().canvasSizeVersion ?? 0;
   let pendingAssemblyKey = 0;
   let pendingMotionKey = 0;
   let placeholderInfo: PlaceholderInfo = { kind: "notSelectedSkin" };
@@ -381,27 +383,8 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
       orientationEl.appendChild(btn);
     }
 
-    expressionEl.innerHTML = "";
-    for (let i = 0; i < EXPRESSION_COUNT; i++) {
-      const btn = document.createElement("button");
-      btn.textContent = t(`previewCanvas.expression${i}`);
-      btn.title = `${t("previewCanvas.expressionPrefix")} ${i}: ${btn.textContent}`;
-      btn.className = i === expressionIndex ? "btn btn-primary" : "btn";
-      btn.addEventListener("click", () => sessionStore.setState({ expressionIndex: i }));
-      expressionEl.appendChild(btn);
-    }
-
-    const currentHv = sessionStore.getState().headVariant;
-    headVariantLabelEl.textContent = t("previewCanvas.headVariantLabel");
-    headVariantEl.innerHTML = "";
-    for (const hv of HEAD_VARIANTS) {
-      const btn = document.createElement("button");
-      btn.textContent = t(`previewCanvas.headVariant_${hv}`);
-      btn.title = btn.textContent;
-      btn.className = hv === currentHv ? "btn btn-primary" : "btn";
-      btn.addEventListener("click", () => sessionStore.setState({ headVariant: hv }));
-      headVariantEl.appendChild(btn);
-    }
+    syncExpressionSelect(expressionLabelEl, expressionSelect, expressionIndex);
+    syncHeadVariantSelect(headVariantLabelEl, headVariantSelect, sessionStore.getState().headVariant);
 
     const sel = sessionStore.getState().selectedPartName;
     if (previewMode === "motion") {
@@ -521,6 +504,8 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     const overrideChanged = overrideVer !== lastAssemblyOverrideVersion;
     const accVer = state.accessoriesVersion ?? 0;
     const accChanged = accVer !== lastAccessoriesVersion;
+    const sizeVer = state.canvasSizeVersion ?? 0;
+    const sizeChanged = sizeVer !== lastCanvasSizeVersion;
 
     if (skinChanged) {
       partOverridesCache.clear();
@@ -541,6 +526,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     lastLayerSnapshotVersion = layerVer;
     lastAssemblyOverrideVersion = overrideVer;
     lastAccessoriesVersion = accVer;
+    lastCanvasSizeVersion = sizeVer;
 
     if (previewMode === "motion") {
       if (skinChanged || expressionChanged || headVariantChanged) {
@@ -549,7 +535,7 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
         updateRefreshBtn();
         return;
       }
-      if (!(diffChanged || layerChanged || accChanged)) return;
+      if (!(diffChanged || layerChanged || accChanged || sizeChanged)) return;
       if (!livePreviewEnabled) {
         stalePending = true;
         updateRefreshBtn();
@@ -568,7 +554,8 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
         diffChanged ||
         layerChanged ||
         overrideChanged ||
-        accChanged
+        accChanged ||
+        sizeChanged
       )
     ) {
       return;
@@ -581,6 +568,13 @@ export function mountPreviewCanvas(container: HTMLElement, skinRoot: string): ()
     refreshAssembly();
   }
 
+  expressionSelect.addEventListener("change", () => {
+    const idx = Number.parseInt(expressionSelect.value, 10);
+    if (Number.isFinite(idx)) sessionStore.setState({ expressionIndex: idx });
+  });
+  headVariantSelect.addEventListener("change", () => {
+    sessionStore.setState({ headVariant: headVariantSelect.value as HeadVariant });
+  });
   zoomRange.addEventListener("input", () => setZoom(Number(zoomRange.value)));
   zoomNum.addEventListener("input", () => setZoom(Number(zoomNum.value)));
   resetViewBtn.addEventListener("click", resetView);

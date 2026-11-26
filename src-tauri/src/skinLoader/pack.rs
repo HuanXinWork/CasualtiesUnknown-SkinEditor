@@ -233,10 +233,11 @@ pub fn importSkinPack(
     Ok(ImportResult { imported, skipped })
 }
 
-/// 扫描皮肤目录生成缺失的 `<skin>/baseSizes.json`；已有该文件时不覆盖。
+/// 扫描皮肤目录生成缺失的 `<skin>/baseSizes.json`；若已有文件且为旧版扁平格式则原地升级为标准 `{ "entries": ... }`，已有标准格式则不覆盖。
 pub fn writeBaseSizesForSkin(skinRoot: &Path) -> Result<(), ApiError> {
     let target = skinRoot.join(crate::baseSizes::BASE_SIZES_FILE);
     if target.exists() {
+        let _ = crate::baseSizes::upgradeLegacyIfNeeded(skinRoot)?;
         return Ok(());
     }
     let mut map: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();

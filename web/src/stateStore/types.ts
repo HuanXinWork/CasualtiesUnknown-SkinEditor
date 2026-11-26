@@ -150,6 +150,9 @@ export interface PixelDiff {
   height: number;
   before: Uint8Array;
   after: Uint8Array;
+  canvasWidth?: number;
+  canvasHeight?: number;
+  resized?: boolean;
 }
 
 export interface AssemblyTable {

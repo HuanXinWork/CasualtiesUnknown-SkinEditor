@@ -3,8 +3,10 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use crate::historyManager::{self, HistoryEntry, PixelDiff};
+use crate::baseSizes;
+use crate::historyManager::{self, CanvasResizeSnapshot, HistoryEntry, HistoryPayload, PixelDiff};
 use crate::imageOps;
+use crate::zones;
 
 use super::types::{
     ApiError, BrushParams, EraserParams, FillParams, GradientParams, PartIdParams, SoftBrushParams,
@@ -47,11 +49,9 @@ pub(super) fn applyBrush(
         Some(stroke) if stroke.layerId == layerId => mergeStrokeRect(stroke, &diff),
         _ => {
             if diff.width != 0 && diff.height != 0 {
-                session.history.push(HistoryEntry {
-                    layerId,
-                    diff: diff.clone(),
-                    timestamp: nowMillis(),
-                });
+                session
+                    .history
+                    .push(HistoryEntry::pixel(layerId, diff.clone(), nowMillis()));
             }
         }
     }
@@ -86,11 +86,9 @@ pub(super) fn applyEraser(
         Some(stroke) if stroke.layerId == layerId => mergeStrokeRect(stroke, &diff),
         _ => {
             if diff.width != 0 && diff.height != 0 {
-                session.history.push(HistoryEntry {
-                    layerId,
-                    diff: diff.clone(),
-                    timestamp: nowMillis(),
-                });
+                session
+                    .history
+                    .push(HistoryEntry::pixel(layerId, diff.clone(), nowMillis()));
             }
         }
     }
@@ -125,11 +123,9 @@ pub(super) fn applyGradient(
         params.color,
     );
     if diff.width != 0 && diff.height != 0 {
-        session.history.push(HistoryEntry {
-            layerId,
-            diff: diff.clone(),
-            timestamp: nowMillis(),
-        });
+        session
+            .history
+            .push(HistoryEntry::pixel(layerId, diff.clone(), nowMillis()));
     }
     Ok(diff)
 }
@@ -161,11 +157,9 @@ pub(super) fn applyFill(
         params.tolerance,
     );
     if diff.width != 0 && diff.height != 0 {
-        session.history.push(HistoryEntry {
-            layerId,
-            diff: diff.clone(),
-            timestamp: nowMillis(),
-        });
+        session
+            .history
+            .push(HistoryEntry::pixel(layerId, diff.clone(), nowMillis()));
     }
     Ok(diff)
 }
@@ -226,25 +220,16 @@ pub(super) fn applySoftBrush(
         params.color,
     );
     let after = copyRectFromBuffer(&layerMut.pixels, width, rect.0, rect.1, rect.2, rect.3);
-    let diff = PixelDiff {
-        x: rect.0,
-        y: rect.1,
-        width: rect.2 - rect.0,
-        height: rect.3 - rect.1,
-        before,
-        after,
-    };
+    let diff = PixelDiff::new(rect.0, rect.1, rect.2 - rect.0, rect.3 - rect.1, before, after);
     match session.activeStroke.as_mut() {
         Some(s) if s.layerId == layerId => {
             s.softCoverage = Some(coverage);
             mergeStrokeRect(s, &diff);
         }
         _ => {
-            session.history.push(HistoryEntry {
-                layerId,
-                diff: diff.clone(),
-                timestamp: nowMillis(),
-            });
+            session
+                .history
+                .push(HistoryEntry::pixel(layerId, diff.clone(), nowMillis()));
         }
     }
     Ok(diff)
@@ -300,17 +285,25 @@ pub(super) fn undo(
         code: "nothing_to_undo".into(),
         message: format!("undo stack empty for {}", params.partId),
     })?;
-    let width = session.state.width;
-    if let Some(idx) = session
-        .state
-        .layers
-        .iter()
-        .position(|l| l.id == entry.layerId)
-    {
-        historyManager::applyBefore(&mut session.state.layers[idx].pixels, width, &entry.diff);
-        session.activeLayerIndex = idx;
+    match entry.payload {
+        HistoryPayload::Pixel { layerId, diff } => {
+            let width = session.state.width;
+            if let Some(idx) = session.state.layers.iter().position(|l| l.id == layerId) {
+                historyManager::applyBefore(&mut session.state.layers[idx].pixels, width, &diff);
+                session.activeLayerIndex = idx;
+            }
+            Ok(diff)
+        }
+        HistoryPayload::CanvasResize(snap) => {
+            match applyCanvasResizeSnapshot(session, &snap, true) {
+                Ok(diff) => Ok(diff),
+                Err(e) => {
+                    let _ = session.history.redo();
+                    Err(e)
+                }
+            }
+        }
     }
-    Ok(entry.diff)
 }
 
 pub(super) fn redo(
@@ -326,17 +319,97 @@ pub(super) fn redo(
         code: "nothing_to_redo".into(),
         message: format!("redo stack empty for {}", params.partId),
     })?;
-    let width = session.state.width;
-    if let Some(idx) = session
-        .state
-        .layers
-        .iter()
-        .position(|l| l.id == entry.layerId)
-    {
-        historyManager::applyAfter(&mut session.state.layers[idx].pixels, width, &entry.diff);
-        session.activeLayerIndex = idx;
+    match entry.payload {
+        HistoryPayload::Pixel { layerId, diff } => {
+            let width = session.state.width;
+            if let Some(idx) = session.state.layers.iter().position(|l| l.id == layerId) {
+                historyManager::applyAfter(&mut session.state.layers[idx].pixels, width, &diff);
+                session.activeLayerIndex = idx;
+            }
+            Ok(diff)
+        }
+        HistoryPayload::CanvasResize(snap) => {
+            match applyCanvasResizeSnapshot(session, &snap, false) {
+                Ok(diff) => Ok(diff),
+                Err(e) => {
+                    let _ = session.history.undo();
+                    Err(e)
+                }
+            }
+        }
     }
-    Ok(entry.diff)
+}
+
+fn applyCanvasResizeSnapshot(
+    session: &mut PartSession,
+    snap: &CanvasResizeSnapshot,
+    isUndo: bool,
+) -> Result<PixelDiff, ApiError> {
+    let (targetW, targetH, targetLayers, fallbackOff) = if isUndo {
+        (
+            snap.beforeWidth,
+            snap.beforeHeight,
+            &snap.beforeLayers,
+            (-snap.offsetX, -snap.offsetY),
+        )
+    } else {
+        (
+            snap.afterWidth,
+            snap.afterHeight,
+            &snap.afterLayers,
+            (snap.offsetX, snap.offsetY),
+        )
+    };
+
+    // 先落盘 zones 与 baseSizes，IO 失败时便于调用方把历史栈回退到原位。
+    if let Some(z) = &snap.zones {
+        let maskFile = session
+            .skinDir
+            .join(session.categoryDir)
+            .join(format!("{}.zones.png", session.partName));
+        if isUndo {
+            zones::saveMask(&maskFile, z.beforeWidth, z.beforeHeight, &z.beforeIds)?;
+        } else {
+            zones::saveMask(&maskFile, z.afterWidth, z.afterHeight, &z.afterIds)?;
+        }
+    }
+    if let Some(bs) = &snap.baseSize {
+        if isUndo {
+            match bs.before {
+                Some((bw, bh)) => baseSizes::upsert(&session.skinDir, &bs.key, bw, bh)?,
+                None => baseSizes::remove(&session.skinDir, &bs.key)?,
+            }
+        } else {
+            baseSizes::upsert(&session.skinDir, &bs.key, bs.after.0, bs.after.1)?;
+        }
+    }
+
+    let curW = session.state.width;
+    let curH = session.state.height;
+    let layerMap: HashMap<&str, &[u8]> = targetLayers
+        .iter()
+        .map(|(id, px)| (id.as_str(), px.as_slice()))
+        .collect();
+    for layer in &mut session.state.layers {
+        layer.transform = None;
+        if let Some(px) = layerMap.get(layer.id.as_str()) {
+            layer.pixels = px.to_vec();
+        } else {
+            // 裁扩之后才新建的图层不在快照内，按对应偏移裁扩以维持全部图层尺寸一致的不变量。
+            layer.pixels = imageOps::resizeCanvasRgba(
+                &layer.pixels,
+                curW,
+                curH,
+                targetW,
+                targetH,
+                fallbackOff.0,
+                fallbackOff.1,
+            );
+        }
+    }
+    session.state.width = targetW;
+    session.state.height = targetH;
+    Ok(PixelDiff::resized(targetW, targetH))
 }
 
 pub(super) fn finalizePendingStroke(session: &mut PartSession) -> Option<PixelDiff> {
@@ -357,19 +430,10 @@ pub(super) fn finalizePendingStroke(session: &mut PartSession) -> Option<PixelDi
         x1,
         y1,
     );
-    let diff = PixelDiff {
-        x: x0,
-        y: y0,
-        width: x1 - x0,
-        height: y1 - y0,
-        before,
-        after,
-    };
-    session.history.push(HistoryEntry {
-        layerId: stroke.layerId,
-        diff: diff.clone(),
-        timestamp: nowMillis(),
-    });
+    let diff = PixelDiff::new(x0, y0, x1 - x0, y1 - y0, before, after);
+    session
+        .history
+        .push(HistoryEntry::pixel(stroke.layerId, diff.clone(), nowMillis()));
     Some(diff)
 }
 
