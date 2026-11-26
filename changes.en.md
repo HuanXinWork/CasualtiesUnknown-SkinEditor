@@ -6,6 +6,19 @@
 
 ---
 
+## 1.1.0 (2026-11-26)
+
+### Added and Changed
+
+- Added light and dark transparency checkerboard color pickers to the Theme panel with live updates and `workspace.json` persistence, falling back by background brightness for legacy configs.
+- Expanded GitHub Actions workflows: added CI checks for version consistency, frontend build, and full Rust tests; added automatic tagging and release publishing on `main` pushes based on version number; added a daily scheduled workflow that publishes Nightly prereleases when new commits arrive.
+
+### Fixed
+
+- Fixed preview rotation sampling offset by restoring `blitWithRotation` to match `v1.0.7` and in-game `SkinSync`, resolving half-pixel clipped edges on angled parts (such as ear tips and nose tips on a 347-degree rotated head).
+
+---
+
 ## 1.0.9 (2026-11-26)
 
 ### Added and Changed

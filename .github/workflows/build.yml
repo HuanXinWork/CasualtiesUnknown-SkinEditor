@@ -1,19 +1,307 @@
-name: Build
+name: Build and Release
 
 on:
   push:
-    tags: ['v*']
+    branches:
+      - 'main'
+  pull_request:
+    branches:
+      - 'main'
+  schedule:
+    # UTC 18:00（北京时间次日 02:00）检查 main 是否有未打 tag 的新提交
+    - cron: '0 18 * * *'
   workflow_dispatch:
-
-concurrency:
-  group: build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+    inputs:
+      release_mode:
+        description: 'Release mode (auto: publish v<Version> if tag missing; nightly: publish daily pre-release; build_only: compile & package only)'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - nightly
+          - build_only
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  check:
+    name: Check & Release Preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      app_version: ${{ steps.version.outputs.app_version }}
+      version_tag: ${{ steps.version.outputs.version_tag }}
+      effective_mode: ${{ steps.decide.outputs.effective_mode }}
+      should_build_matrix: ${{ steps.decide.outputs.should_build_matrix }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+
+      - name: Verify version consistency across 5 sources
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 发版前强校验 5 处版本声明一致，避免漏改前端/桌面端任一处导致更新检测与安装包版本分裂
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+          import tomllib
+
+          cargo = tomllib.loads(pathlib.Path("src-tauri/Cargo.toml").read_text(encoding="utf-8"))
+          cargo_ver = str(cargo.get("package", {}).get("version", "")).strip()
+
+          tauri_conf = json.loads(pathlib.Path("src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
+          tauri_ver = str(tauri_conf.get("version", "")).strip()
+
+          web_pkg = json.loads(pathlib.Path("web/package.json").read_text(encoding="utf-8"))
+          web_pkg_ver = str(web_pkg.get("version", "")).strip()
+
+          main_ts = pathlib.Path("web/src/main.ts").read_text(encoding="utf-8")
+          m_main = re.search(r'\bconst\s+APP_VERSION\s*=\s*["\']([^"\']+)["\']', main_ts)
+          main_ver = m_main.group(1).strip() if m_main else ""
+
+          settings_ts = pathlib.Path("web/src/settingsPanel/index.ts").read_text(encoding="utf-8")
+          m_settings = re.search(
+              r'\bAPP_META\s*=\s*\{[^}]*?\bversion\s*:\s*["\']([^"\']+)["\']',
+              settings_ts,
+              re.DOTALL,
+          )
+          settings_ver = m_settings.group(1).strip() if m_settings else ""
+
+          sources = {
+              "src-tauri/Cargo.toml": cargo_ver,
+              "src-tauri/tauri.conf.json": tauri_ver,
+              "web/package.json": web_pkg_ver,
+              "web/src/main.ts": main_ver,
+              "web/src/settingsPanel/index.ts": settings_ver,
+          }
+
+          for path, ver in sources.items():
+              print(f"{path}: {ver or '<MISSING>'}")
+
+          missing = [path for path, ver in sources.items() if not ver]
+          if missing:
+              print(
+                  f"::error::Missing version declaration in: {', '.join(missing)}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          unique_versions = sorted(set(sources.values()))
+          if len(unique_versions) != 1:
+              detail = ", ".join(f"{path}={ver}" for path, ver in sources.items())
+              print(
+                  f"::error::Version mismatch across 5 sources: {detail}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          version = unique_versions[0]
+          if not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+-]*", version):
+              print(
+                  f"::error::Invalid version format for git tag: {version!r}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          print(f"Verified consistent version: {version}")
+
+          gh_output = os.environ.get("GITHUB_OUTPUT")
+          if gh_output:
+              with open(gh_output, "a", encoding="utf-8") as f:
+                  f.write(f"app_version={version}\n")
+                  f.write(f"version_tag=v{version}\n")
+          PY
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            patchelf
+
+      - name: Install web dependencies
+        working-directory: web
+        shell: bash
+        run: |
+          set -euo pipefail
+          # web/package-lock.json 当前被 .gitignore 忽略，远端 checkout 时按 lockfile 存在性自动降级到 npm install
+          if [[ -f package-lock.json ]]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      # 须在 cargo test 之前构建 web/dist，因为 src-tauri 编译期通过 rust-embed / Tauri 引用前端产物
+      - name: Typecheck and build web bundle
+        working-directory: web
+        run: npm run build
+
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Decide whether to run multi-platform build and release
+        id: decide
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_RELEASE_MODE: ${{ inputs.release_mode }}
+          CURRENT_SHA: ${{ github.sha }}
+          APP_VERSION: ${{ steps.version.outputs.app_version }}
+          VERSION_TAG: ${{ steps.version.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+
+          git fetch origin --tags --force
+
+          # git ls-remote --exit-code：0=存在，2=不存在，其余退出码（如 128）为网络/鉴权故障需显式阻断
+          remote_exact_tag_exists() {
+            local tag_ref="refs/tags/$1"
+            local rc=0
+            git ls-remote --exit-code --tags origin "${tag_ref}" >/dev/null 2>&1 || rc=$?
+            if [[ "${rc}" -eq 0 ]]; then
+              return 0
+            elif [[ "${rc}" -eq 2 ]]; then
+              return 1
+            else
+              echo "::error::git ls-remote failed with exit code ${rc} while querying ${tag_ref}" >&2
+              exit "${rc}"
+            fi
+          }
+
+          # 同时检查小写 v 与历史大写 V 开头的同名 tag，防止大小写撞名重复发版
+          remote_tag_exists() {
+            local tag="$1"
+            local alt_tag=""
+            if [[ "${tag}" == v* ]]; then
+              alt_tag="V${tag#v}"
+            elif [[ "${tag}" == V* ]]; then
+              alt_tag="v${tag#V}"
+            fi
+            if remote_exact_tag_exists "${tag}"; then
+              return 0
+            fi
+            if [[ -n "${alt_tag}" ]] && remote_exact_tag_exists "${alt_tag}"; then
+              return 0
+            fi
+            return 1
+          }
+
+          case "${EVENT_NAME}" in
+            pull_request)
+              EFFECTIVE_MODE="check_only"
+              SHOULD_BUILD_MATRIX="false"
+              {
+                echo "### PR Checks Passed"
+                echo "- Version verified: \`${APP_VERSION}\` (all 5 sources consistent)."
+                echo "- Web typecheck/build and Rust \`cargo test\` passed."
+                echo "- Multi-platform release matrix is skipped for pull requests."
+              } >> "${GITHUB_STEP_SUMMARY}"
+              ;;
+            push)
+              EFFECTIVE_MODE="auto"
+              if remote_tag_exists "${VERSION_TAG}"; then
+                SHOULD_BUILD_MATRIX="false"
+                echo "Remote tag ${VERSION_TAG} (or V${APP_VERSION}) already exists on origin; skipping multi-platform build & release."
+                {
+                  echo "### CI Checks Passed (Release Skipped)"
+                  echo "- Tag \`${VERSION_TAG}\` (or \`V${APP_VERSION}\`) already exists on \`origin\`."
+                  echo "- Skipping 5-platform build matrix to avoid redundant runner usage."
+                } >> "${GITHUB_STEP_SUMMARY}"
+              else
+                SHOULD_BUILD_MATRIX="true"
+                echo "New version ${VERSION_TAG} detected without existing remote tag; enabling 5-platform build & auto release."
+                {
+                  echo "### New Version Detected"
+                  echo "- Version \`${APP_VERSION}\` has no existing \`${VERSION_TAG}\` tag on \`origin\`."
+                  echo "- Proceeding to 5-platform build matrix and formal release."
+                } >> "${GITHUB_STEP_SUMMARY}"
+              fi
+              ;;
+            schedule)
+              EFFECTIVE_MODE="nightly"
+              # 同时检查本地已同步 tag 与远端 ls-remote（覆盖 v*/V*、轻量 tag 与附注 tag ^{} 解引用）
+              EXISTING_LOCAL="$(git tag --points-at "${CURRENT_SHA}" 'v*' 'V*')"
+              REMOTE_TAGS_RAW="$(git ls-remote --tags origin 'refs/tags/v*' 'refs/tags/V*')"
+              EXISTING_REMOTE="$(printf '%s\n' "${REMOTE_TAGS_RAW}" | awk -v sha="${CURRENT_SHA}" '$1 == sha { sub("^refs/tags/", "", $2); sub("\\^\\{\\}$", "", $2); print $2 }')"
+              EXISTING_TAGS="$(printf '%s\n%s\n' "${EXISTING_LOCAL}" "${EXISTING_REMOTE}" | sed '/^$/d' | sort -u)"
+
+              if [[ -n "${EXISTING_TAGS}" ]]; then
+                SHOULD_BUILD_MATRIX="false"
+                echo "Commit ${CURRENT_SHA} already has release/nightly tag(s): ${EXISTING_TAGS//$'\n'/, }. Skipping scheduled nightly build."
+                {
+                  echo "### Scheduled Nightly Skipped"
+                  echo "- No new commits since existing tag(s) pointing at \`${CURRENT_SHA}\`: \`${EXISTING_TAGS//$'\n'/, }\`."
+                  echo "- Skipping 5-platform build matrix."
+                } >> "${GITHUB_STEP_SUMMARY}"
+              else
+                SHOULD_BUILD_MATRIX="true"
+                echo "Untagged commit ${CURRENT_SHA} detected on schedule; enabling 5-platform build & nightly pre-release."
+                {
+                  echo "### Scheduled Nightly Triggered"
+                  echo "- New commits found at \`${CURRENT_SHA}\` without any existing \`v*\`/\`V*\` tag."
+                  echo "- Proceeding to 5-platform build matrix and nightly pre-release."
+                } >> "${GITHUB_STEP_SUMMARY}"
+              fi
+              ;;
+            workflow_dispatch)
+              EFFECTIVE_MODE="${INPUT_RELEASE_MODE:-auto}"
+              SHOULD_BUILD_MATRIX="true"
+              echo "Manual workflow_dispatch with release_mode=${EFFECTIVE_MODE}; enabling 5-platform build matrix."
+              {
+                echo "### Manual Dispatch"
+                echo "- Mode: \`${EFFECTIVE_MODE}\` (version \`${APP_VERSION}\`)."
+                echo "- Proceeding to 5-platform build matrix."
+              } >> "${GITHUB_STEP_SUMMARY}"
+              ;;
+            *)
+              EFFECTIVE_MODE="check_only"
+              SHOULD_BUILD_MATRIX="false"
+              echo "Event ${EVENT_NAME} does not trigger multi-platform release; skipping build matrix."
+              ;;
+          esac
+
+          {
+            echo "effective_mode=${EFFECTIVE_MODE}"
+            echo "should_build_matrix=${SHOULD_BUILD_MATRIX}"
+          } >> "${GITHUB_OUTPUT}"
+
   build:
+    name: Build (${{ matrix.artifact }})
+    needs: check
+    if: needs.check.outputs.should_build_matrix == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -52,7 +340,7 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v7
 
       - name: Setup Node.js
@@ -85,7 +373,15 @@ jobs:
 
       - name: Install web dependencies
         working-directory: web
-        run: npm install
+        shell: bash
+        run: |
+          set -euo pipefail
+          # web/package-lock.json 当前被 .gitignore 忽略，远端 checkout 时按 lockfile 存在性自动降级到 npm install
+          if [[ -f package-lock.json ]]; then
+            npm ci
+          else
+            npm install
+          fi
 
       - name: Build web bundle
         working-directory: web
@@ -117,41 +413,218 @@ jobs:
           name: CasualtiesUnknown-SkinEditor-${{ matrix.artifact }}
           path: stage-${{ matrix.artifact }}/**
           if-no-files-found: error
+          retention-days: 30
 
   release:
-    name: Release
+    name: Auto Tag & GitHub Release
+    needs: [check, build]
+    if: needs.check.outputs.should_build_matrix == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 15
     permissions:
       contents: write
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: CasualtiesUnknown-SkinEditor-*
           path: release-assets
 
-      - name: Package release assets
+      - name: Package release bundles and verify SHA256
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
+
+          # 显式枚举 5 个平台资产，防止某平台构建目录缺失时被通配符静默遗漏
+          EXPECTED_ARTIFACTS=(
+            "CasualtiesUnknown-SkinEditor-windows-x64"
+            "CasualtiesUnknown-SkinEditor-windows-arm64"
+            "CasualtiesUnknown-SkinEditor-linux-x64"
+            "CasualtiesUnknown-SkinEditor-linux-arm64"
+            "CasualtiesUnknown-SkinEditor-macos-arm64"
+          )
+
+          rm -rf release-bundles
           mkdir -p release-bundles
-          for dir in release-assets/CasualtiesUnknown-SkinEditor-*; do
-            asset_name="$(basename "$dir")"
+
+          for asset_name in "${EXPECTED_ARTIFACTS[@]}"; do
+            if [[ ! -d "release-assets/${asset_name}" ]]; then
+              echo "::error::Missing build artifact directory: release-assets/${asset_name}" >&2
+              exit 1
+            fi
             archive_path="release-bundles/${asset_name}.zip"
             (
               cd release-assets
               zip -r "../${archive_path}" "${asset_name}"
             )
+            if [[ ! -s "${archive_path}" ]]; then
+              echo "::error::Generated release archive is missing or empty: ${archive_path}" >&2
+              exit 1
+            fi
           done
 
-      - name: Publish GitHub release
+          (
+            cd release-bundles
+            sha256sum \
+              "CasualtiesUnknown-SkinEditor-windows-x64.zip" \
+              "CasualtiesUnknown-SkinEditor-windows-arm64.zip" \
+              "CasualtiesUnknown-SkinEditor-linux-x64.zip" \
+              "CasualtiesUnknown-SkinEditor-linux-arm64.zip" \
+              "CasualtiesUnknown-SkinEditor-macos-arm64.zip" > SHA256SUMS.txt
+            if [[ ! -s "SHA256SUMS.txt" ]]; then
+              echo "::error::SHA256SUMS.txt is missing or empty" >&2
+              exit 1
+            fi
+            sha256sum -c SHA256SUMS.txt
+          )
+
+      - name: Decide release target and push tag
+        id: decide
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EFFECTIVE_MODE: ${{ needs.check.outputs.effective_mode }}
+          APP_VERSION: ${{ needs.check.outputs.app_version }}
+          VERSION_TAG: ${{ needs.check.outputs.version_tag }}
+          CURRENT_SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${APP_VERSION}" || -z "${VERSION_TAG}" ]]; then
+            echo "::error::Missing app_version or version_tag from check job" >&2
+            exit 1
+          fi
+
+          if [[ "${EFFECTIVE_MODE}" == "build_only" ]]; then
+            echo "Release skipped because effective_mode is build_only."
+            {
+              echo "### Release Skipped"
+              echo "- Mode: \`build_only\` (5-platform build, bundling & SHA256 verification completed)."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            echo "should_release=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          git fetch origin --tags --force
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 在 5 平台构建完成后二次查询远端 tag，防止 check 到 release 窗口期内并发推送引发竞态撞名
+          remote_exact_tag_exists() {
+            local tag_ref="refs/tags/$1"
+            local rc=0
+            git ls-remote --exit-code --tags origin "${tag_ref}" >/dev/null 2>&1 || rc=$?
+            if [[ "${rc}" -eq 0 ]]; then
+              return 0
+            elif [[ "${rc}" -eq 2 ]]; then
+              return 1
+            else
+              echo "::error::git ls-remote failed with exit code ${rc} while querying ${tag_ref}" >&2
+              exit "${rc}"
+            fi
+          }
+
+          remote_tag_exists() {
+            local tag="$1"
+            local alt_tag=""
+            if [[ "${tag}" == v* ]]; then
+              alt_tag="V${tag#v}"
+            elif [[ "${tag}" == V* ]]; then
+              alt_tag="v${tag#V}"
+            fi
+            if remote_exact_tag_exists "${tag}"; then
+              return 0
+            fi
+            if [[ -n "${alt_tag}" ]] && remote_exact_tag_exists "${alt_tag}"; then
+              return 0
+            fi
+            return 1
+          }
+
+          if [[ "${EFFECTIVE_MODE}" == "auto" ]]; then
+            if remote_tag_exists "${VERSION_TAG}"; then
+              echo "Remote tag ${VERSION_TAG} (or V${APP_VERSION}) already exists on origin; skipping formal release."
+              {
+                echo "### Formal Release Skipped"
+                echo "- Tag \`${VERSION_TAG}\` (or \`V${APP_VERSION}\`) already exists on \`origin\`."
+              } >> "${GITHUB_STEP_SUMMARY}"
+              echo "should_release=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+
+            TARGET_TAG="${VERSION_TAG}"
+            git tag -a "${TARGET_TAG}" "${CURRENT_SHA}" -m "Release ${TARGET_TAG}"
+            git push origin "refs/tags/${TARGET_TAG}"
+
+            {
+              echo "should_release=true"
+              echo "target_tag=${TARGET_TAG}"
+              echo "release_name=CasualtiesUnknown SkinEditor ${TARGET_TAG}"
+              echo "prerelease=false"
+              echo "make_latest=true"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [[ "${EFFECTIVE_MODE}" == "nightly" ]]; then
+            EXISTING_LOCAL="$(git tag --points-at "${CURRENT_SHA}" 'v*' 'V*')"
+            REMOTE_TAGS_RAW="$(git ls-remote --tags origin 'refs/tags/v*' 'refs/tags/V*')"
+            EXISTING_REMOTE="$(printf '%s\n' "${REMOTE_TAGS_RAW}" | awk -v sha="${CURRENT_SHA}" '$1 == sha { sub("^refs/tags/", "", $2); sub("\\^\\{\\}$", "", $2); print $2 }')"
+            EXISTING_TAGS="$(printf '%s\n%s\n' "${EXISTING_LOCAL}" "${EXISTING_REMOTE}" | sed '/^$/d' | sort -u)"
+
+            if [[ "${EVENT_NAME}" == "schedule" && -n "${EXISTING_TAGS}" ]]; then
+              echo "Commit ${CURRENT_SHA} already has release/nightly tag(s): ${EXISTING_TAGS//$'\n'/, }. Skipping scheduled nightly release."
+              {
+                echo "### Scheduled Nightly Skipped"
+                echo "- No new commits since existing tag(s) pointing at \`${CURRENT_SHA}\`: \`${EXISTING_TAGS//$'\n'/, }\`."
+              } >> "${GITHUB_STEP_SUMMARY}"
+              echo "should_release=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+
+            UTC_DATE="$(date -u +%Y%m%d)"
+            BASE_NIGHTLY_TAG="v${APP_VERSION}-nightly.${UTC_DATE}"
+            if remote_tag_exists "${BASE_NIGHTLY_TAG}"; then
+              TARGET_TAG="${BASE_NIGHTLY_TAG}.${RUN_NUMBER}"
+            else
+              TARGET_TAG="${BASE_NIGHTLY_TAG}"
+            fi
+
+            git tag -a "${TARGET_TAG}" "${CURRENT_SHA}" -m "Nightly pre-release ${TARGET_TAG}"
+            git push origin "refs/tags/${TARGET_TAG}"
+
+            {
+              echo "should_release=true"
+              echo "target_tag=${TARGET_TAG}"
+              echo "release_name=CasualtiesUnknown SkinEditor ${TARGET_TAG} (Nightly)"
+              echo "prerelease=true"
+              echo "make_latest=false"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          echo "::error::Unsupported effective release mode '${EFFECTIVE_MODE}'" >&2
+          exit 1
+
+      - name: Publish GitHub Release
+        if: steps.decide.outputs.should_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          files: release-bundles/*.zip
+          tag_name: ${{ steps.decide.outputs.target_tag }}
+          name: ${{ steps.decide.outputs.release_name }}
+          prerelease: ${{ steps.decide.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.decide.outputs.make_latest }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           overwrite_files: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            release-bundles/*.zip
+            release-bundles/SHA256SUMS.txt

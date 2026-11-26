@@ -29,7 +29,7 @@ import { mountAutoSave } from "./autoSave";
 import { showToast } from "./toast";
 import { ICON_CLOSE, ICON_PIN, ICON_PIN_OFF, ICON_REATTACH } from "./toolPanel/toolIcons";
 
-const APP_VERSION = "1.0.9";
+const APP_VERSION = "1.1.0";
 const DEFAULT_SKIN_ROOT = "data/skin";
 export const DEFAULT_WORKSPACE_PATH = "data/workspace.json";
 

@@ -393,6 +393,8 @@ export const en: Translations = {
     primary: "Primary",
     background: "Background",
     surface: "Surface",
+    checkerLight: "Checkerboard (Light)",
+    checkerDark: "Checkerboard (Dark)",
     light: "Light",
     dark: "Dark",
   },

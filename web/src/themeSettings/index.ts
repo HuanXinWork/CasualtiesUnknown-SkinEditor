@@ -1,7 +1,7 @@
-// 主题切换弹出面板（浅色/深色预设与主色、背景色、表面色实时调色）。
+// 主题切换弹出面板（浅色/深色预设与主色、背景色、表面色及透明网格配色实时调节）。
 
 import { sessionStore } from "../stateStore";
-import { applyTheme, darkTheme, defaultTheme } from "../stateStore/theme";
+import { applyTheme, darkTheme, defaultTheme, resolveCheckerColors } from "../stateStore/theme";
 import { updateWorkspace } from "../stateStore/workspacePersist";
 import type { ThemeConfig } from "../stateStore/types";
 import { subscribeLang, t } from "../i18n";
@@ -22,6 +22,10 @@ export function mountThemeButton(container: HTMLElement, workspacePath: string):
     `<input type="color" data-field="background" /></label>` +
     `<label class="theme-popover-row"><span data-role="lbl-surface"></span>` +
     `<input type="color" data-field="surface" /></label>` +
+    `<label class="theme-popover-row"><span data-role="lbl-checker-light"></span>` +
+    `<input type="color" data-field="checkerLight" /></label>` +
+    `<label class="theme-popover-row"><span data-role="lbl-checker-dark"></span>` +
+    `<input type="color" data-field="checkerDark" /></label>` +
     `<div class="theme-popover-row" style="justify-content:flex-end;">` +
     `<button class="btn" data-role="theme-close"></button>` +
     `</div>` +
@@ -35,9 +39,13 @@ export function mountThemeButton(container: HTMLElement, workspacePath: string):
   const lblPrimary = container.querySelector<HTMLSpanElement>('[data-role="lbl-primary"]')!;
   const lblBackground = container.querySelector<HTMLSpanElement>('[data-role="lbl-background"]')!;
   const lblSurface = container.querySelector<HTMLSpanElement>('[data-role="lbl-surface"]')!;
+  const lblCheckerLight = container.querySelector<HTMLSpanElement>('[data-role="lbl-checker-light"]')!;
+  const lblCheckerDark = container.querySelector<HTMLSpanElement>('[data-role="lbl-checker-dark"]')!;
   const primaryInput = container.querySelector<HTMLInputElement>('[data-field="primary"]')!;
   const backgroundInput = container.querySelector<HTMLInputElement>('[data-field="background"]')!;
   const surfaceInput = container.querySelector<HTMLInputElement>('[data-field="surface"]')!;
+  const checkerLightInput = container.querySelector<HTMLInputElement>('[data-field="checkerLight"]')!;
+  const checkerDarkInput = container.querySelector<HTMLInputElement>('[data-field="checkerDark"]')!;
 
   function applyTexts(): void {
     toggleBtn.innerHTML = ICON_THEME;
@@ -47,14 +55,19 @@ export function mountThemeButton(container: HTMLElement, workspacePath: string):
     lblPrimary.textContent = t("themeSettings.primary");
     lblBackground.textContent = t("themeSettings.background");
     lblSurface.textContent = t("themeSettings.surface");
+    lblCheckerLight.textContent = t("themeSettings.checkerLight");
+    lblCheckerDark.textContent = t("themeSettings.checkerDark");
     closeBtn.textContent = t("common.close");
   }
   applyTexts();
 
   function syncPickers(theme: ThemeConfig): void {
+    const checker = resolveCheckerColors(theme);
     primaryInput.value = theme.primary;
     backgroundInput.value = theme.background;
     surfaceInput.value = theme.surface;
+    checkerLightInput.value = checker.light.toLowerCase();
+    checkerDarkInput.value = checker.dark.toLowerCase();
   }
 
   function updateTheme(next: ThemeConfig): void {
@@ -83,7 +96,8 @@ export function mountThemeButton(container: HTMLElement, workspacePath: string):
   lightBtn.addEventListener("click", () => updateTheme(defaultTheme()));
   darkBtn.addEventListener("click", () => updateTheme(darkTheme()));
 
-  function bindField(input: HTMLInputElement, field: "primary" | "background" | "surface"): void {
+  type ColorField = "primary" | "background" | "surface" | "checkerLight" | "checkerDark";
+  function bindField(input: HTMLInputElement, field: ColorField): void {
     input.addEventListener("input", () => {
       const cur = sessionStore.getState().theme;
       updateTheme({ ...cur, [field]: input.value });
@@ -92,6 +106,8 @@ export function mountThemeButton(container: HTMLElement, workspacePath: string):
   bindField(primaryInput, "primary");
   bindField(backgroundInput, "background");
   bindField(surfaceInput, "surface");
+  bindField(checkerLightInput, "checkerLight");
+  bindField(checkerDarkInput, "checkerDark");
 
   const unsubscribe = sessionStore.subscribe((s) => syncPickers(s.theme));
   syncPickers(sessionStore.getState().theme);

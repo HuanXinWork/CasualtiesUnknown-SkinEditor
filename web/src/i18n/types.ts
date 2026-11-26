@@ -395,6 +395,8 @@ export interface Translations {
     primary: string;
     background: string;
     surface: string;
+    checkerLight: string;
+    checkerDark: string;
     light: string;
     dark: string;
   };

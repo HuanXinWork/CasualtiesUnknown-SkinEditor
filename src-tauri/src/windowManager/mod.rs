@@ -158,6 +158,11 @@ pub struct ThemeConfig {
     pub onPrimary: String,
     pub onBackground: String,
     pub borderOpacity: f32,
+    // 可选以兼容旧版 workspace.json，缺失时由前端按背景亮度回退默认棋盘格配色。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkerLight: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkerDark: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +189,8 @@ pub fn defaultTheme() -> ThemeConfig {
         onPrimary: "#FFFFFF".into(),
         onBackground: "#000000".into(),
         borderOpacity: 0.16,
+        checkerLight: Some("#FFFFFF".into()),
+        checkerDark: Some("#E5E5E5".into()),
     }
 }
 
@@ -386,6 +393,8 @@ mod tests {
             onPrimary: "#FFFFFF".into(),
             onBackground: "#000000".into(),
             borderOpacity: 0.32,
+            checkerLight: Some("#F0F4F8".into()),
+            checkerDark: Some("#C8D2DC".into()),
         };
         saveWorkspace(&path, &layout, &theme).expect("save");
         let (loaded, loadedTheme, source) = loadWorkspace(&path);
@@ -405,6 +414,36 @@ mod tests {
         assert_eq!((pos.x, pos.y), (100, 50));
         assert_eq!(loadedTheme.primary, "#112233");
         assert!((loadedTheme.borderOpacity - 0.32).abs() < f32::EPSILON);
+        assert_eq!(loadedTheme.checkerLight.as_deref(), Some("#F0F4F8"));
+        assert_eq!(loadedTheme.checkerDark.as_deref(), Some("#C8D2DC"));
+    }
+
+    #[test]
+    fn legacyWorkspaceWithoutCheckerColorsDeserializesAsNone() {
+        let tmp = TempDir::new();
+        let path = tmp.path().join("workspace.json");
+        let legacyJson = r##"{
+            "version": 1,
+            "layout": {
+                "version": 1,
+                "panels": [],
+                "splitRatios": {}
+            },
+            "theme": {
+                "primary": "#FFFFFF",
+                "background": "#000000",
+                "surface": "#1A1A1A",
+                "onPrimary": "#000000",
+                "onBackground": "#FFFFFF",
+                "borderOpacity": 0.24
+            }
+        }"##;
+        fs::write(&path, legacyJson).unwrap();
+        let (_layout, theme, source) = loadWorkspace(&path);
+        assert_eq!(source, WorkspaceSource::File);
+        assert_eq!(theme.background, "#000000");
+        assert!(theme.checkerLight.is_none());
+        assert!(theme.checkerDark.is_none());
     }
 
     #[test]

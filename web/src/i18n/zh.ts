@@ -393,6 +393,8 @@ export const zh: Translations = {
     primary: "主色",
     background: "背景色",
     surface: "表面色",
+    checkerLight: "透明网格（浅色）",
+    checkerDark: "透明网格（深色）",
     light: "浅色",
     dark: "深色",
   },

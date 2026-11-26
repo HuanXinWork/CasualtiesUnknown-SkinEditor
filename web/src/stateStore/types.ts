@@ -231,4 +231,6 @@ export interface ThemeConfig {
   onPrimary: string;
   onBackground: string;
   borderOpacity: number;
+  checkerLight?: string;
+  checkerDark?: string;
 }

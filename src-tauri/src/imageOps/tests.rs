@@ -266,19 +266,106 @@ fn blitWithFlipAlphaBlends() {
 }
 
 #[test]
-fn blitWithRotation180EvenSizeNoShift() {
-    let src: Vec<u8> = vec![
+fn blitWithRotationZeroDegMatchesSkinSync() {
+    // 偶数尺寸 2x2：0° 时 (dx - centerX) + 1.0 精确落在 [centerX - 1, centerX]。
+    let evenSrc: Vec<u8> = vec![
         10, 0, 0, 255, 20, 0, 0, 255,
         30, 0, 0, 255, 40, 0, 0, 255,
     ];
-    let mut c0 = vec![0u8; 4 * 4 * 4];
-    let mut c180 = vec![0u8; 4 * 4 * 4];
-    blitWithRotation(&mut c0, 4, 4, &src, 2, 2, 2, 2, 0.0, false);
-    blitWithRotation(&mut c180, 4, 4, &src, 2, 2, 2, 2, 180.0, false);
-    let at = |buf: &[u8], x: u32, y: u32| buf[((y * 4 + x) as usize) * 4];
-    assert_eq!((at(&c0, 1, 1), at(&c0, 2, 1), at(&c0, 1, 2), at(&c0, 2, 2)), (10, 20, 30, 40));
-    assert_eq!((at(&c180, 1, 1), at(&c180, 2, 1), at(&c180, 1, 2), at(&c180, 2, 2)), (40, 30, 20, 10));
-    assert_eq!(at(&c180, 3, 2), 0);
+    let mut cEven = vec![0u8; 4 * 4 * 4];
+    blitWithRotation(&mut cEven, 4, 4, &evenSrc, 2, 2, 2, 2, 0.0, false);
+    let at4 = |buf: &[u8], x: u32, y: u32| buf[((y * 4 + x) as usize) * 4];
+    assert_eq!(
+        (at4(&cEven, 1, 1), at4(&cEven, 2, 1), at4(&cEven, 1, 2), at4(&cEven, 2, 2)),
+        (10, 20, 30, 40)
+    );
+    assert_eq!(at4(&cEven, 0, 1), 0);
+    assert_eq!(at4(&cEven, 3, 2), 0);
+
+    // 奇数尺寸 3x3：0° 时 (dx - centerX) + 1.5 精确落在 [centerX - 1, centerX + 1]。
+    let mut oddSrc = vec![0u8; 3 * 3 * 4];
+    for idx in 0..9u8 {
+        let base = (idx as usize) * 4;
+        oddSrc[base..base + 4].copy_from_slice(&[idx + 1, 0, 0, 255]);
+    }
+    let mut cOdd = vec![0u8; 5 * 5 * 4];
+    blitWithRotation(&mut cOdd, 5, 5, &oddSrc, 3, 3, 2, 2, 0.0, true);
+    let at5 = |buf: &[u8], x: u32, y: u32| buf[((y * 5 + x) as usize) * 4];
+    assert_eq!((at5(&cOdd, 1, 1), at5(&cOdd, 2, 1), at5(&cOdd, 3, 1)), (3, 2, 1));
+    assert_eq!((at5(&cOdd, 1, 2), at5(&cOdd, 2, 2), at5(&cOdd, 3, 2)), (6, 5, 4));
+    assert_eq!((at5(&cOdd, 1, 3), at5(&cOdd, 2, 3), at5(&cOdd, 3, 3)), (9, 8, 7));
+    assert_eq!(at5(&cOdd, 0, 2), 0);
+    assert_eq!(at5(&cOdd, 4, 2), 0);
+}
+
+#[test]
+fn blitWithRotationMatchesV107SkinSyncFormula() {
+    // 对照 v1.0.7 与游戏端 SkinSync SkinPreviewRenderer.BlitWithRotation 的逐像素采样公式，
+    // 防止再次引入 +0.5px 相位偏移导致斜角像素艺术（如 347° 头部耳尖）缺角。
+    fn referenceSkinSyncBlit(
+        canvasW: u32,
+        canvasH: u32,
+        src: &[u8],
+        srcW: u32,
+        srcH: u32,
+        centerX: i32,
+        centerY: i32,
+        rotationDeg: f32,
+        flipX: bool,
+    ) -> Vec<u8> {
+        let mut out = vec![0u8; (canvasW * canvasH * 4) as usize];
+        let rad = -(rotationDeg.to_radians());
+        let cosR = rad.cos();
+        let sinR = rad.sin();
+        let halfW = srcW as f32 * 0.5;
+        let halfH = srcH as f32 * 0.5;
+        let invCos = cosR;
+        let invSin = -sinR;
+        for dy in 0..canvasH as i32 {
+            let ry = (dy - centerY) as f32;
+            for dx in 0..canvasW as i32 {
+                let rx = (dx - centerX) as f32;
+                let mut sx = (rx * invCos - ry * invSin + halfW).floor() as i32;
+                let sy = (rx * invSin + ry * invCos + halfH).floor() as i32;
+                if sx < 0 || sy < 0 || sx >= srcW as i32 || sy >= srcH as i32 {
+                    continue;
+                }
+                if flipX {
+                    sx = srcW as i32 - 1 - sx;
+                }
+                let sBase = ((sy as usize) * (srcW as usize) + (sx as usize)) * 4;
+                if src[sBase + 3] == 0 {
+                    continue;
+                }
+                let dBase = ((dy as usize) * (canvasW as usize) + (dx as usize)) * 4;
+                out[dBase..dBase + 4].copy_from_slice(&src[sBase..sBase + 4]);
+            }
+        }
+        out
+    }
+
+    let (cw, ch) = (100u32, 100u32);
+    let (sw, sh) = (28u32, 16u32);
+    let mut head = vec![0u8; (sw * sh * 4) as usize];
+    for sy in 0..sh {
+        for sx in 0..sw {
+            // 在耳尖四角与轮廓位置铺设唯一颜色标记，确保任一像素采样相位偏移都会被捕获。
+            if sy == 0 || sy == sh - 1 || sx == 0 || sx == sw - 1 || (sx + sy) % 5 == 0 {
+                let i = ((sy * sw + sx) * 4) as usize;
+                head[i..i + 4].copy_from_slice(&[(sx * 9) as u8, (sy * 15) as u8, 200, 255]);
+            }
+        }
+    }
+
+    for &(angle, flipX) in &[(347.0f32, false), (347.0f32, true), (180.0f32, false), (23.5f32, false)] {
+        let mut actual = vec![0u8; (cw * ch * 4) as usize];
+        blitWithRotation(&mut actual, cw, ch, &head, sw, sh, 60, 31, angle, flipX);
+        let expected = referenceSkinSyncBlit(cw, ch, &head, sw, sh, 60, 31, angle, flipX);
+        assert_eq!(
+            actual, expected,
+            "blitWithRotation diverged from v1.0.7/SkinSync formula at angle={angle}, flipX={flipX}"
+        );
+    }
 }
 
 #[test]

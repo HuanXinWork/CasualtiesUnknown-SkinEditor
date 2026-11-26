@@ -60,8 +60,8 @@ pub fn blitWithFlip(
     }
 }
 
-/// 绕源图几何中心旋转（逆时针为正，对齐 Unity `localEulerAngles.z`）并以最近邻贴到目标画布。
-/// 锚点按源宽高奇偶对齐像素中心或网格线，确保 0° 与整数放置对齐、90°/180°/270° 旋转无 1px 偏心。
+/// 绕源图中心旋转（逆时针为正，对齐 Unity `localEulerAngles.z`）并以最近邻贴到目标画布。
+/// 采样坐标与游戏端 `SkinSync` `SkinPreviewRenderer.BlitWithRotation` 保持一致，避免斜角像素艺术（如 347° 头部耳尖）出现半像素相位偏移缺角。
 pub fn blitWithRotation(
     canvas: &mut [u8],
     canvasW: u32,
@@ -86,8 +86,6 @@ pub fn blitWithRotation(
     let sinR = rad.sin();
     let halfSrcW = srcW as f32 * 0.5;
     let halfSrcH = srcH as f32 * 0.5;
-    let anchorX = centerX as f32 + if srcW % 2 == 1 { 0.5 } else { 0.0 };
-    let anchorY = centerY as f32 + if srcH % 2 == 1 { 0.5 } else { 0.0 };
 
     let corners = [
         (-halfSrcW, -halfSrcH),
@@ -115,10 +113,10 @@ pub fn blitWithRotation(
             maxDy = dy;
         }
     }
-    let dxStart = (anchorX + minDx - 0.5).floor() as i32;
-    let dyStart = (anchorY + minDy - 0.5).floor() as i32;
-    let dxEnd = (anchorX + maxDx + 0.5).ceil() as i32;
-    let dyEnd = (anchorY + maxDy + 0.5).ceil() as i32;
+    let dxStart = (centerX as f32 + minDx).floor() as i32;
+    let dyStart = (centerY as f32 + minDy).floor() as i32;
+    let dxEnd = (centerX as f32 + maxDx).ceil() as i32;
+    let dyEnd = (centerY as f32 + maxDy).ceil() as i32;
 
     let invCos = cosR;
     let invSin = -sinR;
@@ -126,12 +124,12 @@ pub fn blitWithRotation(
         if dy < 0 || dy >= canvasH as i32 {
             continue;
         }
-        let ry = (dy as f32 + 0.5) - anchorY;
+        let ry = (dy - centerY) as f32;
         for dx in dxStart..=dxEnd {
             if dx < 0 || dx >= canvasW as i32 {
                 continue;
             }
-            let rx = (dx as f32 + 0.5) - anchorX;
+            let rx = (dx - centerX) as f32;
             let srcXF = rx * invCos - ry * invSin + halfSrcW;
             let srcYF = rx * invSin + ry * invCos + halfSrcH;
             let mut sx = srcXF.floor() as i32;
